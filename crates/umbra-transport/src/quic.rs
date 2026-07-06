@@ -554,6 +554,71 @@ mod tests {
     }
 
     #[test]
+    fn scenario_quic_initial_crypto_rejects_unsupported_version() {
+        let crypto = b"\x01\x00\x00\x00test-client-hello";
+        let mut datagram = seal_client_initial_crypto_for_test(crypto, &[]);
+        datagram[1..5].copy_from_slice(&2_u32.to_be_bytes());
+
+        assert!(decrypt_quic_initial_crypto(&datagram).is_err());
+    }
+
+    #[test]
+    fn scenario_quic_initial_crypto_skips_ack_padding_and_ping() {
+        let plaintext = [
+            QUIC_FRAME_PADDING,
+            QUIC_FRAME_PING,
+            QUIC_FRAME_ACK,
+            0,
+            0,
+            0,
+            0,
+            QUIC_FRAME_CRYPTO,
+            0,
+            1,
+            0xab,
+        ];
+        let datagram = seal_client_initial_plaintext_for_test(&plaintext, &[]);
+
+        assert_eq!(
+            decrypt_quic_initial_crypto(&datagram).expect("Initial decrypts"),
+            [0xab]
+        );
+    }
+
+    #[test]
+    fn scenario_quic_initial_crypto_skips_connection_close_frames() {
+        let plaintext = [
+            QUIC_FRAME_CONNECTION_CLOSE_TRANSPORT,
+            0,
+            0,
+            0,
+            QUIC_FRAME_CONNECTION_CLOSE_APPLICATION,
+            0,
+            0,
+            QUIC_FRAME_CRYPTO,
+            0,
+            1,
+            0xcd,
+        ];
+        let datagram = seal_client_initial_plaintext_for_test(&plaintext, &[]);
+
+        assert_eq!(
+            decrypt_quic_initial_crypto(&datagram).expect("Initial decrypts"),
+            [0xcd]
+        );
+    }
+
+    #[test]
+    fn scenario_quic_initial_crypto_rejects_missing_and_unknown_crypto_frames() {
+        let no_crypto =
+            seal_client_initial_plaintext_for_test(&[QUIC_FRAME_PADDING, QUIC_FRAME_PADDING], &[]);
+        assert!(decrypt_quic_initial_crypto(&no_crypto).is_err());
+
+        let unknown = seal_client_initial_plaintext_for_test(&[0xff, QUIC_FRAME_PADDING], &[]);
+        assert!(decrypt_quic_initial_crypto(&unknown).is_err());
+    }
+
+    #[test]
     fn scenario_quic_initial_recovers_auth_token_from_clienthello_carrier() {
         let token = [0x7b_u8; 32];
         let (crypto, fp) = quic_client_hello_crypto_for_test(Vec::new(), token);
@@ -682,5 +747,12 @@ mod tests {
         } else {
             panic!("test varint too large");
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "test varint too large")]
+    fn scenario_test_varint_rejects_too_large_values() {
+        let mut out = Vec::new();
+        write_varint_for_test(16_384, &mut out);
     }
 }

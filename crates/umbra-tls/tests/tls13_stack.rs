@@ -5,8 +5,9 @@ use umbra_crypto::x25519;
 use umbra_fingerprint::{load_profile, FingerprintProfile};
 use umbra_tls::{
     clienthello::{
-        build_client_hello, hello0, ClientHelloParams, MlkemShare, EXT_QUIC_TRANSPORT_PARAMETERS,
-        TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256,
+        build_client_hello, hello0, ClientHelloParams, ClientQuicTransportParameter, MlkemShare,
+        EXT_QUIC_TRANSPORT_PARAMETERS, TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384,
+        TLS_CHACHA20_POLY1305_SHA256,
     },
     handshake::{CertVerify, PeerKind, Tls13Client},
     keyschedule::{
@@ -83,6 +84,57 @@ fn scenario_quic_carrier_and_large_varints_are_parsed() {
         params.profile.quic.transport_parameters
     );
     assert_eq!(parsed.quic_auth_carriers, vec![Vec::<u8>::new()]);
+}
+
+#[test]
+fn scenario_quic_transport_parameter_values_are_serialized() {
+    let mut params = client_hello_params();
+    params.session_id = Vec::new();
+    params.profile.alpn = vec!["h3".to_owned()];
+    let padding_pos = params
+        .profile
+        .extension_order
+        .iter()
+        .position(|ext| *ext == 0x0015)
+        .expect("profile has padding");
+    params
+        .profile
+        .extension_order
+        .insert(padding_pos, EXT_QUIC_TRANSPORT_PARAMETERS);
+    let grease = params.profile.quic.grease_parameter;
+    params.quic_transport_parameters = vec![
+        ClientQuicTransportParameter {
+            id: grease,
+            value: vec![0x11; 32],
+        },
+        ClientQuicTransportParameter {
+            id: 0x1f,
+            value: vec![0x22, 0x33],
+        },
+    ];
+
+    let record = build_client_hello(&params).expect("ClientHello should build");
+    let parsed = parse_client_hello(&record).expect("ClientHello should parse");
+
+    assert!(parsed.session_id.is_empty());
+    assert_eq!(
+        parsed
+            .quic_transport_parameters
+            .iter()
+            .find(|param| param.id == grease)
+            .expect("grease parameter")
+            .value,
+        vec![0x11; 32]
+    );
+    assert_eq!(
+        parsed
+            .quic_transport_parameters
+            .iter()
+            .find(|param| param.id == 0x1f)
+            .expect("extra parameter")
+            .value,
+        vec![0x22, 0x33]
+    );
 }
 
 #[test]

@@ -13,7 +13,10 @@ use tokio::{
 };
 use umbra_core::{
     config::{ClientCfg, ClientConfigOverrides, ServerCfg, ServerConfigOverrides, TransportKind},
-    dispatch::{classify_client_hello, read_client_hello_raw, DispatchContext, DispatchDecision},
+    dispatch::{
+        classify_client_hello, classify_quic_initial, read_client_hello_raw, DispatchContext,
+        DispatchDecision, FallbackReason, QuicDispatchDecision,
+    },
     probe::{
         FallbackRelayPolicy, ProbeResistancePolicy, TimingAlignment, UselessRecordAction,
         UselessRecordPolicy,
@@ -27,13 +30,22 @@ use umbra_core::{
     CoreError,
 };
 use umbra_crypto::{mldsa::mldsa_keygen_from_seed, secret::Secret, x25519};
+use umbra_fingerprint::load_profile;
 use umbra_inner::mux::{MuxEvent, MuxSession};
 use umbra_proto::addr::TargetAddr;
 use umbra_reality::{
+    auth::try_seal_session_id,
     prebuild::{CertTemplate, DestProfile},
     replay::ReplayCache,
 };
-use umbra_tls::parse::parse_client_hello;
+use umbra_tls::{
+    clienthello::{
+        build_client_hello_handshake, quic_hello0, ClientHelloParams, ClientQuicTransportParameter,
+        MlkemShare, EXT_QUIC_TRANSPORT_PARAMETERS,
+    },
+    parse::parse_client_hello,
+};
+use umbra_transport::quic::build_quic_initial_crypto_packet;
 
 #[test]
 fn scenario_complete_server_config_loads() {
@@ -817,6 +829,71 @@ async fn scenario_quic_network_runtime_fails_fast_until_supported() {
     ));
 }
 
+#[test]
+fn scenario_quic_initial_dispatch_authenticates_and_rejects_bad_auth() {
+    let server_key = x25519::generate_keypair();
+    let server_public = server_key.public;
+    let client_key = x25519::generate_keypair();
+    let short_id = vec![1, 35, 69, 103, 137, 171, 205, 239];
+    let now = current_test_unix_time();
+    let dispatch_cfg = umbra_core::dispatch::ServerCfg {
+        private_key: server_key.private,
+        short_ids: vec![short_id.clone()],
+        server_names: vec!["www.microsoft.com".to_owned()],
+        dest: "www.microsoft.com:443".to_owned(),
+        max_time_diff: 120,
+        mldsa_seed: Secret::new([7_u8; 32]),
+        hello_limits: umbra_core::dispatch::HelloReadLimits::default(),
+    };
+    let replay = ReplayCache::new(64, 120).expect("replay cache");
+    let (datagram, token, handshake) =
+        quic_initial_for_dispatch(&server_public, &client_key, &short_id, now, None);
+
+    let decision = classify_quic_initial(
+        datagram,
+        DispatchContext {
+            cfg: &dispatch_cfg,
+            profile: &sample_dest_profile(),
+            replay: &replay,
+            now_unix: now,
+        },
+    )
+    .expect("QUIC Initial classifies");
+    let QuicDispatchDecision::Authenticated(authenticated) = decision else {
+        panic!("QUIC Initial should authenticate");
+    };
+    assert_eq!(authenticated.sni, "www.microsoft.com");
+    assert_eq!(authenticated.session_id, token);
+    assert_eq!(authenticated.client_hello, handshake);
+
+    let bad_replay = ReplayCache::new(64, 120).expect("replay cache");
+    let bad = quic_initial_for_dispatch(
+        &server_public,
+        &client_key,
+        &short_id,
+        now,
+        Some([0x55; 32]),
+    )
+    .0;
+    let rejected = classify_quic_initial(
+        bad.clone(),
+        DispatchContext {
+            cfg: &dispatch_cfg,
+            profile: &sample_dest_profile(),
+            replay: &bad_replay,
+            now_unix: now,
+        },
+    )
+    .expect("bad QUIC Initial classifies");
+    assert!(matches!(
+        rejected,
+        QuicDispatchDecision::Fallback {
+            reason: FallbackReason::AuthenticationRejected,
+            datagram
+        } if datagram == bad
+    ));
+}
+
 #[tokio::test]
 async fn scenario_client_runtime_binds_socks_listener() {
     let cfg = ClientCfg::from_toml_str(&client_toml()).expect("client config loads");
@@ -1073,6 +1150,78 @@ fn current_test_unix_time() -> u64 {
         .duration_since(UNIX_EPOCH)
         .expect("system time is valid")
         .as_secs()
+}
+
+fn quic_initial_for_dispatch(
+    server_public: &x25519::PublicKeyBytes,
+    client_key: &x25519::Keypair,
+    short_id: &[u8],
+    now: u64,
+    token_override: Option<[u8; 32]>,
+) -> (Vec<u8>, [u8; 32], Vec<u8>) {
+    let mut profile = load_profile("chrome-latest").expect("profile loads");
+    profile.alpn = vec!["h3".to_owned()];
+    if !profile
+        .extension_order
+        .contains(&EXT_QUIC_TRANSPORT_PARAMETERS)
+    {
+        let insert_at = profile
+            .extension_order
+            .iter()
+            .position(|ext| *ext == 0x0015)
+            .unwrap_or(profile.extension_order.len());
+        profile
+            .extension_order
+            .insert(insert_at, EXT_QUIC_TRANSPORT_PARAMETERS);
+    }
+    let grease = profile.quic.grease_parameter;
+    let zero_handshake = build_client_hello_handshake(&ClientHelloParams {
+        sni: "www.microsoft.com".to_owned(),
+        session_id: Vec::new(),
+        x25519_priv: *client_key.private.expose_secret(),
+        x25519_pub: *client_key.public.as_bytes(),
+        mlkem: MlkemShare::x25519_mlkem768(vec![0x42; 32]),
+        profile: profile.clone(),
+        random: [0x33; 32],
+        quic_transport_parameters: vec![ClientQuicTransportParameter {
+            id: grease,
+            value: vec![0; 32],
+        }],
+    })
+    .expect("zero QUIC ClientHello builds");
+    let aad = quic_hello0(&zero_handshake, grease).expect("QUIC AAD builds");
+    let shared =
+        x25519::agree(&client_key.private, server_public.as_bytes()).expect("X25519 agrees");
+    let token = token_override.unwrap_or_else(|| {
+        try_seal_session_id(shared.expose_secret(), short_id, &aad, now)
+            .expect("QUIC REALITY token seals")
+    });
+    let handshake = build_client_hello_handshake(&ClientHelloParams {
+        sni: "www.microsoft.com".to_owned(),
+        session_id: Vec::new(),
+        x25519_priv: *client_key.private.expose_secret(),
+        x25519_pub: *client_key.public.as_bytes(),
+        mlkem: MlkemShare::x25519_mlkem768(vec![0x42; 32]),
+        profile,
+        random: [0x33; 32],
+        quic_transport_parameters: vec![ClientQuicTransportParameter {
+            id: grease,
+            value: token.to_vec(),
+        }],
+    })
+    .expect("auth QUIC ClientHello builds");
+    assert_eq!(
+        quic_hello0(&handshake, grease).expect("auth QUIC AAD builds"),
+        aad
+    );
+    let datagram = build_quic_initial_crypto_packet(
+        &handshake,
+        &[1_u8, 2, 3, 4, 5, 6, 7, 8],
+        &[0xa0_u8, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7],
+        &[],
+    )
+    .expect("QUIC Initial builds");
+    (datagram, token, handshake)
 }
 
 fn socks_connect_domain(domain: &str, port: u16, command: u8) -> Vec<u8> {

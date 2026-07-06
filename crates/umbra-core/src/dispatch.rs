@@ -10,6 +10,7 @@ use tokio::{
     time::Instant,
 };
 use umbra_crypto::{secret::Secret, x25519};
+use umbra_fingerprint::grease::is_grease;
 use umbra_reality::{
     auth::{open_session_id, validate_server_name},
     cert::forge_leaf_certificate,
@@ -17,10 +18,11 @@ use umbra_reality::{
     replay::ReplayCache,
 };
 use umbra_tls::{
-    clienthello::hello0,
-    parse::{parse_client_hello, ParsedClientHello},
+    clienthello::{hello0, quic_hello0},
+    parse::{parse_client_hello, ParsedClientHello, QuicTransportParameter},
     server::Tls13Server,
 };
+use umbra_transport::quic::{decrypt_quic_initial_crypto, parse_quic_initial_header};
 
 use crate::{probe::TimingAlignment, CoreError};
 
@@ -109,6 +111,31 @@ pub enum DispatchDecision {
         /// Exact ClientHello bytes read from the client and forwarded first.
         chello_raw: Vec<u8>,
     },
+}
+
+/// Result of classifying one QUIC Initial datagram.
+pub enum QuicDispatchDecision {
+    /// The Initial authenticated and should continue on the local QUIC path.
+    Authenticated(Box<AuthenticatedQuicDispatch>),
+    /// The datagram must be forwarded to the real destination QUIC service.
+    Fallback {
+        /// Why the local path was rejected.
+        reason: FallbackReason,
+        /// Exact datagram received from the client.
+        datagram: Vec<u8>,
+    },
+}
+
+/// Authenticated QUIC dispatch state before the local QUIC-TLS server flight.
+pub struct AuthenticatedQuicDispatch {
+    /// Accepted SNI.
+    pub sni: String,
+    /// REALITY auth token carried by QUIC transport parameters.
+    pub session_id: [u8; 32],
+    /// Derived REALITY shared secret.
+    pub shared_secret: Secret<32>,
+    /// Raw ClientHello handshake bytes recovered from QUIC CRYPTO.
+    pub client_hello: Vec<u8>,
 }
 
 /// Authenticated dispatch state for the local TLS server path.
@@ -284,6 +311,80 @@ pub fn classify_client_hello(
     )))
 }
 
+/// Classify a protected QUIC Initial into local-authenticated or fallback path.
+pub fn classify_quic_initial(
+    datagram: Vec<u8>,
+    ctx: DispatchContext<'_>,
+) -> Result<QuicDispatchDecision, CoreError> {
+    validate_cfg(ctx.cfg)?;
+    let Ok(header) = parse_quic_initial_header(&datagram) else {
+        return Ok(fallback_quic(
+            FallbackReason::MalformedClientHello,
+            datagram,
+        ));
+    };
+    let Ok(client_hello) = decrypt_quic_initial_crypto(&datagram) else {
+        return Ok(fallback_quic(
+            FallbackReason::MalformedClientHello,
+            datagram,
+        ));
+    };
+    let Ok(parsed) = parse_client_hello(&client_hello) else {
+        return Ok(fallback_quic(
+            FallbackReason::MalformedClientHello,
+            datagram,
+        ));
+    };
+
+    let Some(sni) = parsed.sni.clone() else {
+        return Ok(fallback_quic(FallbackReason::ServerNameRejected, datagram));
+    };
+    if validate_server_name(&sni, &ctx.cfg.server_names).is_err() {
+        return Ok(fallback_quic(FallbackReason::ServerNameRejected, datagram));
+    }
+    if !parsed.session_id.is_empty() {
+        return Ok(fallback_quic(FallbackReason::InvalidSessionId, datagram));
+    }
+
+    let Some(client_public) = parsed.x25519_key_share else {
+        return Ok(fallback_quic(FallbackReason::MissingKeyShare, datagram));
+    };
+    let Some((grease_parameter, session_id)) =
+        quic_session_id_array(&parsed.quic_transport_parameters, &header.scid)
+    else {
+        return Ok(fallback_quic(FallbackReason::InvalidSessionId, datagram));
+    };
+    let Ok(shared) = x25519::agree(&ctx.cfg.private_key, &client_public) else {
+        return Ok(fallback_quic(FallbackReason::MissingKeyShare, datagram));
+    };
+    let aad = quic_hello0(&client_hello, grease_parameter)?;
+    if open_session_id(
+        shared.expose_secret(),
+        &session_id,
+        &aad,
+        &ctx.cfg.short_ids,
+        ctx.now_unix,
+        ctx.cfg.max_time_diff,
+        ctx.replay,
+    )
+    .is_err()
+    {
+        return Ok(fallback_quic(
+            FallbackReason::AuthenticationRejected,
+            datagram,
+        ));
+    }
+
+    Ok(QuicDispatchDecision::Authenticated(Box::new(
+        AuthenticatedQuicDispatch {
+            sni,
+            session_id,
+            shared_secret: shared,
+            client_hello,
+        },
+    )))
+}
+
 /// Dispatch a connection using the configured destination over TCP.
 pub async fn dispatch<C>(
     conn: C,
@@ -439,8 +540,37 @@ fn fallback(reason: FallbackReason, chello_raw: Vec<u8>) -> DispatchDecision {
     DispatchDecision::Fallback { reason, chello_raw }
 }
 
+fn fallback_quic(reason: FallbackReason, datagram: Vec<u8>) -> QuicDispatchDecision {
+    QuicDispatchDecision::Fallback { reason, datagram }
+}
+
 fn session_id_array(parsed: &ParsedClientHello) -> Option<[u8; 32]> {
     parsed.session_id.as_slice().try_into().ok()
+}
+
+fn quic_session_id_array(
+    parameters: &[QuicTransportParameter],
+    scid: &[u8],
+) -> Option<(u64, [u8; 32])> {
+    for parameter in parameters {
+        if !is_grease_u64(parameter.id) {
+            continue;
+        }
+        if let Ok(session_id) = parameter.value.as_slice().try_into() {
+            return Some((parameter.id, session_id));
+        }
+        if parameter.value.len() == 24 && scid.len() >= 8 {
+            let mut session_id = [0_u8; 32];
+            session_id[..8].copy_from_slice(&scid[..8]);
+            session_id[8..].copy_from_slice(&parameter.value);
+            return Some((parameter.id, session_id));
+        }
+    }
+    None
+}
+
+fn is_grease_u64(value: u64) -> bool {
+    u16::try_from(value).is_ok_and(is_grease)
 }
 
 fn accept_input(chello_raw: &[u8], handshake: &[u8]) -> Result<Vec<u8>, CoreError> {

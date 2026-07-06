@@ -8,15 +8,28 @@ use std::{
 
 use rand::{rngs::OsRng, RngCore};
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream, UdpSocket},
 };
 use umbra_crypto::{mlkem::mlkem_keygen, x25519};
 use umbra_fingerprint::load_profile;
-use umbra_inner::{mux::MuxSession, padding::PadScheme, spider::spider, vision::send_solo_preface};
+use umbra_inner::{
+    mux::{MuxEvent, MuxSession, MuxStream},
+    padding::PadScheme,
+    spider::spider,
+    vision::send_solo_preface,
+};
 use umbra_proto::addr::TargetAddr;
-use umbra_reality::{auth::try_seal_session_id, prebuild::DestProfile, replay::ReplayCache};
-use umbra_tls::clienthello::hello0;
+use umbra_reality::{
+    auth::try_seal_session_id,
+    cert::{classify_peer_certificate, PeerKind as RealityPeerKind},
+    prebuild::DestProfile,
+    replay::ReplayCache,
+};
+use umbra_tls::{
+    clienthello::{hello0, ClientHelloParams, MlkemShare},
+    handshake::{CertVerify, PeerKind as TlsPeerKind, Tls13Client},
+};
 use umbra_transport::{
     evasion::TcpEvasionPolicy,
     tcp::{build_tcp_client_hello, tcp_connect_and_send, TcpClientHelloConfig},
@@ -24,12 +37,16 @@ use umbra_transport::{
 
 use crate::{
     config::{ClientCfg, ServerCfg as RuntimeServerCfg, TransportKind},
-    dispatch::{dispatch_with_connector_and_timing, DispatchOutcome, HelloReadLimits},
+    dispatch::{
+        classify_client_hello, read_client_hello_raw, write_fallback_prefix, DispatchContext,
+        DispatchDecision, DispatchOutcome, HelloReadLimits,
+    },
     probe::ProbeResistancePolicy,
     socks::{
         negotiate_no_auth, read_connect_request, write_success_reply,
         write_unsupported_command_reply, SocksConnect,
     },
+    tls_io::{read_tls_record, spawn_tls_app_io, TlsAppEndpoint},
     CoreError,
 };
 
@@ -156,7 +173,7 @@ impl ServerRuntime {
         ConnectFuture: Future<Output = Result<D, std::io::Error>>,
     {
         let (stream, peer) = self.tcp_listener.accept().await?;
-        let outcome = dispatch_with_connector_and_timing(
+        let outcome = dispatch_runtime_with_connector(
             stream,
             &self.dispatch_cfg,
             &self.profile,
@@ -164,6 +181,7 @@ impl ServerRuntime {
             current_unix_time()?,
             connect_dest,
             self.probe_policy.timing,
+            &self.padding_scheme,
         )
         .await?;
         Ok(AcceptedServerSession { peer, outcome })
@@ -314,17 +332,21 @@ where
         mode,
         server_name: cfg.server_name.clone(),
     };
-    let mut outer = open_outer(plan).await?;
+    let outer = open_outer(plan).await?;
     match mode {
         ClientInnerMode::Mux => {
             let mut mux = MuxSession::client(outer, &cfg.padding_scheme)?;
-            let _stream = mux.open(&target).await?;
+            let stream = mux.open(&target).await?;
+            write_success_reply(socks).await?;
+            relay_mux_client_stream(socks, mux, stream).await?;
         }
         ClientInnerMode::VisionSolo => {
+            let mut outer = outer;
             send_solo_preface(&mut outer, &target).await?;
+            write_success_reply(socks).await?;
+            tokio::io::copy_bidirectional(socks, &mut outer).await?;
         }
     }
-    write_success_reply(socks).await?;
     Ok(ClientSessionOutcome {
         target,
         transport: cfg.transport,
@@ -336,7 +358,7 @@ where
 pub async fn open_outer_from_config(
     cfg: &ClientCfg,
     plan: &ClientConnectPlan,
-) -> Result<TcpStream, CoreError> {
+) -> Result<tokio::io::DuplexStream, CoreError> {
     match plan.transport {
         TransportKind::Tcp => open_tcp_outer(cfg).await,
         TransportKind::Quic => Err(CoreError::InvalidConfig(
@@ -351,13 +373,13 @@ pub async fn run_server(cfg: RuntimeServerCfg) -> Result<(), CoreError> {
     let profile = umbra_reality::prebuild::probe_dest(&dest).await?;
     let runtime =
         ServerRuntime::bind_with_profile(cfg, profile, ProbeResistancePolicy::default()).await?;
-    runtime.run_until_shutdown(shutdown_on_ctrl_c()).await
+    Box::pin(runtime.run_until_shutdown(shutdown_on_ctrl_c())).await
 }
 
 /// Run a client until Ctrl-C.
 pub async fn run_client(cfg: ClientCfg) -> Result<(), CoreError> {
     let runtime = ClientRuntime::bind(cfg).await?;
-    runtime.run_until_shutdown(shutdown_on_ctrl_c()).await
+    Box::pin(runtime.run_until_shutdown(shutdown_on_ctrl_c())).await
 }
 
 /// Run RealSite spider mode after a RealSite certificate classification.
@@ -368,12 +390,13 @@ where
     spider(io, spider_path).await.map_err(CoreError::from)
 }
 
-async fn open_tcp_outer(cfg: &ClientCfg) -> Result<TcpStream, CoreError> {
+async fn open_tcp_outer(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream, CoreError> {
     let profile = load_profile(&cfg.fingerprint)?;
     let keypair = x25519::generate_keypair();
     let shared = x25519::agree(&keypair.private, cfg.public_key.as_bytes())?;
     let mut random = [0_u8; 32];
     OsRng.fill_bytes(&mut random);
+    let mlkem_key_exchange = hybrid_mlkem_key_exchange(keypair.public.as_bytes());
 
     let zero_hello = build_tcp_client_hello(tcp_hello_config(
         cfg,
@@ -381,6 +404,7 @@ async fn open_tcp_outer(cfg: &ClientCfg) -> Result<TcpStream, CoreError> {
         [0_u8; 32],
         profile.clone(),
         random,
+        mlkem_key_exchange.clone(),
     ))?;
     let aad = hello0(&zero_hello)?;
     let session_id = try_seal_session_id(
@@ -389,11 +413,28 @@ async fn open_tcp_outer(cfg: &ClientCfg) -> Result<TcpStream, CoreError> {
         &aad,
         current_unix_time()?,
     )?;
-    let client_hello =
-        build_tcp_client_hello(tcp_hello_config(cfg, &keypair, session_id, profile, random))?;
-    let (stream, _report) =
+    let tls_params = tls_client_hello_params(
+        cfg,
+        &keypair,
+        session_id,
+        profile,
+        random,
+        mlkem_key_exchange,
+    );
+    let (mut tls_client, client_hello) = Tls13Client::start(tls_params)?;
+    let (mut stream, _report) =
         tcp_connect_and_send(&cfg.server, &client_hello, &cfg.tcp_evasion).await?;
-    Ok(stream)
+    let mut server_flight = read_required_tls_record(&mut stream).await?;
+    server_flight.extend_from_slice(&read_required_tls_record(&mut stream).await?);
+    let verifier = RealityCertVerifier {
+        shared: *shared.expose_secret(),
+        session_id,
+        mldsa_verify: cfg.mldsa_verify.clone(),
+    };
+    let out = tls_client.drive(&server_flight, &verifier)?;
+    stream.write_all(&out.outbound).await?;
+    stream.flush().await?;
+    Ok(spawn_tls_app_io(stream, TlsAppEndpoint::Client(tls_client)))
 }
 
 fn tcp_hello_config(
@@ -402,14 +443,33 @@ fn tcp_hello_config(
     session_id: [u8; 32],
     profile: umbra_fingerprint::FingerprintProfile,
     random: [u8; 32],
+    mlkem_key_exchange: Vec<u8>,
 ) -> TcpClientHelloConfig {
-    let mlkem_key_exchange = hybrid_mlkem_key_exchange(keypair.public.as_bytes());
     TcpClientHelloConfig {
         sni: cfg.server_name.clone(),
         session_id,
         x25519_priv: *keypair.private.expose_secret(),
         x25519_pub: *keypair.public.as_bytes(),
         mlkem_key_exchange,
+        profile,
+        random,
+    }
+}
+
+fn tls_client_hello_params(
+    cfg: &ClientCfg,
+    keypair: &x25519::Keypair,
+    session_id: [u8; 32],
+    profile: umbra_fingerprint::FingerprintProfile,
+    random: [u8; 32],
+    mlkem_key_exchange: Vec<u8>,
+) -> ClientHelloParams {
+    ClientHelloParams {
+        sni: cfg.server_name.clone(),
+        session_id,
+        x25519_priv: *keypair.private.expose_secret(),
+        x25519_pub: *keypair.public.as_bytes(),
+        mlkem: MlkemShare::x25519_mlkem768(mlkem_key_exchange),
         profile,
         random,
     }
@@ -432,4 +492,239 @@ fn current_unix_time() -> Result<u64, CoreError> {
 
 async fn shutdown_on_ctrl_c() {
     let _ = tokio::signal::ctrl_c().await;
+}
+
+struct RealityCertVerifier {
+    shared: [u8; 32],
+    session_id: [u8; 32],
+    mldsa_verify: Vec<u8>,
+}
+
+impl CertVerify for RealityCertVerifier {
+    fn verify(&self, leaf_der: &[u8], _chain: &[Vec<u8>]) -> TlsPeerKind {
+        match classify_peer_certificate(
+            leaf_der,
+            &self.shared,
+            &self.session_id,
+            &self.mldsa_verify,
+            true,
+        ) {
+            RealityPeerKind::UmbraTrusted => TlsPeerKind::UmbraTrusted,
+            RealityPeerKind::RealSite => TlsPeerKind::RealSite,
+            RealityPeerKind::Invalid => TlsPeerKind::Invalid,
+        }
+    }
+}
+
+async fn dispatch_runtime_with_connector<C, D, Connect, ConnectFuture>(
+    mut conn: C,
+    cfg: &crate::dispatch::ServerCfg,
+    profile: &DestProfile,
+    replay: &ReplayCache,
+    now_unix: u64,
+    connect_dest_or_target: Connect,
+    timing: crate::probe::TimingAlignment,
+    padding_scheme: &PadScheme,
+) -> Result<DispatchOutcome, CoreError>
+where
+    C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    D: AsyncRead + AsyncWrite + Unpin,
+    Connect: FnOnce(String) -> ConnectFuture,
+    ConnectFuture: Future<Output = Result<D, std::io::Error>>,
+{
+    let started_at = tokio::time::Instant::now();
+    let chello_raw = read_client_hello_raw(&mut conn, cfg.hello_limits).await?;
+    match classify_client_hello(
+        chello_raw,
+        DispatchContext {
+            cfg,
+            profile,
+            replay,
+            now_unix,
+        },
+    )? {
+        DispatchDecision::Authenticated(mut authenticated) => {
+            timing.wait_started_at(started_at, profile).await;
+            conn.write_all(&authenticated.server_flight).await?;
+            conn.flush().await?;
+            let client_finished = read_required_tls_record(&mut conn).await?;
+            authenticated.tls_server.drive(&client_finished)?;
+            let tls_io = spawn_tls_app_io(conn, TlsAppEndpoint::Server(authenticated.tls_server));
+            let server_flight_len = authenticated.server_flight.len();
+            relay_one_server_inner_stream(tls_io, connect_dest_or_target, padding_scheme).await?;
+            Ok(DispatchOutcome::Authenticated {
+                sni: authenticated.sni,
+                server_flight_len,
+            })
+        }
+        DispatchDecision::Fallback { reason, chello_raw } => {
+            let mut dest = connect_dest_or_target(cfg.dest.clone()).await?;
+            write_fallback_prefix(&mut dest, &chello_raw).await?;
+            let (client_to_dest, dest_to_client) =
+                tokio::io::copy_bidirectional(&mut conn, &mut dest).await?;
+            Ok(DispatchOutcome::Forwarded {
+                reason,
+                client_to_dest,
+                dest_to_client,
+            })
+        }
+    }
+}
+
+async fn relay_one_server_inner_stream<D, Connect, ConnectFuture>(
+    tls_io: tokio::io::DuplexStream,
+    connect_target: Connect,
+    padding_scheme: &PadScheme,
+) -> Result<(), CoreError>
+where
+    D: AsyncRead + AsyncWrite + Unpin,
+    Connect: FnOnce(String) -> ConnectFuture,
+    ConnectFuture: Future<Output = Result<D, std::io::Error>>,
+{
+    let mut mux = MuxSession::server(tls_io, padding_scheme)?;
+    let (stream, target) = mux.accept().await?;
+    let mut target_io = connect_target(target_to_host_port(&target)).await?;
+    Box::pin(relay_mux_server_stream(&mut target_io, mux, stream)).await
+}
+
+async fn relay_mux_client_stream<S, IO>(
+    socks: &mut S,
+    mut mux: MuxSession<IO>,
+    mut stream: MuxStream,
+) -> Result<(), CoreError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut socks_open = true;
+    let mut peer_open = true;
+    let mut buf = [0_u8; 16 * 1024];
+    while socks_open || peer_open {
+        tokio::select! {
+            read = socks.read(&mut buf), if socks_open => {
+                let read = read?;
+                if read == 0 {
+                    socks_open = false;
+                    finish_stream_best_effort(&mut mux, stream.stream_id).await?;
+                } else {
+                    mux.send_data_wait_window(&mut stream, &buf[..read]).await?;
+                }
+            }
+            event = mux.receive_next(), if peer_open => {
+                match event? {
+                    MuxEvent::Data { stream_id, payload } if stream_id == stream.stream_id => {
+                        socks.write_all(&payload).await?;
+                        let increment = u32::try_from(payload.len())
+                            .map_err(|_| CoreError::InvalidConfig("mux payload too large"))?;
+                        send_window_update_best_effort(&mut mux, stream_id, increment).await?;
+                    }
+                    MuxEvent::Fin { stream_id } if stream_id == stream.stream_id => {
+                        peer_open = false;
+                        socks.shutdown().await?;
+                    }
+                    MuxEvent::Rst { stream_id } if stream_id == stream.stream_id => {
+                        return Err(CoreError::InvalidConfig("mux stream reset"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn relay_mux_server_stream<T, IO>(
+    target: &mut T,
+    mut mux: MuxSession<IO>,
+    mut stream: MuxStream,
+) -> Result<(), CoreError>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut target_open = true;
+    let mut peer_open = true;
+    let mut buf = [0_u8; 16 * 1024];
+    while target_open || peer_open {
+        tokio::select! {
+            read = target.read(&mut buf), if target_open => {
+                let read = read?;
+                if read == 0 {
+                    target_open = false;
+                    finish_stream_best_effort(&mut mux, stream.stream_id).await?;
+                } else {
+                    mux.send_data_wait_window(&mut stream, &buf[..read]).await?;
+                }
+            }
+            event = mux.receive_next(), if peer_open => {
+                match event? {
+                    MuxEvent::Data { stream_id, payload } if stream_id == stream.stream_id => {
+                        target.write_all(&payload).await?;
+                        let increment = u32::try_from(payload.len())
+                            .map_err(|_| CoreError::InvalidConfig("mux payload too large"))?;
+                        send_window_update_best_effort(&mut mux, stream_id, increment).await?;
+                    }
+                    MuxEvent::Fin { stream_id } if stream_id == stream.stream_id => {
+                        peer_open = false;
+                        target.shutdown().await?;
+                    }
+                    MuxEvent::Rst { stream_id } if stream_id == stream.stream_id => {
+                        return Err(CoreError::InvalidConfig("mux stream reset"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn read_required_tls_record<R>(reader: &mut R) -> Result<Vec<u8>, CoreError>
+where
+    R: AsyncRead + Unpin,
+{
+    read_tls_record(reader)
+        .await?
+        .ok_or(CoreError::InvalidClientHello("unexpected TLS EOF"))
+}
+
+fn target_to_host_port(target: &TargetAddr) -> String {
+    match target {
+        TargetAddr::Ipv4(addr, port) => format!("{addr}:{port}"),
+        TargetAddr::Domain(domain, port) => format!("{domain}:{port}"),
+        TargetAddr::Ipv6(addr, port) => format!("[{addr}]:{port}"),
+    }
+}
+
+async fn finish_stream_best_effort<IO>(
+    mux: &mut MuxSession<IO>,
+    stream_id: u32,
+) -> Result<(), CoreError>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    match mux.finish_stream(stream_id).await {
+        Ok(()) => Ok(()),
+        Err(umbra_inner::InnerError::Io(err)) if err.kind() == std::io::ErrorKind::BrokenPipe => {
+            Ok(())
+        }
+        Err(err) => Err(CoreError::from(err)),
+    }
+}
+
+async fn send_window_update_best_effort<IO>(
+    mux: &mut MuxSession<IO>,
+    stream_id: u32,
+    increment: u32,
+) -> Result<(), CoreError>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    match mux.send_window_update(stream_id, increment).await {
+        Ok(()) => Ok(()),
+        Err(umbra_inner::InnerError::Io(err)) if err.kind() == std::io::ErrorKind::BrokenPipe => {
+            Ok(())
+        }
+        Err(err) => Err(CoreError::from(err)),
+    }
 }

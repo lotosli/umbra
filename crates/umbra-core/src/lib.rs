@@ -14,5 +14,6 @@ pub mod probe;
 pub mod relay;
 pub mod runtime;
 pub mod socks;
+pub mod tls_io;
 
 pub use error::CoreError;

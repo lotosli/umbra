@@ -3,7 +3,7 @@
 use std::{
     fs,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -13,6 +13,7 @@ use tokio::{
 };
 use umbra_core::{
     config::{ClientCfg, ClientConfigOverrides, ServerCfg, ServerConfigOverrides, TransportKind},
+    dispatch::{classify_client_hello, read_client_hello_raw, DispatchContext, DispatchDecision},
     probe::{
         FallbackRelayPolicy, ProbeResistancePolicy, TimingAlignment, UselessRecordAction,
         UselessRecordPolicy,
@@ -25,10 +26,13 @@ use umbra_core::{
     socks::{accept_connect, negotiate_no_auth},
     CoreError,
 };
-use umbra_crypto::x25519;
-use umbra_inner::mux::MuxSession;
+use umbra_crypto::{mldsa::mldsa_keygen_from_seed, secret::Secret, x25519};
+use umbra_inner::mux::{MuxEvent, MuxSession};
 use umbra_proto::addr::TargetAddr;
-use umbra_reality::prebuild::{CertTemplate, DestProfile};
+use umbra_reality::{
+    prebuild::{CertTemplate, DestProfile},
+    replay::ReplayCache,
+};
 use umbra_tls::parse::parse_client_hello;
 
 #[test]
@@ -475,20 +479,46 @@ async fn scenario_socks_request_opens_selected_tcp_mux_stream() {
     let server_task = tokio::spawn(async move {
         let mut mux = MuxSession::server(outer_server, &umbra_inner::padding::PadScheme::none())
             .expect("server mux");
-        mux.accept().await.expect("server accepts mux stream").1
+        let (mut stream, target) = mux.accept().await.expect("server accepts mux stream");
+        let payload = loop {
+            if let MuxEvent::Data { stream_id, payload } =
+                mux.receive_next().await.expect("server receives data")
+            {
+                assert_eq!(stream_id, stream.stream_id);
+                break payload;
+            }
+        };
+        assert_eq!(payload, b"ping");
+        mux.send_window_update(
+            stream.stream_id,
+            u32::try_from(payload.len()).expect("payload length fits u32"),
+        )
+        .await
+        .expect("window update");
+        mux.send_data_wait_window(&mut stream, b"pong")
+            .await
+            .expect("server sends response");
+        mux.finish_stream(stream.stream_id)
+            .await
+            .expect("server sends fin");
+        target
     });
 
     socks_client
         .write_all(&socks_connect_domain("target.example", 8443, 0x01))
         .await
         .expect("write SOCKS request");
-    let session = client_session_with_outer(&cfg, &mut socks_server, move |plan| {
-        *plan_slot.lock().expect("plan mutex") = Some(plan.clone());
-        async move { Ok::<_, CoreError>(outer_client) }
-    })
-    .await
-    .expect("client session opens mux");
-
+    let session_task = tokio::spawn(async move {
+        Box::pin(client_session_with_outer(
+            &cfg,
+            &mut socks_server,
+            move |plan| {
+                *plan_slot.lock().expect("plan mutex") = Some(plan.clone());
+                async move { Ok::<_, CoreError>(outer_client) }
+            },
+        ))
+        .await
+    });
     let mut replies = [0_u8; 12];
     socks_client
         .read_exact(&mut replies)
@@ -496,6 +526,25 @@ async fn scenario_socks_request_opens_selected_tcp_mux_stream() {
         .expect("read SOCKS replies");
     assert_eq!(&replies[..2], &[0x05, 0x00]);
     assert_eq!(&replies[2..4], &[0x05, 0x00]);
+    socks_client
+        .write_all(b"ping")
+        .await
+        .expect("write payload");
+    socks_client
+        .shutdown()
+        .await
+        .expect("close socks write side");
+    let mut response = [0_u8; 4];
+    socks_client
+        .read_exact(&mut response)
+        .await
+        .expect("read mux response");
+    assert_eq!(&response, b"pong");
+    let session = timeout(Duration::from_secs(1), session_task)
+        .await
+        .expect("client session completes")
+        .expect("session task")
+        .expect("client session opens mux");
     assert_eq!(session.transport, TransportKind::Tcp);
     assert_eq!(session.mode, ClientInnerMode::Mux);
     assert_eq!(
@@ -534,18 +583,57 @@ async fn scenario_socks_request_opens_solo_vision_preface() {
         .await
         .expect("write SOCKS request");
 
-    let session = client_session_with_outer(&cfg, &mut socks_server, |_plan| async move {
-        Ok::<_, CoreError>(outer_client)
-    })
-    .await
-    .expect("client session opens solo");
-
+    let session_task = tokio::spawn(async move {
+        Box::pin(client_session_with_outer(
+            &cfg,
+            &mut socks_server,
+            |_plan| async move { Ok::<_, CoreError>(outer_client) },
+        ))
+        .await
+    });
+    let mut replies = [0_u8; 12];
+    socks_client
+        .read_exact(&mut replies)
+        .await
+        .expect("read SOCKS replies");
+    assert_eq!(&replies[..2], &[0x05, 0x00]);
+    assert_eq!(&replies[2..4], &[0x05, 0x00]);
     let mut preface = [0_u8; 16];
     outer_server
         .read_exact(&mut preface)
         .await
         .expect("read solo preface");
     assert_eq!(preface[0], 0x03);
+    socks_client
+        .write_all(b"solo")
+        .await
+        .expect("write solo data");
+    socks_client
+        .shutdown()
+        .await
+        .expect("close solo socks side");
+    let mut observed = [0_u8; 4];
+    outer_server
+        .read_exact(&mut observed)
+        .await
+        .expect("outer receives solo data");
+    assert_eq!(&observed, b"solo");
+    outer_server
+        .write_all(b"done")
+        .await
+        .expect("write response");
+    outer_server.shutdown().await.expect("close outer side");
+    let mut response = [0_u8; 4];
+    socks_client
+        .read_exact(&mut response)
+        .await
+        .expect("socks receives response");
+    assert_eq!(&response, b"done");
+    let session = timeout(Duration::from_secs(1), session_task)
+        .await
+        .expect("solo session completes")
+        .expect("session task")
+        .expect("client session opens solo");
     assert_eq!(session.mode, ClientInnerMode::VisionSolo);
 }
 
@@ -619,8 +707,7 @@ async fn scenario_runtime_shutdown_returns_without_accepting() {
     let client = ClientRuntime::bind(cfg)
         .await
         .expect("client runtime binds");
-    client
-        .run_until_shutdown(async {})
+    Box::pin(client.run_until_shutdown(async {}))
         .await
         .expect("client shutdown completes");
 }
@@ -632,11 +719,14 @@ async fn scenario_tcp_outer_sends_profile_shaped_clienthello() {
         .expect("bind capture listener");
     let addr = listener.local_addr().expect("listener addr");
     let server_key = x25519::generate_keypair();
+    let mldsa_seed = Secret::new([44_u8; 32]);
+    let mldsa = mldsa_keygen_from_seed(mldsa_seed.expose_secret());
     let cfg = ClientCfg::from_toml_str_with_overrides(
         &client_toml(),
         ClientConfigOverrides {
             server: Some(addr.to_string()),
             public_key: Some(b64_bytes(server_key.public.as_bytes())),
+            mldsa_verify: Some(b64_bytes(&mldsa.verifying_key)),
             ..ClientConfigOverrides::default()
         },
     )
@@ -650,14 +740,48 @@ async fn scenario_tcp_outer_sends_profile_shaped_clienthello() {
     };
     let capture = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("accept outer");
-        let mut header = [0_u8; 5];
-        stream.read_exact(&mut header).await.expect("read header");
-        let len = usize::from(u16::from_be_bytes([header[3], header[4]]));
-        let mut payload = vec![0_u8; len];
-        stream.read_exact(&mut payload).await.expect("read payload");
-        let mut record = header.to_vec();
-        record.extend_from_slice(&payload);
-        record
+        let chello_raw = read_client_hello_raw(
+            &mut stream,
+            umbra_core::dispatch::HelloReadLimits::default(),
+        )
+        .await
+        .expect("read ClientHello");
+        let replay = ReplayCache::new(16, 180).expect("replay cache");
+        let dispatch_cfg = umbra_core::dispatch::ServerCfg {
+            private_key: server_key.private,
+            short_ids: vec![vec![0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef]],
+            server_names: vec!["www.microsoft.com".to_owned()],
+            dest: "www.microsoft.com:443".to_owned(),
+            max_time_diff: 120,
+            mldsa_seed,
+            hello_limits: umbra_core::dispatch::HelloReadLimits::default(),
+        };
+        let decision = classify_client_hello(
+            chello_raw.clone(),
+            DispatchContext {
+                cfg: &dispatch_cfg,
+                profile: &sample_dest_profile(),
+                replay: &replay,
+                now_unix: current_test_unix_time(),
+            },
+        )
+        .expect("classify ClientHello");
+        let DispatchDecision::Authenticated(mut authenticated) = decision else {
+            panic!("ClientHello must authenticate");
+        };
+        stream
+            .write_all(&authenticated.server_flight)
+            .await
+            .expect("write server flight");
+        let client_finished = umbra_core::tls_io::read_tls_record(&mut stream)
+            .await
+            .expect("read client Finished")
+            .expect("client Finished record");
+        authenticated
+            .tls_server
+            .drive(&client_finished)
+            .expect("server accepts client Finished");
+        chello_raw
     });
 
     let stream = open_outer_from_config(&cfg, &plan)
@@ -714,12 +838,35 @@ async fn scenario_client_runtime_accept_one_uses_injected_outer() {
     let server_task = tokio::spawn(async move {
         let mut mux = MuxSession::server(outer_server, &umbra_inner::padding::PadScheme::none())
             .expect("server mux");
-        mux.accept().await.expect("server accepts").1
+        let (mut stream, target) = mux.accept().await.expect("server accepts");
+        let payload = loop {
+            if let MuxEvent::Data { stream_id, payload } =
+                mux.receive_next().await.expect("server receives data")
+            {
+                assert_eq!(stream_id, stream.stream_id);
+                break payload;
+            }
+        };
+        assert_eq!(payload, b"runtime");
+        mux.send_window_update(
+            stream.stream_id,
+            u32::try_from(payload.len()).expect("payload length fits u32"),
+        )
+        .await
+        .expect("window update");
+        mux.send_data_wait_window(&mut stream, b"reply")
+            .await
+            .expect("server sends reply");
+        mux.finish_stream(stream.stream_id)
+            .await
+            .expect("server sends fin");
+        target
     });
     let accept_task = tokio::spawn(async move {
-        runtime
-            .accept_one_with_outer(|_plan| async move { Ok::<_, CoreError>(outer_client) })
-            .await
+        Box::pin(
+            runtime.accept_one_with_outer(|_plan| async move { Ok::<_, CoreError>(outer_client) }),
+        )
+        .await
     });
     let mut socks = tokio::net::TcpStream::connect(addr)
         .await
@@ -732,8 +879,17 @@ async fn scenario_client_runtime_accept_one_uses_injected_outer() {
     socks.read_exact(&mut replies).await.expect("read replies");
     assert_eq!(&replies[..2], &[0x05, 0x00]);
     assert_eq!(&replies[2..4], &[0x05, 0x00]);
-    let outcome = accept_task
+    socks.write_all(b"runtime").await.expect("write payload");
+    socks.shutdown().await.expect("close socks write side");
+    let mut response = [0_u8; 5];
+    socks
+        .read_exact(&mut response)
         .await
+        .expect("read response");
+    assert_eq!(&response, b"reply");
+    let outcome = timeout(Duration::from_secs(1), accept_task)
+        .await
+        .expect("accept completes")
         .expect("accept task")
         .expect("accept succeeds");
     assert_eq!(outcome.mode, ClientInnerMode::Mux);
@@ -910,6 +1066,13 @@ fn b64(byte: u8) -> String {
 
 fn b64_bytes(bytes: &[u8]) -> String {
     STANDARD.encode(bytes)
+}
+
+fn current_test_unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time is valid")
+        .as_secs()
 }
 
 fn socks_connect_domain(domain: &str, port: u16, command: u8) -> Vec<u8> {

@@ -120,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Server(args) => run_server(resolve_server_cfg(&args)?).await?,
         Command::Client(args) => run_client(resolve_client_cfg(&args)?).await?,
-        Command::Keygen => print_keygen(),
+        Command::Keygen => run_keygen(),
     }
     Ok(())
 }
@@ -187,7 +187,8 @@ fn non_empty_vec(values: &[String]) -> Option<Vec<String>> {
     }
 }
 
-fn print_keygen() {
+/// Print X25519 and ML-DSA key material for Umbra configuration files.
+pub fn run_keygen() {
     let x25519 = x25519::generate_keypair();
     let mldsa = mldsa::mldsa_keygen();
     println!(

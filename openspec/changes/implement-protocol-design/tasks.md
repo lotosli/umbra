@@ -48,12 +48,12 @@
 
 ## 7. Inner Transport
 
-- [ ] 7.1 Implement client and server mux sessions with SYN, SYN_ACK, DATA, WINDOW_UPDATE, FIN, RST, PADDING, and PING.
-- [ ] 7.2 Implement per-stream flow control and stream close semantics.
-- [ ] 7.3 Implement padding scheme parser and default adaptive padding policy.
-- [ ] 7.4 Integrate padding frame emission and discard behavior.
-- [ ] 7.5 Implement Vision solo target preface, TLS sniffing, handshake shaping, splice switching, and non-TLS relay.
-- [ ] 7.6 Implement RealSite spider helper for configured paths.
+- [x] 7.1 Implement client and server mux sessions with SYN, SYN_ACK, DATA, WINDOW_UPDATE, FIN, RST, PADDING, and PING.
+- [x] 7.2 Implement per-stream flow control and stream close semantics.
+- [x] 7.3 Implement padding scheme parser and default adaptive padding policy.
+- [x] 7.4 Integrate padding frame emission and discard behavior.
+- [x] 7.5 Implement Vision solo target preface, TLS sniffing, handshake shaping, splice switching, and non-TLS relay.
+- [x] 7.6 Implement RealSite spider helper for configured paths.
 
 ## 8. Transport Layer
 

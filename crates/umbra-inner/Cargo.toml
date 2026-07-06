@@ -1,6 +1,6 @@
 [package]
 name = "umbra-inner"
-description = "内层传输：自适应填充多路复用 + Vision 真拼接 + 目标寻址 + 爬虫模式（组件 F）"
+description = "内层传输：自适应填充多路复用 + Vision 真拼接 + 目标寻址 + 爬虫模式"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,8 @@ workspace = true
 umbra-proto.workspace = true
 umbra-crypto.workspace = true
 umbra-tls.workspace = true
-# 实现时：tokio / tokio-util / futures / rand（填充）
+rand.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]

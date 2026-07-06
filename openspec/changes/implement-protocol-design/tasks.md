@@ -74,11 +74,11 @@
 
 ## 10. CLI
 
-- [ ] 10.1 Replace placeholder binary with `clap` subcommands `server`, `client`, and `keygen`.
-- [ ] 10.2 Add `server` flags for every documented server config option.
-- [ ] 10.3 Add `client` flags for every documented client config option.
-- [ ] 10.4 Implement key generation output for X25519 and ML-DSA material using base64.
-- [ ] 10.5 Add CLI error handling that exits non-zero before runtime startup on validation failure.
+- [x] 10.1 Replace placeholder binary with `clap` subcommands `server`, `client`, and `keygen`.
+- [x] 10.2 Add `server` flags for every documented server config option.
+- [x] 10.3 Add `client` flags for every documented client config option.
+- [x] 10.4 Implement key generation output for X25519 and ML-DSA material using base64.
+- [x] 10.5 Add CLI error handling that exits non-zero before runtime startup on validation failure.
 
 ## 11. Tests And Coverage >= 90%
 

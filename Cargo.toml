@@ -70,6 +70,7 @@ tls-parser = "0.11"
 x509-parser = "0.16"
 rcgen = "0.13"
 rustls = { version = "0.23.31", default-features = false, features = ["std", "ring"] }
+time = "0.3"
 webpki-roots = "1.0.8"
 
 # 外层传输（组件 G/H）

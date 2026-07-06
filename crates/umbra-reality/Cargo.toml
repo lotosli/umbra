@@ -16,12 +16,13 @@ workspace = true
 umbra-proto.workspace = true
 umbra-crypto.workspace = true
 umbra-tls.workspace = true
+rcgen.workspace = true
 rustls.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
+time.workspace = true
 webpki-roots.workspace = true
 x509-parser.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-rcgen.workspace = true

@@ -4,6 +4,7 @@
 //! prebuild are implemented by later components in this crate.
 
 pub mod auth;
+pub mod cert;
 pub mod error;
 pub mod prebuild;
 pub mod replay;

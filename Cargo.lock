@@ -1315,6 +1315,7 @@ dependencies = [
  "rustls",
  "subtle",
  "thiserror 2.0.18",
+ "time",
  "umbra-crypto",
  "umbra-proto",
  "umbra-tls",

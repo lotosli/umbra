@@ -39,6 +39,12 @@ pub enum RealityError {
     /// Destination probing failed.
     #[error("destination probing failed: {0}")]
     ProbeFailed(&'static str),
+    /// Forged certificate generation failed.
+    #[error("forged certificate generation failed: {0}")]
+    CertificateForgeFailed(&'static str),
+    /// Peer certificate binding data is malformed.
+    #[error("certificate binding is invalid: {0}")]
+    CertificateBindingInvalid(&'static str),
     /// Replay cache rejected a repeated token/key.
     #[error("REALITY replay detected")]
     Replay,

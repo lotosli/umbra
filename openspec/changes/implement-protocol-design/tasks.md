@@ -61,7 +61,7 @@
 - [x] 8.2 Implement TCP evasion strategy parser and conservative segmentation writer.
 - [x] 8.3 Implement evasion fallback to ordinary TCP sending.
 - [x] 8.4 Implement QUIC fingerprint model and REALITY-over-QUIC auth carrier parsing.
-- [ ] 8.5 Implement QUIC dispatch fallback and authenticated stream carrying surface. (Initial parse/decrypt/auth, client first flight, and bad-auth UDP fallback relay complete; authenticated QUIC stream carrying pending)
+- [ ] 8.5 Implement QUIC dispatch fallback and authenticated stream carrying surface. (Initial parse/decrypt/auth, client first flight, bad-auth UDP fallback relay, and target stream prefix helpers complete; authenticated network QUIC stream engine pending)
 
 ## 9. Core Runtime
 

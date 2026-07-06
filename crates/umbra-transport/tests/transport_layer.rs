@@ -16,8 +16,8 @@ use umbra_transport::{
     },
     quic::{
         build_quic_client_hello_surface, open_target_stream, parse_quic_initial_header,
-        quic_dispatch_bad_auth, quic_fingerprint_from_profile, recover_quic_auth_token,
-        QuicDispatchDecision,
+        parse_target_stream_payload, quic_dispatch_bad_auth, quic_fingerprint_from_profile,
+        read_target_stream, recover_quic_auth_token, write_target_stream, QuicDispatchDecision,
     },
     tcp::{
         accept_once_with_dispatch, bind_listener, build_tcp_client_hello, send_client_hello,
@@ -204,6 +204,34 @@ fn scenario_bad_quic_auth_is_forwarded_and_stream_carries_target() {
 
     assert_eq!(decoded, target);
     assert_eq!(&stream.bytes[consumed..], b"payload");
+
+    let (decoded, payload) =
+        parse_target_stream_payload(&stream.bytes).expect("parse target stream payload");
+    assert_eq!(decoded, target);
+    assert_eq!(payload, b"payload");
+}
+
+#[tokio::test]
+async fn scenario_quic_target_stream_helpers_write_and_read_prefix() {
+    let (mut client, mut server) = tokio::io::duplex(128);
+    let target = TargetAddr::domain("stream.example", 8443).expect("target");
+    let expected = target.clone();
+    let write = tokio::spawn(async move {
+        write_target_stream(&mut client, &target, b"first bytes")
+            .await
+            .expect("write target stream");
+    });
+
+    let decoded = read_target_stream(&mut server)
+        .await
+        .expect("read target prefix");
+    assert_eq!(decoded, expected);
+    let mut payload = vec![0_u8; 11];
+    tokio::io::AsyncReadExt::read_exact(&mut server, &mut payload)
+        .await
+        .expect("read remaining stream payload");
+    assert_eq!(payload, b"first bytes");
+    write.await.expect("writer task");
 }
 
 #[test]

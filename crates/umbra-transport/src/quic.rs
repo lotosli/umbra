@@ -4,8 +4,12 @@ use rustls::{
     quic::{HeaderProtectionKey, Version},
     CipherSuite, Side,
 };
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use umbra_fingerprint::FingerprintProfile;
-use umbra_proto::addr::TargetAddr;
+use umbra_proto::{
+    addr::TargetAddr,
+    consts::{ATYP_DOMAIN, ATYP_IPV4, ATYP_IPV6},
+};
 use umbra_tls::parse::parse_client_hello;
 
 use crate::TransportError;
@@ -354,6 +358,72 @@ pub fn open_target_stream(
     let mut bytes = target.encode()?;
     bytes.extend_from_slice(initial_bytes);
     Ok(QuicTargetStream { bytes })
+}
+
+/// Parse a QUIC target stream payload into its target prefix and remaining bytes.
+pub fn parse_target_stream_payload(bytes: &[u8]) -> Result<(TargetAddr, &[u8]), TransportError> {
+    let (target, consumed) = TargetAddr::decode_from(bytes)?;
+    Ok((target, &bytes[consumed..]))
+}
+
+/// Write one authenticated QUIC target stream preface and optional first bytes.
+pub async fn write_target_stream<W>(
+    writer: &mut W,
+    target: &TargetAddr,
+    initial_bytes: &[u8],
+) -> Result<(), TransportError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let stream = open_target_stream(target, initial_bytes)?;
+    writer.write_all(&stream.bytes).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+/// Read the target address prefix from an authenticated QUIC stream.
+pub async fn read_target_stream<R>(reader: &mut R) -> Result<TargetAddr, TransportError>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut atyp = [0_u8; 1];
+    reader.read_exact(&mut atyp).await?;
+    let mut encoded = vec![atyp[0]];
+    match atyp[0] {
+        ATYP_IPV4 => read_exact_to(reader, 6, &mut encoded).await?,
+        ATYP_DOMAIN => {
+            let mut len = [0_u8; 1];
+            reader.read_exact(&mut len).await?;
+            encoded.push(len[0]);
+            read_exact_to(reader, usize::from(len[0]) + 2, &mut encoded).await?;
+        }
+        ATYP_IPV6 => read_exact_to(reader, 18, &mut encoded).await?,
+        _ => {
+            return Err(TransportError::Protocol(
+                umbra_proto::ProtocolError::InvalidAddress,
+            ))
+        }
+    }
+    TargetAddr::decode(&encoded).map_err(TransportError::from)
+}
+
+async fn read_exact_to<R>(
+    reader: &mut R,
+    len: usize,
+    out: &mut Vec<u8>,
+) -> Result<(), TransportError>
+where
+    R: AsyncRead + Unpin,
+{
+    let start = out.len();
+    let end = start
+        .checked_add(len)
+        .ok_or(TransportError::InvalidQuicSurface(
+            "target prefix length overflows",
+        ))?;
+    out.resize(end, 0);
+    reader.read_exact(&mut out[start..end]).await?;
+    Ok(())
 }
 
 fn split_auth_token(

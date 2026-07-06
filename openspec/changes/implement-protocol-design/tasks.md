@@ -84,7 +84,7 @@
 
 - [ ] 11.1 Add unit and integration tests for every `#### Scenario` in this change.
 - [ ] 11.2 Add proptest coverage for address parsing, mux frames, ClientHello parsing, config validation, and padding strategy parsing.
-- [ ] 11.3 Add fuzz targets for network byte parsers: ClientHello, mux frame, target address, and QUIC auth carrier. (ClientHello wired)
+- [x] 11.3 Add fuzz targets for network byte parsers: ClientHello, mux frame, target address, and QUIC auth carrier.
 - [ ] 11.4 Add RFC/FIPS/vector tests for TLS key schedule, record protection, PQ wrappers, and certificate binding.
 - [ ] 11.5 Add loopback testkit tests for dispatch fallback, authenticated path, SOCKS-to-inner relay, and CLI config overrides.
 - [ ] 11.6 Run `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo nextest run --workspace`.

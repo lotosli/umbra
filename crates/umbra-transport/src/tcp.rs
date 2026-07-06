@@ -46,12 +46,13 @@ pub struct TcpSendReport {
 pub fn build_tcp_client_hello(cfg: TcpClientHelloConfig) -> Result<Vec<u8>, TransportError> {
     build_client_hello(&ClientHelloParams {
         sni: cfg.sni,
-        session_id: cfg.session_id,
+        session_id: cfg.session_id.to_vec(),
         x25519_priv: cfg.x25519_priv,
         x25519_pub: cfg.x25519_pub,
         mlkem: MlkemShare::x25519_mlkem768(cfg.mlkem_key_exchange),
         profile: cfg.profile,
         random: cfg.random,
+        quic_transport_parameters: Vec::new(),
     })
     .map_err(TransportError::from)
 }

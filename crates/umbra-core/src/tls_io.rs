@@ -249,12 +249,13 @@ mod tests {
         let keypair = x25519::generate_keypair();
         ClientHelloParams {
             sni: "server.example".to_owned(),
-            session_id: [0x44; 32],
+            session_id: vec![0x44; 32],
             x25519_priv: *keypair.private.expose_secret(),
             x25519_pub: *keypair.public.as_bytes(),
             mlkem: MlkemShare::x25519_mlkem768(vec![0x42; 32]),
             profile,
             random: [0x22; 32],
+            quic_transport_parameters: Vec::new(),
         }
     }
 

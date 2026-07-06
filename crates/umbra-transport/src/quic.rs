@@ -6,6 +6,7 @@ use rustls::{
 };
 use umbra_fingerprint::FingerprintProfile;
 use umbra_proto::addr::TargetAddr;
+use umbra_tls::parse::parse_client_hello;
 
 use crate::TransportError;
 
@@ -168,6 +169,34 @@ pub fn recover_quic_auth_token(
     out[..8].copy_from_slice(&surface.scid[..8]);
     out[8..].copy_from_slice(grease_value);
     Ok(out)
+}
+
+/// Recover a REALITY-over-QUIC auth token from a protected QUIC Initial packet.
+pub fn recover_quic_auth_token_from_initial(
+    datagram: &[u8],
+    fp: &QuicFingerprint,
+) -> Result<[u8; 32], TransportError> {
+    let header = parse_quic_initial_header(datagram)?;
+    let crypto = decrypt_quic_initial_crypto(datagram)?;
+    let parsed = parse_client_hello(&crypto)?;
+    if !parsed.session_id.is_empty() {
+        return Err(TransportError::InvalidQuicSurface(
+            "QUIC ClientHello legacy_session_id must be empty",
+        ));
+    }
+    let surface = QuicClientHelloSurface {
+        alpn: fp.alpn.clone(),
+        scid: header.scid,
+        transport_parameters: parsed
+            .quic_transport_parameters
+            .into_iter()
+            .map(|param| QuicTransportParameter {
+                id: param.id,
+                value: param.value,
+            })
+            .collect(),
+    };
+    recover_quic_auth_token(&surface, fp)
 }
 
 /// Parse the invariant header of a QUIC Initial packet.
@@ -498,6 +527,12 @@ fn take<'a>(input: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8],
 #[cfg(test)]
 mod tests {
     use super::*;
+    use umbra_crypto::x25519;
+    use umbra_fingerprint::load_profile;
+    use umbra_tls::clienthello::{
+        build_client_hello, ClientHelloParams, ClientQuicTransportParameter, MlkemShare,
+        EXT_QUIC_TRANSPORT_PARAMETERS,
+    };
 
     #[test]
     fn scenario_quic_initial_crypto_decrypts_contiguous_crypto_frame() {
@@ -518,11 +553,70 @@ mod tests {
         assert!(decrypt_quic_initial_crypto(&datagram).is_err());
     }
 
+    #[test]
+    fn scenario_quic_initial_recovers_auth_token_from_clienthello_carrier() {
+        let token = [0x7b_u8; 32];
+        let (crypto, fp) = quic_client_hello_crypto_for_test(Vec::new(), token);
+        let datagram = seal_client_initial_crypto_for_test(&crypto, &[]);
+
+        assert_eq!(
+            recover_quic_auth_token_from_initial(&datagram, &fp).expect("QUIC auth token recovers"),
+            token
+        );
+    }
+
+    #[test]
+    fn scenario_quic_initial_rejects_non_empty_legacy_session_id() {
+        let token = [0x7b_u8; 32];
+        let (crypto, fp) = quic_client_hello_crypto_for_test(vec![0xaa; 32], token);
+        let datagram = seal_client_initial_crypto_for_test(&crypto, &[]);
+
+        assert!(recover_quic_auth_token_from_initial(&datagram, &fp).is_err());
+    }
+
+    fn quic_client_hello_crypto_for_test(
+        session_id: Vec<u8>,
+        token: [u8; 32],
+    ) -> (Vec<u8>, QuicFingerprint) {
+        let mut profile = load_profile("chrome-latest").expect("profile loads");
+        profile.alpn = vec!["h3".to_owned()];
+        if !profile
+            .extension_order
+            .contains(&EXT_QUIC_TRANSPORT_PARAMETERS)
+        {
+            let insert_at = profile
+                .extension_order
+                .iter()
+                .position(|ext| *ext == 0x0015)
+                .unwrap_or(profile.extension_order.len());
+            profile
+                .extension_order
+                .insert(insert_at, EXT_QUIC_TRANSPORT_PARAMETERS);
+        }
+        let fp = quic_fingerprint_from_profile(&profile);
+        let keypair = x25519::generate_keypair();
+        let record = build_client_hello(&ClientHelloParams {
+            sni: "server.example".to_owned(),
+            session_id,
+            x25519_priv: *keypair.private.expose_secret(),
+            x25519_pub: *keypair.public.as_bytes(),
+            mlkem: MlkemShare::x25519_mlkem768(vec![0x42; 32]),
+            profile,
+            random: [0x33; 32],
+            quic_transport_parameters: vec![ClientQuicTransportParameter {
+                id: fp.grease_parameter,
+                value: token.to_vec(),
+            }],
+        })
+        .expect("ClientHello builds");
+        (record[5..].to_vec(), fp)
+    }
+
     fn seal_client_initial_crypto_for_test(crypto: &[u8], token: &[u8]) -> Vec<u8> {
         let mut frame = Vec::new();
         frame.push(QUIC_FRAME_CRYPTO);
-        frame.push(0);
-        frame.push(u8::try_from(crypto.len()).expect("test crypto length fits varint"));
+        write_varint_for_test(0, &mut frame);
+        write_varint_for_test(crypto.len(), &mut frame);
         frame.extend_from_slice(crypto);
         seal_client_initial_plaintext_for_test(&frame, token)
     }
@@ -542,10 +636,10 @@ mod tests {
         header.extend_from_slice(&dcid);
         header.push(u8::try_from(scid.len()).expect("scid len"));
         header.extend_from_slice(&scid);
-        header.push(u8::try_from(token.len()).expect("token len"));
+        write_varint_for_test(token.len(), &mut header);
         header.extend_from_slice(token);
         let payload_len = packet_number_len + plaintext.len() + keys.local.packet.tag_len();
-        header.push(u8::try_from(payload_len).expect("payload len fits varint"));
+        write_varint_for_test(payload_len, &mut header);
         let packet_number_offset = header.len();
         header.extend_from_slice(&[0, u8::try_from(packet_number).expect("packet number")]);
 
@@ -577,5 +671,16 @@ mod tests {
         let pn_start = packet_number_offset - 1;
         key.encrypt_in_place(&sample, &mut first[0], &mut rest[pn_start..pn_start + 4])
             .expect("header protection applies");
+    }
+
+    fn write_varint_for_test(value: usize, out: &mut Vec<u8>) {
+        if value < 64 {
+            out.push(u8::try_from(value).expect("varint 1"));
+        } else if value < 16_384 {
+            let encoded = u16::try_from(value | 0x4000).expect("varint 2");
+            out.extend_from_slice(&encoded.to_be_bytes());
+        } else {
+            panic!("test varint too large");
+        }
     }
 }

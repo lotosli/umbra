@@ -478,12 +478,13 @@ fn tls_client_hello_params(
 ) -> ClientHelloParams {
     ClientHelloParams {
         sni: cfg.server_name.clone(),
-        session_id,
+        session_id: session_id.to_vec(),
         x25519_priv: *keypair.private.expose_secret(),
         x25519_pub: *keypair.public.as_bytes(),
         mlkem: MlkemShare::x25519_mlkem768(mlkem_key_exchange),
         profile,
         random,
+        quic_transport_parameters: Vec::new(),
     }
 }
 

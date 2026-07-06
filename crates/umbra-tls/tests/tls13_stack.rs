@@ -25,7 +25,7 @@ use umbra_tls::{
 #[test]
 fn scenario_session_id_and_key_share_are_caller_controlled() {
     let params = client_hello_params();
-    let session_id = params.session_id;
+    let session_id = params.session_id.clone();
     let public_key = params.x25519_pub;
     let record = build_client_hello(&params).expect("ClientHello should build");
     let parsed = parse_client_hello(&record).expect("ClientHello should parse");
@@ -495,12 +495,13 @@ fn params_with_profile(profile: FingerprintProfile) -> ClientHelloParams {
     let x25519::Keypair { private, public } = keypair;
     ClientHelloParams {
         sni: "server.example".to_owned(),
-        session_id: [0xa5; 32],
+        session_id: vec![0xa5; 32],
         x25519_priv: private.into_inner(),
         x25519_pub: public.into_bytes(),
         mlkem: MlkemShare::x25519_mlkem768(vec![0x42; 32]),
         profile,
         random: [0x11; 32],
+        quic_transport_parameters: Vec::new(),
     }
 }
 

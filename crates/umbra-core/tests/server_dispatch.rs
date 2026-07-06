@@ -414,12 +414,13 @@ fn client_hello(
 ) -> Vec<u8> {
     build_client_hello(&ClientHelloParams {
         sni: "server.example".to_owned(),
-        session_id,
+        session_id: session_id.to_vec(),
         x25519_priv: *keypair.private.expose_secret(),
         x25519_pub: *keypair.public.as_bytes(),
         mlkem: MlkemShare::x25519_mlkem768(vec![0x42; 32]),
         profile: profile.clone(),
         random: [0xa5_u8; 32],
+        quic_transport_parameters: Vec::new(),
     })
     .expect("build ClientHello")
 }

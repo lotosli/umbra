@@ -61,12 +61,21 @@ impl MlkemShare {
     }
 }
 
+/// QUIC transport parameter value inserted into a ClientHello.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ClientQuicTransportParameter {
+    /// Transport parameter identifier.
+    pub id: u64,
+    /// Raw transport parameter value.
+    pub value: Vec<u8>,
+}
+
 /// Parameters for deterministic ClientHello construction.
 pub struct ClientHelloParams {
     /// Server name indication.
     pub sni: String,
-    /// Caller-controlled compatibility-mode session id.
-    pub session_id: [u8; 32],
+    /// Caller-controlled legacy session id. TCP REALITY uses 32 bytes; QUIC uses empty.
+    pub session_id: Vec<u8>,
     /// Caller-owned X25519 private key retained by REALITY.
     pub x25519_priv: [u8; 32],
     /// Classic X25519 public key placed in the key_share extension.
@@ -77,6 +86,8 @@ pub struct ClientHelloParams {
     pub profile: FingerprintProfile,
     /// Caller-provided ClientHello random.
     pub random: [u8; 32],
+    /// QUIC transport parameters with explicit values, keyed by identifier.
+    pub quic_transport_parameters: Vec<ClientQuicTransportParameter>,
 }
 
 impl core::fmt::Debug for ClientHelloParams {
@@ -89,6 +100,7 @@ impl core::fmt::Debug for ClientHelloParams {
             .field("mlkem", &self.mlkem)
             .field("profile", &self.profile.name)
             .field("random", &self.random)
+            .field("quic_transport_parameters", &"<redacted>")
             .finish()
     }
 }
@@ -98,7 +110,9 @@ pub fn build_client_hello(params: &ClientHelloParams) -> Result<Vec<u8>, TlsErro
     let mut body_prefix = Vec::new();
     body_prefix.extend_from_slice(&LEGACY_VERSION.to_be_bytes());
     body_prefix.extend_from_slice(&params.random);
-    body_prefix.push(32);
+    let session_id_len =
+        u8::try_from(params.session_id.len()).map_err(|_| TlsError::LengthOutOfRange)?;
+    body_prefix.push(session_id_len);
     body_prefix.extend_from_slice(&params.session_id);
 
     let mut ciphers = Vec::new();
@@ -275,7 +289,32 @@ fn quic_transport_parameters(params: &ClientHelloParams) -> Result<Vec<u8>, TlsE
     let mut out = Vec::new();
     for parameter in &params.profile.quic.transport_parameters {
         write_quic_varint(*parameter, &mut out)?;
-        write_quic_varint(0, &mut out)?;
+        let value = params
+            .quic_transport_parameters
+            .iter()
+            .find(|configured| configured.id == *parameter)
+            .map_or(&[][..], |configured| configured.value.as_slice());
+        write_quic_varint(
+            u64::try_from(value.len()).map_err(|_| TlsError::LengthOutOfRange)?,
+            &mut out,
+        )?;
+        out.extend_from_slice(value);
+    }
+    for configured in &params.quic_transport_parameters {
+        if params
+            .profile
+            .quic
+            .transport_parameters
+            .contains(&configured.id)
+        {
+            continue;
+        }
+        write_quic_varint(configured.id, &mut out)?;
+        write_quic_varint(
+            u64::try_from(configured.value.len()).map_err(|_| TlsError::LengthOutOfRange)?,
+            &mut out,
+        )?;
+        out.extend_from_slice(&configured.value);
     }
     Ok(out)
 }

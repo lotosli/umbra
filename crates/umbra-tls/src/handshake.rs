@@ -54,6 +54,8 @@ pub struct DriveOut {
     pub outbound: Vec<u8>,
     /// True when application-data record layers are ready.
     pub complete: bool,
+    /// Peer classification observed by client handshakes.
+    pub peer_kind: Option<PeerKind>,
 }
 
 /// Minimal TLS 1.3 client.
@@ -172,10 +174,8 @@ impl Tls13Client {
             &flight.certificate_verify_signature,
             &flight.transcript_before_certificate_verify,
         )?;
-        if matches!(
-            verify.verify(&flight.certificate, &flight.certificate_chain),
-            PeerKind::Invalid
-        ) {
+        let peer_kind = verify.verify(&flight.certificate, &flight.certificate_chain);
+        if matches!(peer_kind, PeerKind::Invalid) {
             return Err(TlsError::PeerRejected);
         }
 
@@ -234,6 +234,7 @@ impl Tls13Client {
         Ok(DriveOut {
             outbound,
             complete: true,
+            peer_kind: Some(peer_kind),
         })
     }
 

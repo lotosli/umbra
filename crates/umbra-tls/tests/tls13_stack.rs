@@ -329,7 +329,9 @@ fn scenario_client_handshake_completes_against_test_server() {
         .expect("server should complete");
 
     assert!(client_out.complete);
+    assert_eq!(client_out.peer_kind, Some(PeerKind::UmbraTrusted));
     assert!(server_out.complete);
+    assert_eq!(server_out.peer_kind, None);
     assert!(server_out.outbound.is_empty());
 
     let request = client.app_seal(b"GET / HTTP/1.1").expect("app seal");
@@ -360,6 +362,22 @@ fn scenario_client_handshake_completes_against_test_server() {
             .expect_err("second server drive must fail"),
         TlsError::InvalidInput("server handshake already complete")
     );
+}
+
+#[test]
+fn scenario_realsite_peer_kind_is_returned_to_runtime() {
+    let params = client_hello_params();
+    let profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
+    let (mut client, chello) = Tls13Client::start(params).expect("client should start");
+    let (_server, server_flight) =
+        Tls13Server::accept(&chello, forged_cert(), &profile).expect("server should accept");
+
+    let out = client
+        .drive(&server_flight, &RealSiteVerifier)
+        .expect("RealSite certificate still completes TLS");
+
+    assert!(out.complete);
+    assert_eq!(out.peer_kind, Some(PeerKind::RealSite));
 }
 
 #[test]
@@ -456,6 +474,14 @@ struct RejectAll;
 impl CertVerify for RejectAll {
     fn verify(&self, _leaf_der: &[u8], _chain: &[Vec<u8>]) -> PeerKind {
         PeerKind::Invalid
+    }
+}
+
+struct RealSiteVerifier;
+
+impl CertVerify for RealSiteVerifier {
+    fn verify(&self, _leaf_der: &[u8], _chain: &[Vec<u8>]) -> PeerKind {
+        PeerKind::RealSite
     }
 }
 

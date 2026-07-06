@@ -434,7 +434,19 @@ async fn open_tcp_outer(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream, Core
     let out = tls_client.drive(&server_flight, &verifier)?;
     stream.write_all(&out.outbound).await?;
     stream.flush().await?;
-    Ok(spawn_tls_app_io(stream, TlsAppEndpoint::Client(tls_client)))
+    match out.peer_kind {
+        Some(TlsPeerKind::UmbraTrusted) => {
+            Ok(spawn_tls_app_io(stream, TlsAppEndpoint::Client(tls_client)))
+        }
+        Some(TlsPeerKind::RealSite) => {
+            let tls_io = spawn_tls_app_io(stream, TlsAppEndpoint::Client(tls_client));
+            run_realsite_spider(tls_io, &cfg.spider_path).await?;
+            Err(CoreError::InvalidConfig("peer is real site"))
+        }
+        Some(TlsPeerKind::Invalid) | None => Err(CoreError::InvalidConfig(
+            "peer certificate was not Umbra trusted",
+        )),
+    }
 }
 
 fn tcp_hello_config(

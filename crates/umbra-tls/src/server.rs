@@ -243,6 +243,7 @@ impl Tls13Server {
         Ok(DriveOut {
             outbound: Vec::new(),
             complete: true,
+            peer_kind: None,
         })
     }
 

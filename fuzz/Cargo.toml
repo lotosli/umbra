@@ -13,10 +13,12 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 umbra-crypto = { path = "../crates/umbra-crypto" }
+umbra-fingerprint = { path = "../crates/umbra-fingerprint" }
+umbra-inner = { path = "../crates/umbra-inner" }
+umbra-proto = { path = "../crates/umbra-proto" }
 umbra-tls = { path = "../crates/umbra-tls" }
+umbra-transport = { path = "../crates/umbra-transport" }
 umbra-reality = { path = "../crates/umbra-reality" }
-# 实现对应能力后取消注释以接入被测函数：
-# umbra-inner = { path = "../crates/umbra-inner" }
 
 [[bin]]
 name = "aead_open"
@@ -42,6 +44,20 @@ bench = false
 [[bin]]
 name = "mux_frame"
 path = "fuzz_targets/mux_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "target_addr"
+path = "fuzz_targets/target_addr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quic_auth_carrier"
+path = "fuzz_targets/quic_auth_carrier.rs"
 test = false
 doc = false
 bench = false

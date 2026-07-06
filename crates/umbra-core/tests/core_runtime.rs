@@ -24,7 +24,7 @@ use umbra_core::{
     relay::relay_bidirectional,
     runtime::{
         client_session_with_outer, open_outer_from_config, run_realsite_spider, ClientConnectPlan,
-        ClientInnerMode, ClientRuntime, ServerRuntime,
+        ClientInnerMode, ClientRuntime, QuicRuntimeOutcome, ServerRuntime,
     },
     socks::{accept_connect, negotiate_no_auth},
     CoreError,
@@ -697,6 +697,84 @@ async fn scenario_server_runtime_accepts_and_dispatches_fallback() {
         accepted.outcome,
         umbra_core::dispatch::DispatchOutcome::Forwarded { .. }
     ));
+}
+
+#[tokio::test]
+async fn scenario_server_runtime_quic_fallback_relays_datagram_flow() {
+    let dest = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind dest UDP");
+    let cfg = ServerCfg::from_toml_str_with_overrides(
+        &server_toml(),
+        ServerConfigOverrides {
+            dest: Some(dest.local_addr().expect("dest addr").to_string()),
+            ..ServerConfigOverrides::default()
+        },
+    )
+    .expect("server config loads");
+    let runtime = ServerRuntime::bind_with_profile(
+        cfg,
+        sample_dest_profile(),
+        ProbeResistancePolicy::default(),
+    )
+    .await
+    .expect("runtime binds");
+    let quic_addr = runtime
+        .udp_local_addr()
+        .expect("udp addr")
+        .expect("udp configured");
+    let accept_task = tokio::spawn(async move {
+        runtime
+            .accept_one_quic_with_idle_timeout(Duration::from_millis(25))
+            .await
+    });
+
+    let client = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind client UDP");
+    client.connect(quic_addr).await.expect("connect client UDP");
+    client.send(b"bad initial").await.expect("send bad initial");
+
+    let mut dest_buf = [0_u8; 64];
+    let (read, upstream_peer) = dest.recv_from(&mut dest_buf).await.expect("dest receives");
+    assert_eq!(&dest_buf[..read], b"bad initial");
+
+    client.send(b"second").await.expect("send second datagram");
+    let (read, second_peer) = dest
+        .recv_from(&mut dest_buf)
+        .await
+        .expect("dest receives second");
+    assert_eq!(second_peer, upstream_peer);
+    assert_eq!(&dest_buf[..read], b"second");
+
+    dest.send_to(b"reply", upstream_peer)
+        .await
+        .expect("dest replies");
+    let mut client_buf = [0_u8; 64];
+    let read = client
+        .recv(&mut client_buf)
+        .await
+        .expect("client receives reply");
+    assert_eq!(&client_buf[..read], b"reply");
+
+    let accepted = timeout(Duration::from_secs(1), accept_task)
+        .await
+        .expect("QUIC accept completes")
+        .expect("accept task")
+        .expect("QUIC fallback succeeds");
+    assert_eq!(
+        accepted.peer.ip(),
+        client.local_addr().expect("client addr").ip()
+    );
+    assert_eq!(
+        accepted.outcome,
+        QuicRuntimeOutcome::Forwarded {
+            reason: FallbackReason::MalformedClientHello,
+            client_to_dest: u64::try_from(b"bad initial".len() + b"second".len())
+                .expect("length fits"),
+            dest_to_client: u64::try_from(b"reply".len()).expect("length fits"),
+        }
+    );
 }
 
 #[tokio::test]

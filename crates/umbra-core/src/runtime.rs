@@ -3,7 +3,8 @@
 use std::{
     future::Future,
     net::SocketAddr,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use rand::{rngs::OsRng, RngCore};
@@ -38,8 +39,9 @@ use umbra_transport::{
 use crate::{
     config::{ClientCfg, ServerCfg as RuntimeServerCfg, TransportKind},
     dispatch::{
-        classify_client_hello, read_client_hello_raw, write_fallback_prefix, DispatchContext,
-        DispatchDecision, DispatchOutcome, HelloReadLimits,
+        classify_client_hello, classify_quic_initial, read_client_hello_raw, write_fallback_prefix,
+        DispatchContext, DispatchDecision, DispatchOutcome, FallbackReason, HelloReadLimits,
+        QuicDispatchDecision,
     },
     probe::ProbeResistancePolicy,
     socks::{
@@ -51,11 +53,12 @@ use crate::{
 };
 
 const DEFAULT_REPLAY_CAPACITY: usize = 65_536;
+const DEFAULT_QUIC_FALLBACK_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Bound server runtime with listeners, replay cache, and active destination profile.
 pub struct ServerRuntime {
     tcp_listener: TcpListener,
-    udp_socket: Option<UdpSocket>,
+    udp_socket: Option<Arc<UdpSocket>>,
     dispatch_cfg: crate::dispatch::ServerCfg,
     profile: DestProfile,
     replay: ReplayCache,
@@ -89,7 +92,7 @@ impl ServerRuntime {
 
         let tcp_listener = TcpListener::bind(listen).await?;
         let udp_socket = match udp_listen {
-            Some(addr) => Some(UdpSocket::bind(addr).await?),
+            Some(addr) => Some(Arc::new(UdpSocket::bind(addr).await?)),
             None => None,
         };
         let replay = ReplayCache::new(DEFAULT_REPLAY_CAPACITY, max_time_diff.as_secs())?;
@@ -129,7 +132,7 @@ impl ServerRuntime {
     pub fn udp_local_addr(&self) -> Result<Option<SocketAddr>, CoreError> {
         self.udp_socket
             .as_ref()
-            .map(UdpSocket::local_addr)
+            .map(|socket| socket.local_addr())
             .transpose()
             .map_err(CoreError::from)
     }
@@ -187,6 +190,35 @@ impl ServerRuntime {
         Ok(AcceptedServerSession { peer, outcome })
     }
 
+    /// Accept one UDP datagram and dispatch it as a QUIC Initial.
+    pub async fn accept_one_quic_with_idle_timeout(
+        &self,
+        idle_timeout: Duration,
+    ) -> Result<AcceptedQuicSession, CoreError> {
+        let socket = self
+            .udp_socket
+            .as_ref()
+            .ok_or(CoreError::InvalidConfig("UDP listener is not configured"))?;
+        let mut buf = vec![0_u8; 65_535];
+        let (read, peer) = socket.recv_from(&mut buf).await?;
+        let datagram = buf[..read].to_vec();
+        let outcome = dispatch_quic_runtime(
+            datagram,
+            QuicRuntimeDispatch {
+                client_socket: socket,
+                client_peer: peer,
+                cfg: &self.dispatch_cfg,
+                profile: &self.profile,
+                replay: &self.replay,
+                now_unix: current_unix_time()?,
+                timing: self.probe_policy.timing,
+                idle_timeout,
+            },
+        )
+        .await?;
+        Ok(AcceptedQuicSession { peer, outcome })
+    }
+
     /// Accept and dispatch TCP sessions until shutdown resolves.
     pub async fn run_until_shutdown<S>(&self, shutdown: S) -> Result<(), CoreError>
     where
@@ -197,6 +229,9 @@ impl ServerRuntime {
             tokio::select! {
                 () = &mut shutdown => return Ok(()),
                 accepted = self.accept_one_with_connector(TcpStream::connect) => {
+                    accepted?;
+                }
+                accepted = self.accept_one_quic_with_idle_timeout(DEFAULT_QUIC_FALLBACK_IDLE_TIMEOUT), if self.udp_socket.is_some() => {
                     accepted?;
                 }
             }
@@ -211,6 +246,36 @@ pub struct AcceptedServerSession {
     pub peer: SocketAddr,
     /// Dispatch result.
     pub outcome: DispatchOutcome,
+}
+
+/// One accepted server-side QUIC result.
+#[derive(Debug)]
+pub struct AcceptedQuicSession {
+    /// UDP peer address.
+    pub peer: SocketAddr,
+    /// QUIC dispatch result.
+    pub outcome: QuicRuntimeOutcome,
+}
+
+/// Observable result of server-side QUIC dispatch.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum QuicRuntimeOutcome {
+    /// The local Umbra QUIC path accepted the Initial.
+    Authenticated {
+        /// Accepted SNI.
+        sni: String,
+        /// Recovered raw ClientHello length.
+        client_hello_len: usize,
+    },
+    /// The datagram flow was relayed to the configured destination QUIC service.
+    Forwarded {
+        /// Why the local path was rejected.
+        reason: FallbackReason,
+        /// Bytes forwarded from client to destination.
+        client_to_dest: u64,
+        /// Bytes forwarded from destination to client.
+        dest_to_client: u64,
+    },
 }
 
 /// Client-side runtime bound to a SOCKS5 listener.
@@ -580,6 +645,101 @@ where
                 client_to_dest,
                 dest_to_client,
             })
+        }
+    }
+}
+
+struct QuicRuntimeDispatch<'a> {
+    client_socket: &'a UdpSocket,
+    client_peer: SocketAddr,
+    cfg: &'a crate::dispatch::ServerCfg,
+    profile: &'a DestProfile,
+    replay: &'a ReplayCache,
+    now_unix: u64,
+    timing: crate::probe::TimingAlignment,
+    idle_timeout: Duration,
+}
+
+async fn dispatch_quic_runtime(
+    datagram: Vec<u8>,
+    ctx: QuicRuntimeDispatch<'_>,
+) -> Result<QuicRuntimeOutcome, CoreError> {
+    let started_at = tokio::time::Instant::now();
+    match classify_quic_initial(
+        datagram,
+        DispatchContext {
+            cfg: ctx.cfg,
+            profile: ctx.profile,
+            replay: ctx.replay,
+            now_unix: ctx.now_unix,
+        },
+    )? {
+        QuicDispatchDecision::Authenticated(authenticated) => {
+            ctx.timing.wait_started_at(started_at, ctx.profile).await;
+            Ok(QuicRuntimeOutcome::Authenticated {
+                sni: authenticated.sni,
+                client_hello_len: authenticated.client_hello.len(),
+            })
+        }
+        QuicDispatchDecision::Fallback { reason, datagram } => {
+            let (client_to_dest, dest_to_client) = relay_quic_fallback_until_idle(
+                ctx.client_socket,
+                ctx.client_peer,
+                datagram,
+                &ctx.cfg.dest,
+                ctx.idle_timeout,
+            )
+            .await?;
+            Ok(QuicRuntimeOutcome::Forwarded {
+                reason,
+                client_to_dest,
+                dest_to_client,
+            })
+        }
+    }
+}
+
+async fn relay_quic_fallback_until_idle(
+    client_socket: &UdpSocket,
+    client_peer: SocketAddr,
+    initial_datagram: Vec<u8>,
+    dest: &str,
+    idle_timeout: Duration,
+) -> Result<(u64, u64), CoreError> {
+    let upstream = UdpSocket::bind("0.0.0.0:0").await?;
+    upstream.connect(dest).await?;
+    upstream.send(&initial_datagram).await?;
+    let mut client_to_dest = u64::try_from(initial_datagram.len())
+        .map_err(|_| CoreError::InvalidConfig("QUIC datagram length is too large"))?;
+    let mut dest_to_client = 0_u64;
+    let mut client_buf = vec![0_u8; 65_535];
+    let mut upstream_buf = vec![0_u8; 65_535];
+
+    loop {
+        let idle = tokio::time::sleep(idle_timeout);
+        tokio::pin!(idle);
+        tokio::select! {
+            () = &mut idle => return Ok((client_to_dest, dest_to_client)),
+            received = client_socket.recv_from(&mut client_buf) => {
+                let (read, peer) = received?;
+                if peer == client_peer {
+                    upstream.send(&client_buf[..read]).await?;
+                    client_to_dest = client_to_dest
+                        .checked_add(u64::try_from(read).map_err(|_| {
+                            CoreError::InvalidConfig("QUIC datagram length is too large")
+                        })?)
+                        .ok_or(CoreError::InvalidConfig("QUIC byte count overflows"))?;
+                }
+            }
+            received = upstream.recv(&mut upstream_buf) => {
+                let read = received?;
+                client_socket.send_to(&upstream_buf[..read], client_peer).await?;
+                dest_to_client = dest_to_client
+                    .checked_add(u64::try_from(read).map_err(|_| {
+                        CoreError::InvalidConfig("QUIC datagram length is too large")
+                    })?)
+                    .ok_or(CoreError::InvalidConfig("QUIC byte count overflows"))?;
+            }
         }
     }
 }

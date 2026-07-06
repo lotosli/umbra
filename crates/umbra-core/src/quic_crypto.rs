@@ -857,3 +857,144 @@ fn unreachable_keys() -> quinn_proto::crypto::Keys {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quinn_proto::crypto::Session as _;
+    use umbra_tls::clienthello::TLS_AES_128_GCM_SHA256;
+
+    #[test]
+    fn scenario_quic_profile_validates_alpn_and_cid() {
+        let profile = load_profile("chrome-latest").expect("profile loads");
+        let (_, grease, cid_len) = quic_profile(profile.clone()).expect("valid QUIC profile");
+        assert_eq!(grease, profile.quic.grease_parameter);
+        assert_eq!(cid_len, profile.quic.scid_len);
+
+        let mut bad_alpn = profile.clone();
+        bad_alpn.quic.alpn = "h2".to_owned();
+        assert!(quic_profile(bad_alpn).is_err());
+
+        let mut bad_cid = profile.clone();
+        bad_cid.quic.scid_len = 7;
+        assert!(quic_profile(bad_cid).is_err());
+
+        let mut missing_extension = profile;
+        missing_extension
+            .extension_order
+            .retain(|ext| *ext != EXT_QUIC_TRANSPORT_PARAMETERS);
+        let (patched, _, _) = quic_profile(missing_extension).expect("extension inserted");
+        assert!(patched
+            .extension_order
+            .contains(&EXT_QUIC_TRANSPORT_PARAMETERS));
+    }
+
+    #[test]
+    fn scenario_quic_transport_parameter_codec_filters_tls_grease() {
+        let mut raw = Vec::new();
+        write_quic_varint(0x0a0a, &mut raw).expect("write grease id");
+        write_quic_varint(1, &mut raw).expect("write grease len");
+        raw.push(0xaa);
+        write_quic_varint(0x1f, &mut raw).expect("write normal id");
+        write_quic_varint(2, &mut raw).expect("write normal len");
+        raw.extend_from_slice(&[0xbb, 0xcc]);
+
+        let parsed = parse_transport_parameters(&raw).expect("parse params");
+        assert_eq!(parsed.len(), 2);
+        assert!(is_tls_grease_u64(parsed[0].id));
+
+        let filtered = filter_tls_grease_transport_parameters(&raw).expect("filter grease");
+        let parsed_filtered = parse_transport_parameters(&filtered).expect("parse filtered");
+        assert_eq!(parsed_filtered.len(), 1);
+        assert_eq!(parsed_filtered[0].id, 0x1f);
+        assert_eq!(parsed_filtered[0].value, vec![0xbb, 0xcc]);
+
+        assert!(write_quic_varint(4_611_686_018_427_387_904, &mut Vec::new()).is_err());
+        let mut empty_offset = 0;
+        assert!(read_quic_varint(&[], &mut empty_offset).is_err());
+        let mut truncated_offset = 0;
+        assert!(read_quic_varint(&[0x40], &mut truncated_offset).is_err());
+    }
+
+    #[test]
+    fn scenario_quic_handshake_extractors_handle_partial_and_finished() {
+        let mut first = b"\x01\x00\x00\x03abc\x14\x00\x00\x00".to_vec();
+        assert_eq!(
+            take_first_handshake_message(&mut first).expect("first message"),
+            Some(b"\x01\x00\x00\x03abc".to_vec())
+        );
+        assert_eq!(first, b"\x14\x00\x00\x00");
+
+        assert_eq!(
+            first_handshake_len(b"\x01\x00\x00").expect("partial len"),
+            None
+        );
+        assert!(read_u24(&[0, 1]).is_err());
+
+        assert_eq!(
+            complete_finished_flight_len(b"\x08\x00\x00\x01x\x14\x00\x00\x00")
+                .expect("finished flight"),
+            Some(9)
+        );
+        assert_eq!(
+            complete_finished_flight_len(b"\x08\x00\x00\x03x").expect("partial flight"),
+            None
+        );
+    }
+
+    #[test]
+    fn scenario_quic_session_trait_defaults_are_fail_closed() {
+        let mut session = test_session(SessionState::Connected);
+
+        assert!(session.handshake_data().is_none());
+        session.handshake_data_ready = true;
+        assert!(session.handshake_data().is_some());
+        assert!(session.peer_identity().is_none());
+        assert!(session.early_crypto().is_none());
+        assert_eq!(session.early_data_accepted(), None);
+        assert!(!session.is_handshaking());
+        assert!(session.next_1rtt_keys().is_none());
+        assert!(session
+            .export_keying_material(&mut [0_u8; 8], b"label", b"context")
+            .is_err());
+
+        let mut out = Vec::new();
+        assert!(session.write_handshake(&mut out).is_none());
+        session.outgoing.push_back(b"hello".to_vec());
+        session
+            .pending_keys
+            .push_back(PendingKeys::Handshake(test_traffic_secrets()));
+        assert!(session.write_handshake(&mut out).is_some());
+        assert_eq!(out, b"hello");
+    }
+
+    #[test]
+    fn scenario_quic_session_failed_state_rejects_handshake_bytes() {
+        let mut failed = test_session(SessionState::Failed);
+
+        assert!(failed.read_handshake(b"\x01\x00\x00\x00").is_err());
+    }
+
+    fn test_session(state: SessionState) -> UmbraQuicSession {
+        UmbraQuicSession {
+            side: quinn_proto::Side::Server,
+            server_name: Some("server.example".to_owned()),
+            state,
+            inbound: Vec::new(),
+            outgoing: VecDeque::new(),
+            pending_keys: VecDeque::new(),
+            next_1rtt: None,
+            peer_transport_parameters: None,
+            handshake_data_ready: false,
+            handshake_data_reported: false,
+        }
+    }
+
+    fn test_traffic_secrets() -> QuicTrafficSecrets {
+        QuicTrafficSecrets {
+            cipher_suite: TLS_AES_128_GCM_SHA256,
+            client: [1_u8; TRAFFIC_SECRET_LEN],
+            server: [2_u8; TRAFFIC_SECRET_LEN],
+        }
+    }
+}

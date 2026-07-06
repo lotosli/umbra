@@ -1693,4 +1693,67 @@ mod tests {
             [0x17, 0x03, 0x03, 0x00, 0x01, 0x42]
         );
     }
+
+    #[test]
+    fn scenario_quic_crypto_prefetch_assembles_split_and_overlap() {
+        let full = b"\x01\x00\x00\x05hello".to_vec();
+        let mut frames = BTreeMap::new();
+
+        insert_quic_crypto_frame(&mut frames, quic_frame(0, &full[..6])).expect("first chunk");
+        insert_quic_crypto_frame(&mut frames, quic_frame(6, &full[6..])).expect("second chunk");
+        insert_quic_crypto_frame(&mut frames, quic_frame(0, &full[..6])).expect("retransmit");
+
+        assert_eq!(
+            complete_prefetched_quic_client_hello(&frames)
+                .expect("complete")
+                .expect("client hello"),
+            full
+        );
+
+        let mut overlapping = BTreeMap::new();
+        insert_quic_crypto_frame(&mut overlapping, quic_frame(0, &full[..6]))
+            .expect("first overlap chunk");
+        insert_quic_crypto_frame(&mut overlapping, quic_frame(4, &full[4..]))
+            .expect("second overlap chunk");
+        assert_eq!(
+            contiguous_quic_crypto_prefix(&overlapping).expect("overlap assembles"),
+            full
+        );
+    }
+
+    #[test]
+    fn scenario_quic_crypto_prefetch_rejects_bad_fragments() {
+        let mut frames = BTreeMap::new();
+        insert_quic_crypto_frame(&mut frames, quic_frame(0, b"\x01\x00\x00\x01a"))
+            .expect("insert first");
+        assert!(
+            insert_quic_crypto_frame(&mut frames, quic_frame(0, b"\x01\x00\x00\x01b")).is_err()
+        );
+
+        let mut changed_overlap = BTreeMap::new();
+        insert_quic_crypto_frame(&mut changed_overlap, quic_frame(0, b"\x01\x00\x00\x02ab"))
+            .expect("insert base");
+        insert_quic_crypto_frame(&mut changed_overlap, quic_frame(4, b"xb"))
+            .expect("insert overlap");
+        assert!(contiguous_quic_crypto_prefix(&changed_overlap).is_err());
+
+        let mut not_hello = BTreeMap::new();
+        insert_quic_crypto_frame(&mut not_hello, quic_frame(0, b"\x02\x00\x00\x00"))
+            .expect("insert not hello");
+        assert!(complete_prefetched_quic_client_hello(&not_hello).is_err());
+
+        assert!(insert_quic_crypto_frame(
+            &mut BTreeMap::new(),
+            quic_frame(QUIC_PREFETCH_MAX_CRYPTO_BYTES, b"x"),
+        )
+        .is_err());
+        assert!(read_quic_u24(&[0, 1]).is_err());
+    }
+
+    fn quic_frame(offset: usize, bytes: &[u8]) -> QuicCryptoFrame {
+        QuicCryptoFrame {
+            offset,
+            bytes: bytes.to_vec(),
+        }
+    }
 }

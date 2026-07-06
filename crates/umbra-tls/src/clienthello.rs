@@ -360,12 +360,15 @@ fn supported_versions(profile: &FingerprintProfile) -> Result<Vec<u8>, TlsError>
 fn quic_transport_parameters(params: &ClientHelloParams) -> Result<Vec<u8>, TlsError> {
     let mut out = Vec::new();
     for parameter in &params.profile.quic.transport_parameters {
-        write_quic_varint(*parameter, &mut out)?;
-        let value = params
+        let Some(configured) = params
             .quic_transport_parameters
             .iter()
             .find(|configured| configured.id == *parameter)
-            .map_or(&[][..], |configured| configured.value.as_slice());
+        else {
+            continue;
+        };
+        write_quic_varint(*parameter, &mut out)?;
+        let value = configured.value.as_slice();
         write_quic_varint(
             u64::try_from(value.len()).map_err(|_| TlsError::LengthOutOfRange)?,
             &mut out,

@@ -10,8 +10,8 @@ use subtle::ConstantTimeEq;
 use umbra_crypto::{secret::Secret, x25519};
 
 use crate::{
-    clienthello::build_client_hello_handshake,
     clienthello::ClientHelloParams,
+    clienthello::{build_client_hello_handshake, EXT_QUIC_TRANSPORT_PARAMETERS},
     handshake::{
         build_server_hello, certificate_message, certificate_verify_message,
         encrypted_extensions_message, handshake_message, parse_server_flight,
@@ -25,6 +25,7 @@ use crate::{
 };
 
 const HANDSHAKE_FINISHED: u8 = 0x14;
+const HANDSHAKE_ENCRYPTED_EXTENSIONS: u8 = 0x08;
 
 /// QUIC traffic secrets for one encryption level.
 pub struct QuicTrafficSecrets {
@@ -44,6 +45,8 @@ pub struct QuicClientFinished {
     pub application_secrets: QuicTrafficSecrets,
     /// Classification returned by the certificate verifier.
     pub peer_kind: PeerKind,
+    /// Raw QUIC transport parameters advertised by the server.
+    pub peer_transport_parameters: Vec<u8>,
 }
 
 /// QUIC-facing TLS 1.3 client state.
@@ -158,6 +161,9 @@ impl QuicTlsClient {
             finished,
             application_secrets: application_secrets(self.cipher_suite, &app_secrets),
             peer_kind,
+            peer_transport_parameters: encrypted_extensions_quic_transport_parameters(
+                &flight.encrypted_extensions,
+            )?,
         })
     }
 }
@@ -172,6 +178,8 @@ pub struct QuicServerAccepted {
     pub server_flight: Vec<u8>,
     /// Handshake traffic secrets to install as QUIC Handshake packet keys.
     pub handshake_secrets: QuicTrafficSecrets,
+    /// Raw QUIC transport parameters advertised by the client.
+    pub peer_transport_parameters: Vec<u8>,
 }
 
 /// QUIC-facing TLS 1.3 server state.
@@ -195,6 +203,16 @@ impl QuicTlsServer {
         client_hello_raw: &[u8],
         leaf: ForgedCert,
         profile: &DestProfile,
+    ) -> Result<QuicServerAccepted, TlsError> {
+        Self::accept_with_transport_parameters(client_hello_raw, leaf, profile, &[])
+    }
+
+    /// Accept raw QUIC ClientHello bytes and include raw QUIC transport parameters.
+    pub fn accept_with_transport_parameters(
+        client_hello_raw: &[u8],
+        leaf: ForgedCert,
+        profile: &DestProfile,
+        transport_parameters: &[u8],
     ) -> Result<QuicServerAccepted, TlsError> {
         let ForgedCert {
             leaf_der,
@@ -225,7 +243,11 @@ impl QuicTlsServer {
         handshake_transcript.extend_from_slice(&server_hello);
         let hs_secrets = derive_tls13_secrets(shared.expose_secret(), &handshake_transcript, &[])?;
 
-        let encrypted_extensions = encrypted_extensions_message()?;
+        let encrypted_extensions = if transport_parameters.is_empty() {
+            encrypted_extensions_message()?
+        } else {
+            encrypted_extensions_with_quic_transport_parameters(transport_parameters)?
+        };
         let certificate = certificate_message(&leaf_der, &chain_der)?;
         let mut transcript_before_certificate_verify = handshake_transcript.clone();
         transcript_before_certificate_verify.extend_from_slice(&encrypted_extensions);
@@ -265,6 +287,9 @@ impl QuicTlsServer {
             server_hello,
             server_flight,
             handshake_secrets: handshake_secrets(profile.cipher_suite, &hs_secrets),
+            peer_transport_parameters: encode_quic_transport_parameters(
+                &client_hello.quic_transport_parameters,
+            )?,
         })
     }
 
@@ -314,4 +339,113 @@ fn application_secrets(cipher_suite: u16, secrets: &Tls13Secrets) -> QuicTraffic
         client: secrets.client_application_traffic_secret,
         server: secrets.server_application_traffic_secret,
     }
+}
+
+fn encrypted_extensions_with_quic_transport_parameters(
+    transport_parameters: &[u8],
+) -> Result<Vec<u8>, TlsError> {
+    let mut extensions = Vec::new();
+    extensions.extend_from_slice(&EXT_QUIC_TRANSPORT_PARAMETERS.to_be_bytes());
+    push_u16_len(transport_parameters.len(), &mut extensions)?;
+    extensions.extend_from_slice(transport_parameters);
+
+    let mut body = Vec::new();
+    push_u16_len(extensions.len(), &mut body)?;
+    body.extend_from_slice(&extensions);
+    handshake_message(HANDSHAKE_ENCRYPTED_EXTENSIONS, &body)
+}
+
+fn encrypted_extensions_quic_transport_parameters(
+    encrypted_extensions: &[u8],
+) -> Result<Vec<u8>, TlsError> {
+    if encrypted_extensions.len() < 6 || encrypted_extensions[0] != HANDSHAKE_ENCRYPTED_EXTENSIONS {
+        return Err(TlsError::InvalidInput("not EncryptedExtensions"));
+    }
+    let declared = read_u24(&encrypted_extensions[1..4])?;
+    if encrypted_extensions.len() < 4 + declared {
+        return Err(TlsError::InvalidInput("truncated EncryptedExtensions"));
+    }
+    let body = &encrypted_extensions[4..4 + declared];
+    let mut offset = 0_usize;
+    let extensions_len = usize::from(read_u16_at(body, &mut offset)?);
+    let extensions_end = offset
+        .checked_add(extensions_len)
+        .ok_or(TlsError::InvalidInput(
+            "EncryptedExtensions length overflow",
+        ))?;
+    if extensions_end > body.len() {
+        return Err(TlsError::InvalidInput("EncryptedExtensions overflow"));
+    }
+    while offset < extensions_end {
+        let ext = read_u16_at(body, &mut offset)?;
+        let len = usize::from(read_u16_at(body, &mut offset)?);
+        let value = take(body, &mut offset, len)?;
+        if ext == EXT_QUIC_TRANSPORT_PARAMETERS {
+            return Ok(value.to_vec());
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn encode_quic_transport_parameters(
+    parameters: &[crate::parse::QuicTransportParameter],
+) -> Result<Vec<u8>, TlsError> {
+    let mut out = Vec::new();
+    for parameter in parameters {
+        write_quic_varint(parameter.id, &mut out)?;
+        write_quic_varint(
+            u64::try_from(parameter.value.len()).map_err(|_| TlsError::LengthOutOfRange)?,
+            &mut out,
+        )?;
+        out.extend_from_slice(&parameter.value);
+    }
+    Ok(out)
+}
+
+fn push_u16_len(len: usize, out: &mut Vec<u8>) -> Result<(), TlsError> {
+    let len = u16::try_from(len).map_err(|_| TlsError::LengthOutOfRange)?;
+    out.extend_from_slice(&len.to_be_bytes());
+    Ok(())
+}
+
+fn read_u16_at(input: &[u8], offset: &mut usize) -> Result<u16, TlsError> {
+    let bytes = take(input, offset, 2)?;
+    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
+}
+
+fn read_u24(input: &[u8]) -> Result<usize, TlsError> {
+    if input.len() != 3 {
+        return Err(TlsError::InvalidInput("bad uint24"));
+    }
+    Ok((usize::from(input[0]) << 16) | (usize::from(input[1]) << 8) | usize::from(input[2]))
+}
+
+fn take<'a>(input: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8], TlsError> {
+    let end = offset
+        .checked_add(len)
+        .ok_or(TlsError::InvalidInput("offset overflow"))?;
+    if end > input.len() {
+        return Err(TlsError::InvalidInput("unexpected end of input"));
+    }
+    let out = &input[*offset..end];
+    *offset = end;
+    Ok(out)
+}
+
+fn write_quic_varint(value: u64, out: &mut Vec<u8>) -> Result<(), TlsError> {
+    if value < 64 {
+        out.push(u8::try_from(value).map_err(|_| TlsError::LengthOutOfRange)?);
+    } else if value < 16_384 {
+        let encoded = 0x4000_u16 | u16::try_from(value).map_err(|_| TlsError::LengthOutOfRange)?;
+        out.extend_from_slice(&encoded.to_be_bytes());
+    } else if value < 1_073_741_824 {
+        let encoded =
+            0x8000_0000_u32 | u32::try_from(value).map_err(|_| TlsError::LengthOutOfRange)?;
+        out.extend_from_slice(&encoded.to_be_bytes());
+    } else if value < 4_611_686_018_427_387_904 {
+        out.extend_from_slice(&(0xc000_0000_0000_0000_u64 | value).to_be_bytes());
+    } else {
+        return Err(TlsError::LengthOutOfRange);
+    }
+    Ok(())
 }

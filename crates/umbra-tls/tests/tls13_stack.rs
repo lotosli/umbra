@@ -72,6 +72,16 @@ fn scenario_quic_carrier_and_large_varints_are_parsed() {
         1_073_741_823,
         1_073_741_824,
     ];
+    params.quic_transport_parameters = params
+        .profile
+        .quic
+        .transport_parameters
+        .iter()
+        .map(|id| ClientQuicTransportParameter {
+            id: *id,
+            value: Vec::new(),
+        })
+        .collect();
 
     let record = build_client_hello(&params).expect("ClientHello should build");
     let parsed = parse_client_hello(&record).expect("ClientHello should parse");
@@ -446,13 +456,28 @@ fn scenario_client_handshake_completes_against_test_server() {
 fn scenario_quic_tls_raw_handshake_derives_matching_secrets() {
     let mut params = client_hello_params();
     params.session_id = Vec::new();
+    params
+        .profile
+        .extension_order
+        .push(EXT_QUIC_TRANSPORT_PARAMETERS);
+    params.quic_transport_parameters = vec![ClientQuicTransportParameter {
+        id: 0x1f,
+        value: vec![0x01],
+    }];
     let profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
     let (mut client, chello) = QuicTlsClient::start(&params).expect("QUIC client should start");
 
     assert_eq!(chello[0], 0x01);
-    let mut accepted =
-        QuicTlsServer::accept(&chello, forged_cert(), &profile).expect("QUIC server accepts");
+    let server_transport_parameters = vec![0x04, 0x01, 0x40];
+    let mut accepted = QuicTlsServer::accept_with_transport_parameters(
+        &chello,
+        forged_cert(),
+        &profile,
+        &server_transport_parameters,
+    )
+    .expect("QUIC server accepts");
     assert_eq!(accepted.server_hello[0], 0x02);
+    assert_eq!(accepted.peer_transport_parameters, vec![0x1f, 0x01, 0x01]);
     let client_hs = client
         .read_server_hello(&accepted.server_hello)
         .expect("client reads ServerHello");
@@ -467,6 +492,10 @@ fn scenario_quic_tls_raw_handshake_derives_matching_secrets() {
         .read_server_flight(&accepted.server_flight, &AcceptAll)
         .expect("client reads server flight");
     assert_eq!(client_finished.peer_kind, PeerKind::UmbraTrusted);
+    assert_eq!(
+        client_finished.peer_transport_parameters,
+        server_transport_parameters
+    );
     assert_eq!(client_finished.finished[0], 0x14);
     let server_app = accepted
         .server

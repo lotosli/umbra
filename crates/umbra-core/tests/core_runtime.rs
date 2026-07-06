@@ -23,8 +23,9 @@ use umbra_core::{
     },
     relay::relay_bidirectional,
     runtime::{
-        client_session_with_outer, open_outer_from_config, run_realsite_spider, ClientConnectPlan,
-        ClientInnerMode, ClientRuntime, QuicRuntimeOutcome, ServerRuntime,
+        build_quic_client_initial, client_session_with_outer, open_outer_from_config,
+        run_realsite_spider, ClientConnectPlan, ClientInnerMode, ClientRuntime, QuicRuntimeOutcome,
+        ServerRuntime,
     },
     socks::{accept_connect, negotiate_no_auth},
     CoreError,
@@ -45,7 +46,7 @@ use umbra_tls::{
     },
     parse::parse_client_hello,
 };
-use umbra_transport::quic::build_quic_initial_crypto_packet;
+use umbra_transport::quic::{build_quic_initial_crypto_packet, parse_quic_initial_header};
 
 #[test]
 fn scenario_complete_server_config_loads() {
@@ -970,6 +971,58 @@ fn scenario_quic_initial_dispatch_authenticates_and_rejects_bad_auth() {
             datagram
         } if datagram == bad
     ));
+}
+
+#[test]
+fn scenario_quic_client_initial_from_config_authenticates_against_dispatch() {
+    let server_key = x25519::generate_keypair();
+    let server_public = server_key.public;
+    let cfg = ClientCfg::from_toml_str_with_overrides(
+        &client_toml(),
+        ClientConfigOverrides {
+            transport: Some("quic".to_owned()),
+            public_key: Some(b64_bytes(server_public.as_bytes())),
+            ..ClientConfigOverrides::default()
+        },
+    )
+    .expect("client config loads");
+    let initial = build_quic_client_initial(&cfg).expect("QUIC Initial builds from config");
+    let header = parse_quic_initial_header(&initial.datagram).expect("Initial header parses");
+    assert_eq!(header.dcid, initial.dcid);
+    assert_eq!(header.scid, initial.scid);
+    assert_eq!(header.scid.len(), 8);
+    assert!(initial.datagram.len() >= 1200);
+    let parsed = parse_client_hello(&initial.client_hello).expect("ClientHello parses");
+    assert_eq!(parsed.sni.as_deref(), Some("www.microsoft.com"));
+    assert!(parsed.session_id.is_empty());
+
+    let now = current_test_unix_time();
+    let dispatch_cfg = umbra_core::dispatch::ServerCfg {
+        private_key: server_key.private,
+        short_ids: vec![cfg.short_id.clone()],
+        server_names: vec![cfg.server_name.clone()],
+        dest: "www.microsoft.com:443".to_owned(),
+        max_time_diff: 120,
+        mldsa_seed: Secret::new([7_u8; 32]),
+        hello_limits: umbra_core::dispatch::HelloReadLimits::default(),
+    };
+    let replay = ReplayCache::new(64, 120).expect("replay cache");
+    let decision = classify_quic_initial(
+        initial.datagram,
+        DispatchContext {
+            cfg: &dispatch_cfg,
+            profile: &sample_dest_profile(),
+            replay: &replay,
+            now_unix: now,
+        },
+    )
+    .expect("QUIC Initial classifies");
+    let QuicDispatchDecision::Authenticated(authenticated) = decision else {
+        panic!("configured QUIC Initial should authenticate");
+    };
+    assert_eq!(authenticated.sni, cfg.server_name);
+    assert_eq!(authenticated.session_id, initial.auth_token);
+    assert_eq!(authenticated.client_hello, initial.client_hello);
 }
 
 #[tokio::test]

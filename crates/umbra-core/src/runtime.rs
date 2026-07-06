@@ -28,11 +28,15 @@ use umbra_reality::{
     replay::ReplayCache,
 };
 use umbra_tls::{
-    clienthello::{hello0, ClientHelloParams, MlkemShare},
+    clienthello::{
+        build_client_hello_handshake, hello0, quic_hello0, ClientHelloParams,
+        ClientQuicTransportParameter, MlkemShare, EXT_QUIC_TRANSPORT_PARAMETERS,
+    },
     handshake::{CertVerify, PeerKind as TlsPeerKind, Tls13Client},
 };
 use umbra_transport::{
     evasion::TcpEvasionPolicy,
+    quic::build_quic_initial_crypto_packet,
     tcp::{build_tcp_client_hello, tcp_connect_and_send, TcpClientHelloConfig},
 };
 
@@ -54,6 +58,7 @@ use crate::{
 
 const DEFAULT_REPLAY_CAPACITY: usize = 65_536;
 const DEFAULT_QUIC_FALLBACK_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const EXT_PADDING: u16 = 0x0015;
 
 /// Bound server runtime with listeners, replay cache, and active destination profile.
 pub struct ServerRuntime {
@@ -364,6 +369,21 @@ pub struct ClientSessionOutcome {
     pub mode: ClientInnerMode,
 }
 
+/// Client-side QUIC first flight built from runtime configuration.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct QuicClientInitial {
+    /// Protected UDP datagram containing the QUIC Initial packet.
+    pub datagram: Vec<u8>,
+    /// Raw ClientHello handshake bytes carried in the CRYPTO frame.
+    pub client_hello: Vec<u8>,
+    /// Client-chosen destination connection id used for Initial keys.
+    pub dcid: Vec<u8>,
+    /// Client source connection id.
+    pub scid: Vec<u8>,
+    /// REALITY token placed in the QUIC GREASE transport parameter.
+    pub auth_token: [u8; 32],
+}
+
 /// Drive one SOCKS stream through selected outer connection and inner mode.
 pub async fn client_session_with_outer<S, Outer, Open, OpenFuture>(
     cfg: &ClientCfg,
@@ -430,6 +450,33 @@ pub async fn open_outer_from_config(
             "network QUIC outer transport requires QUIC runtime support",
         )),
     }
+}
+
+/// Build the configured QUIC first flight without starting stream relay.
+///
+/// This is the client-side half of component G up to the protected Initial
+/// datagram. Full QUIC stream relay still requires the QUIC-TLS stream engine.
+pub fn build_quic_client_initial(cfg: &ClientCfg) -> Result<QuicClientInitial, CoreError> {
+    let profile = load_profile(&cfg.fingerprint)?;
+    let cid_len = validate_quic_cid_len(profile.quic.scid_len)?;
+    let keypair = x25519::generate_keypair();
+    let mut random = [0_u8; 32];
+    OsRng.fill_bytes(&mut random);
+    let mut dcid = vec![0_u8; cid_len];
+    OsRng.fill_bytes(&mut dcid);
+    let mut scid = vec![0_u8; cid_len];
+    OsRng.fill_bytes(&mut scid);
+    build_quic_client_initial_with_material(
+        cfg,
+        QuicInitialMaterial {
+            profile,
+            keypair,
+            random,
+            dcid,
+            scid,
+            now_unix: current_unix_time()?,
+        },
+    )
 }
 
 /// Run a server until Ctrl-C after probing the configured destination.
@@ -551,6 +598,118 @@ fn tls_client_hello_params(
         random,
         quic_transport_parameters: Vec::new(),
     }
+}
+
+struct QuicInitialMaterial {
+    profile: umbra_fingerprint::FingerprintProfile,
+    keypair: x25519::Keypair,
+    random: [u8; 32],
+    dcid: Vec<u8>,
+    scid: Vec<u8>,
+    now_unix: u64,
+}
+
+fn build_quic_client_initial_with_material(
+    cfg: &ClientCfg,
+    material: QuicInitialMaterial,
+) -> Result<QuicClientInitial, CoreError> {
+    let QuicInitialMaterial {
+        profile,
+        keypair,
+        random,
+        dcid,
+        scid,
+        now_unix,
+    } = material;
+    let (profile, grease_parameter) = quic_client_profile(profile)?;
+    let mlkem_key_exchange = hybrid_mlkem_key_exchange(keypair.public.as_bytes());
+    let shared = x25519::agree(&keypair.private, cfg.public_key.as_bytes())?;
+    let zero_hello = build_client_hello_handshake(&quic_client_hello_params(
+        cfg,
+        &keypair,
+        [0_u8; 32],
+        profile.clone(),
+        random,
+        mlkem_key_exchange.clone(),
+        grease_parameter,
+    ))?;
+    let aad = quic_hello0(&zero_hello, grease_parameter)?;
+    let auth_token = try_seal_session_id(shared.expose_secret(), &cfg.short_id, &aad, now_unix)?;
+    let client_hello = build_client_hello_handshake(&quic_client_hello_params(
+        cfg,
+        &keypair,
+        auth_token,
+        profile,
+        random,
+        mlkem_key_exchange,
+        grease_parameter,
+    ))?;
+    let datagram = build_quic_initial_crypto_packet(&client_hello, &dcid, &scid, &[])?;
+    Ok(QuicClientInitial {
+        datagram,
+        client_hello,
+        dcid,
+        scid,
+        auth_token,
+    })
+}
+
+fn quic_client_hello_params(
+    cfg: &ClientCfg,
+    keypair: &x25519::Keypair,
+    auth_token: [u8; 32],
+    profile: umbra_fingerprint::FingerprintProfile,
+    random: [u8; 32],
+    mlkem_key_exchange: Vec<u8>,
+    grease_parameter: u64,
+) -> ClientHelloParams {
+    ClientHelloParams {
+        sni: cfg.server_name.clone(),
+        session_id: Vec::new(),
+        x25519_priv: *keypair.private.expose_secret(),
+        x25519_pub: *keypair.public.as_bytes(),
+        mlkem: MlkemShare::x25519_mlkem768(mlkem_key_exchange),
+        profile,
+        random,
+        quic_transport_parameters: vec![ClientQuicTransportParameter {
+            id: grease_parameter,
+            value: auth_token.to_vec(),
+        }],
+    }
+}
+
+fn quic_client_profile(
+    mut profile: umbra_fingerprint::FingerprintProfile,
+) -> Result<(umbra_fingerprint::FingerprintProfile, u64), CoreError> {
+    if profile.quic.alpn != "h3" {
+        return Err(CoreError::InvalidConfig("QUIC ALPN must be h3"));
+    }
+    validate_quic_cid_len(profile.quic.scid_len)?;
+    let grease_parameter = profile.quic.grease_parameter;
+    profile.alpn = vec![profile.quic.alpn.clone()];
+    if !profile
+        .extension_order
+        .contains(&EXT_QUIC_TRANSPORT_PARAMETERS)
+    {
+        let insert_at = profile
+            .extension_order
+            .iter()
+            .position(|ext| *ext == EXT_PADDING)
+            .unwrap_or(profile.extension_order.len());
+        profile
+            .extension_order
+            .insert(insert_at, EXT_QUIC_TRANSPORT_PARAMETERS);
+    }
+    Ok((profile, grease_parameter))
+}
+
+fn validate_quic_cid_len(len: usize) -> Result<usize, CoreError> {
+    if !(8..=20).contains(&len) {
+        return Err(CoreError::InvalidConfig(
+            "QUIC connection id length must be between 8 and 20 bytes",
+        ));
+    }
+    Ok(len)
 }
 
 fn hybrid_mlkem_key_exchange(x25519_public: &[u8; 32]) -> Vec<u8> {

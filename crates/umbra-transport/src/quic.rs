@@ -1,7 +1,8 @@
 //! QUIC fingerprint, REALITY carrier, fallback, and target stream helpers.
 
+use ring::aead::{self, quic as ring_quic, Aad, LessSafeKey, Nonce, UnboundKey};
 use rustls::{
-    quic::{HeaderProtectionKey, Version},
+    quic::{HeaderProtectionKey as RustlsHeaderProtectionKey, Version},
     CipherSuite, Side,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -10,7 +11,12 @@ use umbra_proto::{
     addr::TargetAddr,
     consts::{ATYP_DOMAIN, ATYP_IPV4, ATYP_IPV6},
 };
-use umbra_tls::parse::parse_client_hello;
+use umbra_tls::{
+    clienthello::{TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256},
+    keyschedule::hkdf_expand_label,
+    parse::parse_client_hello,
+    quic::QuicTrafficSecrets,
+};
 
 use crate::TransportError;
 
@@ -29,6 +35,8 @@ const QUIC_FRAME_CONNECTION_CLOSE_APPLICATION: u8 = 0x1d;
 const QUIC_MIN_INITIAL_DATAGRAM_LEN: usize = 1200;
 const QUIC_INITIAL_PACKET_NUMBER: u64 = 1;
 const QUIC_INITIAL_PACKET_NUMBER_LEN: usize = 4;
+const QUIC_PACKET_TAG_LEN: usize = 16;
+const QUIC_IV_LEN: usize = 12;
 
 /// QUIC transport parameter.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -103,6 +111,23 @@ pub enum QuicDispatchDecision {
 pub struct QuicTargetStream {
     /// Stream bytes, beginning with encoded target address.
     pub bytes: Vec<u8>,
+}
+
+/// QUIC packet and header protection keys for one traffic direction.
+pub struct QuicPacketProtection {
+    packet: QuicPacketProtectionKey,
+    header: QuicHeaderProtectionKey,
+}
+
+/// QUIC packet protection key for one traffic direction.
+pub struct QuicPacketProtectionKey {
+    key: LessSafeKey,
+    iv: [u8; QUIC_IV_LEN],
+}
+
+/// QUIC header protection key for one traffic direction.
+pub struct QuicHeaderProtectionKey {
+    key: ring_quic::HeaderProtectionKey,
 }
 
 /// Build QUIC fingerprint data from the selected Chrome profile.
@@ -204,6 +229,40 @@ pub fn recover_quic_auth_token_from_initial(
             .collect(),
     };
     recover_quic_auth_token(&surface, fp)
+}
+
+/// Derive QUIC packet and header protection from one TLS traffic secret.
+pub fn derive_quic_packet_protection(
+    cipher_suite: u16,
+    traffic_secret: &[u8; 32],
+) -> Result<QuicPacketProtection, TransportError> {
+    let key_len = quic_key_len(cipher_suite)?;
+    let packet_key = hkdf_expand_label(traffic_secret, "quic key", &[], key_len)?;
+    let header_key = hkdf_expand_label(traffic_secret, "quic hp", &[], key_len)?;
+    let iv = hkdf_expand_label(traffic_secret, "quic iv", &[], QUIC_IV_LEN)?;
+    let iv: [u8; QUIC_IV_LEN] = iv
+        .try_into()
+        .map_err(|_| TransportError::InvalidQuicSurface("QUIC IV has wrong length"))?;
+    let key = LessSafeKey::new(
+        UnboundKey::new(packet_algorithm(cipher_suite)?, &packet_key)
+            .map_err(|_| TransportError::InvalidQuicSurface("invalid QUIC packet key"))?,
+    );
+    let header = ring_quic::HeaderProtectionKey::new(header_algorithm(cipher_suite)?, &header_key)
+        .map_err(|_| TransportError::InvalidQuicSurface("invalid QUIC header key"))?;
+    Ok(QuicPacketProtection {
+        packet: QuicPacketProtectionKey { key, iv },
+        header: QuicHeaderProtectionKey { key: header },
+    })
+}
+
+/// Derive QUIC packet protection for both directions.
+pub fn derive_quic_packet_protection_pair(
+    secrets: &QuicTrafficSecrets,
+) -> Result<(QuicPacketProtection, QuicPacketProtection), TransportError> {
+    Ok((
+        derive_quic_packet_protection(secrets.cipher_suite, &secrets.client)?,
+        derive_quic_packet_protection(secrets.cipher_suite, &secrets.server)?,
+    ))
 }
 
 /// Build a protected client QUIC Initial packet carrying raw ClientHello CRYPTO bytes.
@@ -426,6 +485,202 @@ where
     Ok(())
 }
 
+impl QuicPacketProtection {
+    /// Seal a QUIC packet payload and return the authentication tag.
+    pub fn seal_packet_payload(
+        &self,
+        packet_number: u64,
+        header: &[u8],
+        payload: &mut [u8],
+    ) -> Result<[u8; QUIC_PACKET_TAG_LEN], TransportError> {
+        self.packet.seal_in_place(packet_number, header, payload)
+    }
+
+    /// Open a QUIC packet payload that includes its authentication tag.
+    pub fn open_packet_payload<'a>(
+        &self,
+        packet_number: u64,
+        header: &[u8],
+        payload_and_tag: &'a mut [u8],
+    ) -> Result<&'a [u8], TransportError> {
+        self.packet
+            .open_in_place(packet_number, header, payload_and_tag)
+    }
+
+    /// Apply QUIC header protection in place.
+    pub fn apply_header_protection(
+        &self,
+        sample: &[u8],
+        first: &mut u8,
+        packet_number: &mut [u8],
+    ) -> Result<(), TransportError> {
+        self.header.encrypt_in_place(sample, first, packet_number)
+    }
+
+    /// Remove QUIC header protection in place.
+    pub fn remove_header_protection(
+        &self,
+        sample: &[u8],
+        first: &mut u8,
+        packet_number: &mut [u8],
+    ) -> Result<(), TransportError> {
+        self.header.decrypt_in_place(sample, first, packet_number)
+    }
+
+    /// Return the AEAD tag length for supported QUIC packet protection algorithms.
+    #[must_use]
+    pub const fn tag_len(&self) -> usize {
+        QUIC_PACKET_TAG_LEN
+    }
+}
+
+impl QuicPacketProtectionKey {
+    fn seal_in_place(
+        &self,
+        packet_number: u64,
+        header: &[u8],
+        payload: &mut [u8],
+    ) -> Result<[u8; QUIC_PACKET_TAG_LEN], TransportError> {
+        let tag = self
+            .key
+            .seal_in_place_separate_tag(
+                Nonce::assume_unique_for_key(packet_nonce(&self.iv, packet_number)),
+                Aad::from(header),
+                payload,
+            )
+            .map_err(|_| TransportError::InvalidQuicSurface("QUIC packet encryption failed"))?;
+        let mut out = [0_u8; QUIC_PACKET_TAG_LEN];
+        out.copy_from_slice(tag.as_ref());
+        Ok(out)
+    }
+
+    fn open_in_place<'a>(
+        &self,
+        packet_number: u64,
+        header: &[u8],
+        payload_and_tag: &'a mut [u8],
+    ) -> Result<&'a [u8], TransportError> {
+        self.key
+            .open_in_place(
+                Nonce::assume_unique_for_key(packet_nonce(&self.iv, packet_number)),
+                Aad::from(header),
+                payload_and_tag,
+            )
+            .map(|plaintext| &*plaintext)
+            .map_err(|_| TransportError::InvalidQuicSurface("QUIC packet decryption failed"))
+    }
+}
+
+impl QuicHeaderProtectionKey {
+    fn encrypt_in_place(
+        &self,
+        sample: &[u8],
+        first: &mut u8,
+        packet_number: &mut [u8],
+    ) -> Result<(), TransportError> {
+        self.xor_in_place(sample, first, packet_number, false)
+    }
+
+    fn decrypt_in_place(
+        &self,
+        sample: &[u8],
+        first: &mut u8,
+        packet_number: &mut [u8],
+    ) -> Result<(), TransportError> {
+        self.xor_in_place(sample, first, packet_number, true)
+    }
+
+    fn xor_in_place(
+        &self,
+        sample: &[u8],
+        first: &mut u8,
+        packet_number: &mut [u8],
+        masked: bool,
+    ) -> Result<(), TransportError> {
+        let mask = self
+            .key
+            .new_mask(sample)
+            .map_err(|_| TransportError::InvalidQuicSurface("invalid QUIC header sample"))?;
+        let Some((first_mask, packet_number_mask)) = mask.split_first() else {
+            return Err(TransportError::InvalidQuicSurface(
+                "empty QUIC header protection mask",
+            ));
+        };
+        if packet_number.len() > packet_number_mask.len() {
+            return Err(TransportError::InvalidQuicSurface(
+                "QUIC packet number is too long",
+            ));
+        }
+
+        let bits = if *first & QUIC_LONG_HEADER_BIT == QUIC_LONG_HEADER_BIT {
+            0x0f
+        } else {
+            0x1f
+        };
+        let first_plain = if masked {
+            *first ^ (first_mask & bits)
+        } else {
+            *first
+        };
+        let packet_number_len = usize::from(first_plain & 0x03) + 1;
+        if packet_number.len() < packet_number_len {
+            return Err(TransportError::InvalidQuicSurface(
+                "truncated QUIC packet number",
+            ));
+        }
+
+        *first ^= first_mask & bits;
+        for (dst, mask) in packet_number
+            .iter_mut()
+            .zip(packet_number_mask.iter())
+            .take(packet_number_len)
+        {
+            *dst ^= mask;
+        }
+        Ok(())
+    }
+}
+
+fn quic_key_len(cipher_suite: u16) -> Result<usize, TransportError> {
+    match cipher_suite {
+        TLS_AES_128_GCM_SHA256 => Ok(16),
+        TLS_AES_256_GCM_SHA384 | TLS_CHACHA20_POLY1305_SHA256 => Ok(32),
+        _ => Err(TransportError::InvalidQuicSurface(
+            "unsupported QUIC cipher suite",
+        )),
+    }
+}
+
+fn packet_algorithm(cipher_suite: u16) -> Result<&'static aead::Algorithm, TransportError> {
+    match cipher_suite {
+        TLS_AES_128_GCM_SHA256 => Ok(&aead::AES_128_GCM),
+        TLS_AES_256_GCM_SHA384 => Ok(&aead::AES_256_GCM),
+        TLS_CHACHA20_POLY1305_SHA256 => Ok(&aead::CHACHA20_POLY1305),
+        _ => Err(TransportError::InvalidQuicSurface(
+            "unsupported QUIC cipher suite",
+        )),
+    }
+}
+
+fn header_algorithm(cipher_suite: u16) -> Result<&'static ring_quic::Algorithm, TransportError> {
+    match cipher_suite {
+        TLS_AES_128_GCM_SHA256 => Ok(&ring_quic::AES_128),
+        TLS_AES_256_GCM_SHA384 => Ok(&ring_quic::AES_256),
+        TLS_CHACHA20_POLY1305_SHA256 => Ok(&ring_quic::CHACHA20),
+        _ => Err(TransportError::InvalidQuicSurface(
+            "unsupported QUIC cipher suite",
+        )),
+    }
+}
+
+fn packet_nonce(iv: &[u8; QUIC_IV_LEN], packet_number: u64) -> [u8; QUIC_IV_LEN] {
+    let mut nonce = *iv;
+    for (dst, src) in nonce[4..].iter_mut().zip(packet_number.to_be_bytes()) {
+        *dst ^= src;
+    }
+    nonce
+}
+
 fn split_auth_token(
     auth_token: &[u8; 32],
     fp: &QuicFingerprint,
@@ -564,7 +819,7 @@ fn seal_client_initial_plaintext(
 fn add_header_protection(
     packet: &mut [u8],
     packet_number_offset: usize,
-    key: &dyn HeaderProtectionKey,
+    key: &dyn RustlsHeaderProtectionKey,
 ) -> Result<(), TransportError> {
     let sample_start =
         packet_number_offset
@@ -683,7 +938,7 @@ fn initial_quic_suite() -> Result<rustls::quic::Suite, TransportError> {
 fn remove_header_protection(
     packet: &mut [u8],
     packet_number_offset: usize,
-    key: &dyn HeaderProtectionKey,
+    key: &dyn RustlsHeaderProtectionKey,
 ) -> Result<(), TransportError> {
     let sample_start =
         packet_number_offset
@@ -1037,7 +1292,7 @@ mod tests {
     fn add_header_protection_for_test(
         packet: &mut [u8],
         packet_number_offset: usize,
-        key: &dyn HeaderProtectionKey,
+        key: &dyn RustlsHeaderProtectionKey,
     ) {
         let sample_start = packet_number_offset + 4;
         let sample = packet[sample_start..sample_start + key.sample_len()].to_vec();

@@ -8,16 +8,20 @@ use tokio::{
 use umbra_crypto::x25519;
 use umbra_fingerprint::load_profile;
 use umbra_proto::addr::TargetAddr;
-use umbra_tls::parse::parse_client_hello;
+use umbra_tls::{
+    clienthello::{TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256},
+    parse::parse_client_hello,
+};
 use umbra_transport::{
     evasion::{
         fallback_plan_on_recoverable_error, parse_tcp_evasion, plan_client_hello_writes,
         EvasionPlan, RecoverableBeforeSend, TcpEvasionPolicy,
     },
     quic::{
-        build_quic_client_hello_surface, open_target_stream, parse_quic_initial_header,
-        parse_target_stream_payload, quic_dispatch_bad_auth, quic_fingerprint_from_profile,
-        read_target_stream, recover_quic_auth_token, write_target_stream, QuicDispatchDecision,
+        build_quic_client_hello_surface, derive_quic_packet_protection, open_target_stream,
+        parse_quic_initial_header, parse_target_stream_payload, quic_dispatch_bad_auth,
+        quic_fingerprint_from_profile, read_target_stream, recover_quic_auth_token,
+        write_target_stream, QuicDispatchDecision,
     },
     tcp::{
         accept_once_with_dispatch, bind_listener, build_tcp_client_hello, send_client_hello,
@@ -232,6 +236,48 @@ async fn scenario_quic_target_stream_helpers_write_and_read_prefix() {
         .expect("read remaining stream payload");
     assert_eq!(payload, b"first bytes");
     write.await.expect("writer task");
+}
+
+#[test]
+fn scenario_quic_packet_protection_round_trips_supported_cipher_suites() {
+    for cipher_suite in [
+        TLS_AES_128_GCM_SHA256,
+        TLS_AES_256_GCM_SHA384,
+        TLS_CHACHA20_POLY1305_SHA256,
+    ] {
+        let secret = [0x33_u8; 32];
+        let sealer = derive_quic_packet_protection(cipher_suite, &secret).expect("derive sealer");
+        let opener = derive_quic_packet_protection(cipher_suite, &secret).expect("derive opener");
+        let header = b"\x40\x00\x00\x00\x01";
+        let mut payload = b"protected payload".to_vec();
+        let tag = sealer
+            .seal_packet_payload(7, header, &mut payload)
+            .expect("seal payload");
+        payload.extend_from_slice(&tag);
+
+        let plaintext = opener
+            .open_packet_payload(7, header, &mut payload)
+            .expect("open payload");
+        assert_eq!(plaintext, b"protected payload");
+
+        let sample = [0x44_u8; 16];
+        let mut first = 0x41;
+        let mut packet_number = [0_u8, 0_u8, 0_u8, 7_u8];
+        let original_first = first;
+        let original_packet_number = packet_number;
+        sealer
+            .apply_header_protection(&sample, &mut first, &mut packet_number)
+            .expect("apply header protection");
+        assert_ne!(
+            (first, packet_number),
+            (original_first, original_packet_number)
+        );
+        opener
+            .remove_header_protection(&sample, &mut first, &mut packet_number)
+            .expect("remove header protection");
+        assert_eq!(first, original_first);
+        assert_eq!(packet_number, original_packet_number);
+    }
 }
 
 #[test]

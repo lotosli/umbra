@@ -20,5 +20,6 @@ umbra-fingerprint.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 rustls.workspace = true
+ring.workspace = true
 
 [dev-dependencies]

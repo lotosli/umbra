@@ -61,14 +61,14 @@
 - [x] 8.2 Implement TCP evasion strategy parser and conservative segmentation writer.
 - [x] 8.3 Implement evasion fallback to ordinary TCP sending.
 - [x] 8.4 Implement QUIC fingerprint model and REALITY-over-QUIC auth carrier parsing.
-- [ ] 8.5 Implement QUIC dispatch fallback and authenticated stream carrying surface.
+- [ ] 8.5 Implement QUIC dispatch fallback and authenticated stream carrying surface. (Initial parse/decrypt/auth and bad-auth UDP fallback relay complete; authenticated QUIC stream carrying pending)
 
 ## 9. Core Runtime
 
 - [x] 9.1 Implement server and client config structs, TOML parsing, validation, and redacted debug output.
 - [x] 9.2 Implement CLI override merge for server and client configs.
 - [x] 9.3 Implement SOCKS5 no-auth handshake and CONNECT parsing.
-- [ ] 9.4 Implement server orchestration for TCP, UDP, dest profile, replay cache, dispatch, and shutdown. (TCP complete; UDP/QUIC dispatch pending)
+- [ ] 9.4 Implement server orchestration for TCP, UDP, dest profile, replay cache, dispatch, and shutdown. (TCP and bad-auth UDP/QUIC fallback complete; authenticated QUIC server path pending)
 - [ ] 9.5 Implement client orchestration for SOCKS, TCP/QUIC selection, mux/Vision selection, and relay lifecycle. (TCP mux/Vision relay complete; QUIC pending)
 - [x] 9.6 Implement probe-resistance timing alignment, useless-record policy, and no-throttled fallback invariants.
 

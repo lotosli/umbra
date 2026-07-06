@@ -5,9 +5,9 @@ use umbra_crypto::x25519;
 use umbra_fingerprint::{load_profile, FingerprintProfile};
 use umbra_tls::{
     clienthello::{
-        build_client_hello, hello0, ClientHelloParams, ClientQuicTransportParameter, MlkemShare,
-        EXT_QUIC_TRANSPORT_PARAMETERS, TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384,
-        TLS_CHACHA20_POLY1305_SHA256,
+        build_client_hello, build_client_hello_handshake, hello0, quic_hello0, ClientHelloParams,
+        ClientQuicTransportParameter, MlkemShare, EXT_QUIC_TRANSPORT_PARAMETERS,
+        TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256,
     },
     handshake::{CertVerify, PeerKind, Tls13Client},
     keyschedule::{
@@ -113,7 +113,9 @@ fn scenario_quic_transport_parameter_values_are_serialized() {
         },
     ];
 
+    let handshake = build_client_hello_handshake(&params).expect("raw ClientHello should build");
     let record = build_client_hello(&params).expect("ClientHello should build");
+    assert_eq!(&record[5..], handshake.as_slice());
     let parsed = parse_client_hello(&record).expect("ClientHello should parse");
 
     assert!(parsed.session_id.is_empty());
@@ -135,6 +137,29 @@ fn scenario_quic_transport_parameter_values_are_serialized() {
             .value,
         vec![0x22, 0x33]
     );
+
+    let aad = quic_hello0(&handshake, grease).expect("QUIC AAD clears carrier");
+    let aad_parsed = parse_client_hello(&aad).expect("QUIC AAD remains a ClientHello");
+    assert_eq!(
+        aad_parsed
+            .quic_transport_parameters
+            .iter()
+            .find(|param| param.id == grease)
+            .expect("grease parameter")
+            .value,
+        vec![0; 32]
+    );
+    assert_eq!(
+        aad_parsed
+            .quic_transport_parameters
+            .iter()
+            .find(|param| param.id == 0x1f)
+            .expect("extra parameter")
+            .value,
+        vec![0x22, 0x33]
+    );
+    let record_aad = quic_hello0(&record, grease).expect("record-shaped QUIC AAD clears carrier");
+    assert_eq!(&record_aad[..5], &record[..5]);
 }
 
 #[test]

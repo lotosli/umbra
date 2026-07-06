@@ -105,8 +105,8 @@ impl core::fmt::Debug for ClientHelloParams {
     }
 }
 
-/// Build a TLS record containing one ClientHello handshake message.
-pub fn build_client_hello(params: &ClientHelloParams) -> Result<Vec<u8>, TlsError> {
+/// Build one raw ClientHello handshake message.
+pub fn build_client_hello_handshake(params: &ClientHelloParams) -> Result<Vec<u8>, TlsError> {
     let mut body_prefix = Vec::new();
     body_prefix.extend_from_slice(&LEGACY_VERSION.to_be_bytes());
     body_prefix.extend_from_slice(&params.random);
@@ -134,6 +134,12 @@ pub fn build_client_hello(params: &ClientHelloParams) -> Result<Vec<u8>, TlsErro
     push_u24_len(body.len(), &mut handshake)?;
     handshake.extend_from_slice(&body);
 
+    Ok(handshake)
+}
+
+/// Build a TLS record containing one ClientHello handshake message.
+pub fn build_client_hello(params: &ClientHelloParams) -> Result<Vec<u8>, TlsError> {
+    let handshake = build_client_hello_handshake(params)?;
     record(RECORD_HANDSHAKE, &handshake)
 }
 
@@ -162,6 +168,72 @@ pub fn hello0(client_hello: &[u8]) -> Result<Vec<u8>, TlsError> {
         return Err(TlsError::InvalidInput("session id exceeds ClientHello"));
     }
     out[session_start..session_end].fill(0);
+    Ok(out)
+}
+
+/// Build QUIC REALITY associated data by zeroing the GREASE carrier value.
+///
+/// The input may be a raw ClientHello handshake or a TLS record containing one
+/// ClientHello. QUIC requires an empty `legacy_session_id`, so the only bytes
+/// cleared are the selected GREASE QUIC transport parameter value.
+pub fn quic_hello0(client_hello: &[u8], grease_parameter: u64) -> Result<Vec<u8>, TlsError> {
+    let mut out = client_hello.to_vec();
+    let (handshake_offset, body_offset) = handshake_body_offsets(&out)?;
+    let declared = declared_handshake_len(&out[handshake_offset..])?;
+    let handshake_end = handshake_offset
+        .checked_add(4)
+        .and_then(|offset| offset.checked_add(declared))
+        .ok_or(TlsError::InvalidInput("ClientHello offset overflow"))?;
+    if handshake_end > out.len() {
+        return Err(TlsError::InvalidInput("truncated ClientHello"));
+    }
+
+    let mut offset = body_offset;
+    skip_bytes(&out, &mut offset, 2)?;
+    skip_bytes(&out, &mut offset, 32)?;
+    let session_len = usize::from(read_u8(&out, &mut offset)?);
+    if session_len != 0 {
+        return Err(TlsError::InvalidInput(
+            "QUIC ClientHello session id is not empty",
+        ));
+    }
+    skip_bytes(&out, &mut offset, session_len)?;
+
+    let cipher_len = usize::from(read_u16(&out, &mut offset)?);
+    skip_bytes(&out, &mut offset, cipher_len)?;
+    let compression_len = usize::from(read_u8(&out, &mut offset)?);
+    skip_bytes(&out, &mut offset, compression_len)?;
+    let all_extensions_len = usize::from(read_u16(&out, &mut offset)?);
+    let all_extensions_end = offset
+        .checked_add(all_extensions_len)
+        .ok_or(TlsError::InvalidInput("ClientHello offset overflow"))?;
+    if all_extensions_end > handshake_end {
+        return Err(TlsError::InvalidInput("extensions exceed ClientHello"));
+    }
+
+    let mut cleared = false;
+    while offset < all_extensions_end {
+        let extension_type = read_u16(&out, &mut offset)?;
+        let this_extension_len = usize::from(read_u16(&out, &mut offset)?);
+        let this_extension_end = offset
+            .checked_add(this_extension_len)
+            .ok_or(TlsError::InvalidInput("extension offset overflow"))?;
+        if this_extension_end > all_extensions_end {
+            return Err(TlsError::InvalidInput("extension exceeds ClientHello"));
+        }
+        if extension_type == EXT_QUIC_TRANSPORT_PARAMETERS {
+            cleared |= clear_quic_transport_parameter(
+                &mut out,
+                offset,
+                this_extension_end,
+                grease_parameter,
+            )?;
+        }
+        offset = this_extension_end;
+    }
+    if !cleared {
+        return Err(TlsError::InvalidInput("QUIC GREASE auth carrier missing"));
+    }
     Ok(out)
 }
 
@@ -383,6 +455,86 @@ fn push_u24_len(value: usize, out: &mut Vec<u8>) -> Result<(), TlsError> {
     out.push(u8::try_from((value >> 16) & 0xff).map_err(|_| TlsError::LengthOutOfRange)?);
     out.push(u8::try_from((value >> 8) & 0xff).map_err(|_| TlsError::LengthOutOfRange)?);
     out.push(u8::try_from(value & 0xff).map_err(|_| TlsError::LengthOutOfRange)?);
+    Ok(())
+}
+
+fn clear_quic_transport_parameter(
+    out: &mut [u8],
+    mut offset: usize,
+    end: usize,
+    grease_parameter: u64,
+) -> Result<bool, TlsError> {
+    let mut cleared = false;
+    while offset < end {
+        let id = read_quic_varint_at(out, end, &mut offset)?;
+        let len = usize::try_from(read_quic_varint_at(out, end, &mut offset)?)
+            .map_err(|_| TlsError::LengthOutOfRange)?;
+        let value_end = offset
+            .checked_add(len)
+            .ok_or(TlsError::InvalidInput("QUIC transport parameter overflow"))?;
+        if value_end > end {
+            return Err(TlsError::InvalidInput(
+                "QUIC transport parameter exceeds extension",
+            ));
+        }
+        if id == grease_parameter {
+            out[offset..value_end].fill(0);
+            cleared = true;
+        }
+        offset = value_end;
+    }
+    Ok(cleared)
+}
+
+fn read_quic_varint_at(input: &[u8], limit: usize, offset: &mut usize) -> Result<u64, TlsError> {
+    let first = *input
+        .get(*offset)
+        .ok_or(TlsError::InvalidInput("missing QUIC varint"))?;
+    let len = 1_usize << usize::from(first >> 6);
+    let end = (*offset)
+        .checked_add(len)
+        .ok_or(TlsError::InvalidInput("QUIC varint offset overflow"))?;
+    if end > limit {
+        return Err(TlsError::InvalidInput("truncated QUIC varint"));
+    }
+    let bytes = input
+        .get(*offset..end)
+        .ok_or(TlsError::InvalidInput("truncated QUIC varint"))?;
+    let mut value = u64::from(bytes[0] & 0x3f);
+    for byte in &bytes[1..] {
+        value = (value << 8) | u64::from(*byte);
+    }
+    *offset = end;
+    Ok(value)
+}
+
+fn read_u16(input: &[u8], offset: &mut usize) -> Result<u16, TlsError> {
+    let end = (*offset)
+        .checked_add(2)
+        .ok_or(TlsError::InvalidInput("ClientHello offset overflow"))?;
+    let bytes = input
+        .get(*offset..end)
+        .ok_or(TlsError::InvalidInput("truncated ClientHello field"))?;
+    *offset = end;
+    Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
+}
+
+fn read_u8(input: &[u8], offset: &mut usize) -> Result<u8, TlsError> {
+    let value = *input
+        .get(*offset)
+        .ok_or(TlsError::InvalidInput("truncated ClientHello field"))?;
+    *offset += 1;
+    Ok(value)
+}
+
+fn skip_bytes(input: &[u8], offset: &mut usize, len: usize) -> Result<(), TlsError> {
+    let end = (*offset)
+        .checked_add(len)
+        .ok_or(TlsError::InvalidInput("ClientHello offset overflow"))?;
+    if end > input.len() {
+        return Err(TlsError::InvalidInput("truncated ClientHello field"));
+    }
+    *offset = end;
     Ok(())
 }
 

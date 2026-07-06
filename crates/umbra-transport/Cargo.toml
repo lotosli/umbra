@@ -19,5 +19,6 @@ umbra-tls.workspace = true
 umbra-fingerprint.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+rustls.workspace = true
 
 [dev-dependencies]

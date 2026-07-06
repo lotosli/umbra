@@ -1,7 +1,9 @@
 //! Minimal TLS 1.3 client handshake state machine.
 
+use ring::signature::{self, UnparsedPublicKey};
 use subtle::ConstantTimeEq;
 use umbra_crypto::{secret::Secret, x25519};
+use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::{
     clienthello::{
@@ -25,7 +27,8 @@ const TLS_RECORD_HEADER_LEN: usize = 5;
 const EXT_KEY_SHARE: u16 = 0x0033;
 const EXT_SUPPORTED_VERSIONS: u16 = 0x002b;
 const GROUP_X25519: u16 = 0x001d;
-const SIGNATURE_RSA_PSS_RSAE_SHA256: u16 = 0x0804;
+pub(crate) const SIGNATURE_ECDSA_SECP256R1_SHA256: u16 = 0x0403;
+const SERVER_CERTIFICATE_VERIFY_CONTEXT: &[u8] = b"TLS 1.3, server CertificateVerify";
 
 /// Peer classification returned by certificate verification callbacks.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -88,8 +91,10 @@ struct ParsedServerFlight {
     encrypted_extensions: Vec<u8>,
     certificate: Vec<u8>,
     certificate_chain: Vec<Vec<u8>>,
-    certificate_verify: Vec<u8>,
+    certificate_verify_scheme: u16,
+    certificate_verify_signature: Vec<u8>,
     finished: [u8; 32],
+    transcript_before_certificate_verify: Vec<u8>,
     transcript_before_finished: Vec<u8>,
     transcript_after_finished: Vec<u8>,
 }
@@ -161,6 +166,12 @@ impl Tls13Client {
         }
 
         let flight = parse_server_flight(&plaintext, &handshake_transcript)?;
+        verify_certificate_verify(
+            &flight.certificate,
+            flight.certificate_verify_scheme,
+            &flight.certificate_verify_signature,
+            &flight.transcript_before_certificate_verify,
+        )?;
         if matches!(
             verify.verify(&flight.certificate, &flight.certificate_chain),
             PeerKind::Invalid
@@ -312,9 +323,12 @@ pub(crate) fn encrypted_extensions_message() -> Result<Vec<u8>, TlsError> {
     handshake_message(HANDSHAKE_ENCRYPTED_EXTENSIONS, &[0, 0])
 }
 
-pub(crate) fn certificate_verify_message(signature: &[u8]) -> Result<Vec<u8>, TlsError> {
+pub(crate) fn certificate_verify_message(
+    signature_scheme: u16,
+    signature: &[u8],
+) -> Result<Vec<u8>, TlsError> {
     let mut body = Vec::new();
-    body.extend_from_slice(&SIGNATURE_RSA_PSS_RSAE_SHA256.to_be_bytes());
+    body.extend_from_slice(&signature_scheme.to_be_bytes());
     push_u16_len(signature.len(), &mut body)?;
     body.extend_from_slice(signature);
     handshake_message(HANDSHAKE_CERTIFICATE_VERIFY, &body)
@@ -421,8 +435,10 @@ fn parse_server_flight(
     let mut encrypted_extensions = None;
     let mut certificate = None;
     let mut certificate_chain = Vec::new();
-    let mut certificate_verify = None;
+    let mut certificate_verify_scheme = None;
+    let mut certificate_verify_signature = None;
     let mut finished = None;
+    let mut transcript_before_certificate_verify = None;
     let mut transcript_before_finished = None;
     let mut transcript_after_finished = None;
 
@@ -444,7 +460,10 @@ fn parse_server_flight(
                 transcript.extend_from_slice(message);
             }
             HANDSHAKE_CERTIFICATE_VERIFY => {
-                certificate_verify = Some(message.to_vec());
+                let (scheme, signature) = parse_certificate_verify_body(body)?;
+                certificate_verify_scheme = Some(scheme);
+                certificate_verify_signature = Some(signature);
+                transcript_before_certificate_verify = Some(transcript.clone());
                 transcript.extend_from_slice(message);
             }
             HANDSHAKE_FINISHED => {
@@ -465,9 +484,14 @@ fn parse_server_flight(
             .ok_or(TlsError::InvalidInput("missing EncryptedExtensions"))?,
         certificate: certificate.ok_or(TlsError::InvalidInput("missing Certificate"))?,
         certificate_chain,
-        certificate_verify: certificate_verify
+        certificate_verify_scheme: certificate_verify_scheme
+            .ok_or(TlsError::InvalidInput("missing CertificateVerify"))?,
+        certificate_verify_signature: certificate_verify_signature
             .ok_or(TlsError::InvalidInput("missing CertificateVerify"))?,
         finished: finished.ok_or(TlsError::InvalidInput("missing Finished"))?,
+        transcript_before_certificate_verify: transcript_before_certificate_verify.ok_or(
+            TlsError::InvalidInput("missing CertificateVerify transcript"),
+        )?,
         transcript_before_finished: transcript_before_finished
             .ok_or(TlsError::InvalidInput("missing Finished transcript"))?,
         transcript_after_finished: transcript_after_finished
@@ -499,6 +523,53 @@ fn parse_certificate_body(body: &[u8]) -> Result<(Vec<u8>, Vec<Vec<u8>>), TlsErr
         return Err(TlsError::InvalidInput("empty certificate list"));
     };
     Ok((leaf, certs.into_iter().skip(1).collect()))
+}
+
+fn parse_certificate_verify_body(body: &[u8]) -> Result<(u16, Vec<u8>), TlsError> {
+    let mut offset = 0;
+    let scheme = read_u16_at(body, &mut offset)?;
+    let signature_len = usize::from(read_u16_at(body, &mut offset)?);
+    let signature = take(body, &mut offset, signature_len)?.to_vec();
+    if offset != body.len() {
+        return Err(TlsError::InvalidInput(
+            "CertificateVerify has trailing bytes",
+        ));
+    }
+    Ok((scheme, signature))
+}
+
+pub(crate) fn certificate_verify_input(transcript_hash: &[u8]) -> Vec<u8> {
+    let mut input = Vec::with_capacity(
+        64 + SERVER_CERTIFICATE_VERIFY_CONTEXT.len() + 1 + transcript_hash.len(),
+    );
+    input.extend_from_slice(&[0x20; 64]);
+    input.extend_from_slice(SERVER_CERTIFICATE_VERIFY_CONTEXT);
+    input.push(0);
+    input.extend_from_slice(transcript_hash);
+    input
+}
+
+fn verify_certificate_verify(
+    leaf_der: &[u8],
+    scheme: u16,
+    signature: &[u8],
+    transcript_before_certificate_verify: &[u8],
+) -> Result<(), TlsError> {
+    if scheme != SIGNATURE_ECDSA_SECP256R1_SHA256 {
+        return Err(TlsError::InvalidInput(
+            "unsupported CertificateVerify scheme",
+        ));
+    }
+    let (_, cert) = X509Certificate::from_der(leaf_der)
+        .map_err(|_| TlsError::InvalidInput("bad certificate DER"))?;
+    let signature_input =
+        certificate_verify_input(&transcript_hash(transcript_before_certificate_verify));
+    UnparsedPublicKey::new(
+        &signature::ECDSA_P256_SHA256_ASN1,
+        &cert.public_key().subject_public_key.data,
+    )
+    .verify(&signature_input, signature)
+    .map_err(|_| TlsError::AuthenticationFailed)
 }
 
 fn push_cert_entry(cert: &[u8], out: &mut Vec<u8>) -> Result<(), TlsError> {

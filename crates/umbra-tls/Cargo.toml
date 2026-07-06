@@ -20,6 +20,9 @@ hkdf.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
+ring.workspace = true
+x509-parser.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+rcgen.workspace = true

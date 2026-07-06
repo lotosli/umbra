@@ -101,14 +101,15 @@ pub fn forge_leaf_certificate(
     let leaf_cert = leaf_params(profile, server_name, cert_mac, &mldsa_signature)?
         .signed_by(&leaf_key, &issuer_cert, &issuer_key)
         .map_err(|_| RealityError::CertificateForgeFailed("leaf certificate signing failed"))?;
+    let leaf_private_key_der = leaf_key.serialize_der();
 
     Ok(ForgedLeaf {
         tls_cert: ForgedCert {
             leaf_der: leaf_cert.der().as_ref().to_vec(),
             chain_der: vec![issuer_cert.der().as_ref().to_vec()],
-            certificate_verify_signature: cert_mac.to_vec(),
+            certificate_verify_key_der: leaf_private_key_der.clone(),
         },
-        leaf_private_key_der: leaf_key.serialize_der(),
+        leaf_private_key_der,
         leaf_spki_der,
         cert_mac,
         mldsa_signature,

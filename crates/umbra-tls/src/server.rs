@@ -1,14 +1,18 @@
 //! Minimal TLS 1.3 server handshake state machine.
 
+use ring::{
+    rand::SystemRandom,
+    signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING},
+};
 use subtle::ConstantTimeEq;
 use umbra_crypto::x25519;
 use umbra_fingerprint::profile::FingerprintProfile;
 
 use crate::{
     handshake::{
-        build_server_hello, certificate_message, certificate_verify_message,
-        encrypted_extensions_message, first_record_payload, handshake_message, split_first_record,
-        DriveOut,
+        build_server_hello, certificate_message, certificate_verify_input,
+        certificate_verify_message, encrypted_extensions_message, first_record_payload,
+        handshake_message, split_first_record, DriveOut, SIGNATURE_ECDSA_SECP256R1_SHA256,
     },
     keyschedule::{
         derive_tls13_secrets, derive_traffic_keys, finished_verify_data, transcript_hash,
@@ -27,8 +31,8 @@ pub struct ForgedCert {
     pub leaf_der: Vec<u8>,
     /// Intermediate chain DER values.
     pub chain_der: Vec<Vec<u8>>,
-    /// Opaque CertificateVerify signature bytes.
-    pub certificate_verify_signature: Vec<u8>,
+    /// Ephemeral leaf private key DER used for TLS `CertificateVerify`.
+    pub certificate_verify_key_der: Vec<u8>,
 }
 
 /// Parameters that influence the visible server flight.
@@ -93,7 +97,7 @@ impl Tls13Server {
         let ForgedCert {
             leaf_der,
             chain_der,
-            certificate_verify_signature,
+            certificate_verify_key_der,
         } = leaf;
         let client_hello = parse_client_hello(chello_raw)?;
         let client_public = client_hello
@@ -126,10 +130,18 @@ impl Tls13Server {
 
         let encrypted_extensions = encrypted_extensions_message()?;
         let certificate = certificate_message(&leaf_der, &chain_der)?;
-        let certificate_verify = certificate_verify_message(&certificate_verify_signature)?;
-        let mut transcript_before_server_finished = handshake_transcript.clone();
-        transcript_before_server_finished.extend_from_slice(&encrypted_extensions);
-        transcript_before_server_finished.extend_from_slice(&certificate);
+        let mut transcript_before_certificate_verify = handshake_transcript.clone();
+        transcript_before_certificate_verify.extend_from_slice(&encrypted_extensions);
+        transcript_before_certificate_verify.extend_from_slice(&certificate);
+        let certificate_verify_signature = sign_certificate_verify(
+            &certificate_verify_key_der,
+            &transcript_hash(&transcript_before_certificate_verify),
+        )?;
+        let certificate_verify = certificate_verify_message(
+            SIGNATURE_ECDSA_SECP256R1_SHA256,
+            &certificate_verify_signature,
+        )?;
+        let mut transcript_before_server_finished = transcript_before_certificate_verify;
         transcript_before_server_finished.extend_from_slice(&certificate_verify);
         let verify_data = finished_verify_data(
             &hs_secrets.server_handshake_traffic_secret,
@@ -254,6 +266,21 @@ impl Tls13Server {
         }
         Ok(opened.plaintext)
     }
+}
+
+fn sign_certificate_verify(
+    leaf_private_key_der: &[u8],
+    transcript_hash: &[u8],
+) -> Result<Vec<u8>, TlsError> {
+    let rng = SystemRandom::new();
+    let key_pair =
+        EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, leaf_private_key_der, &rng)
+            .map_err(|_| TlsError::InvalidInput("bad CertificateVerify key"))?;
+    let signature_input = certificate_verify_input(transcript_hash);
+    let signature = key_pair
+        .sign(&rng, &signature_input)
+        .map_err(|_| TlsError::AuthenticationFailed)?;
+    Ok(signature.as_ref().to_vec())
 }
 
 fn parse_client_finished(input: &[u8]) -> Result<[u8; 32], TlsError> {

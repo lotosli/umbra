@@ -1601,12 +1601,15 @@ version = "0.0.0"
 dependencies = [
  "hkdf",
  "proptest",
+ "rcgen",
+ "ring",
  "sha2",
  "subtle",
  "thiserror 2.0.18",
  "umbra-crypto",
  "umbra-fingerprint",
  "umbra-proto",
+ "x509-parser",
 ]
 
 [[package]]

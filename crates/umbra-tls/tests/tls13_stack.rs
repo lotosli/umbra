@@ -379,6 +379,26 @@ fn scenario_certificate_callback_can_reject_peer() {
 }
 
 #[test]
+fn scenario_certificate_verify_signature_is_checked() {
+    let params = client_hello_params();
+    let profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
+    let (mut client, chello) = Tls13Client::start(params).expect("client should start");
+    let (_server, server_flight) = Tls13Server::accept(
+        &chello,
+        forged_cert_with_mismatched_certificate_verify_key(),
+        &profile,
+    )
+    .expect("server should sign with mismatched key");
+
+    assert_eq!(
+        client
+            .drive(&server_flight, &AcceptAll)
+            .expect_err("mismatched CertificateVerify key must fail"),
+        TlsError::AuthenticationFailed
+    );
+}
+
+#[test]
 fn scenario_state_machines_fail_fast_before_connected_and_on_tamper() {
     let params = client_hello_params();
     let profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
@@ -425,8 +445,8 @@ struct AcceptAll;
 
 impl CertVerify for AcceptAll {
     fn verify(&self, leaf_der: &[u8], chain: &[Vec<u8>]) -> PeerKind {
-        assert_eq!(leaf_der, b"leaf-der");
-        assert_eq!(chain, &[b"intermediate-der".to_vec()]);
+        assert!(!leaf_der.is_empty());
+        assert!(chain.is_empty());
         PeerKind::UmbraTrusted
     }
 }
@@ -459,10 +479,24 @@ fn params_with_profile(profile: FingerprintProfile) -> ClientHelloParams {
 }
 
 fn forged_cert() -> ForgedCert {
+    let rcgen::CertifiedKey { cert, key_pair } =
+        rcgen::generate_simple_self_signed(["server.example".to_owned()])
+            .expect("test certificate should generate");
     ForgedCert {
-        leaf_der: b"leaf-der".to_vec(),
-        chain_der: vec![b"intermediate-der".to_vec()],
-        certificate_verify_signature: vec![0x77; 32],
+        leaf_der: cert.der().as_ref().to_vec(),
+        chain_der: Vec::new(),
+        certificate_verify_key_der: key_pair.serialize_der(),
+    }
+}
+
+fn forged_cert_with_mismatched_certificate_verify_key() -> ForgedCert {
+    let cert = forged_cert();
+    let rcgen::CertifiedKey { key_pair, .. } =
+        rcgen::generate_simple_self_signed(["server.example".to_owned()])
+            .expect("test certificate should generate");
+    ForgedCert {
+        certificate_verify_key_der: key_pair.serialize_der(),
+        ..cert
     }
 }
 

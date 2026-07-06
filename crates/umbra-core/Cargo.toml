@@ -1,6 +1,6 @@
 [package]
 name = "umbra-core"
-description = "编排层：配置、服务端分派（组件 C）、SOCKS5 入站、中继、会话粘合"
+description = "编排层：配置、服务端分派与探测转发、SOCKS5 入站、中继、会话粘合"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,7 +20,8 @@ umbra-fingerprint.workspace = true
 umbra-reality.workspace = true
 umbra-inner.workspace = true
 umbra-transport.workspace = true
-# 实现时：tokio / serde / toml / humantime-serde / tracing / anyhow / thiserror
+thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 # umbra-testkit（回环 e2e）

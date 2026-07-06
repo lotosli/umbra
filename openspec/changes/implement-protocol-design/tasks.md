@@ -41,10 +41,10 @@
 
 - [x] 6.1 Implement `DestProfile` model and destination probe collection.
 - [x] 6.2 Implement startup and periodic profile refresh with last-known-good retention.
-- [ ] 6.3 Implement complete ClientHello read-before-response behavior.
-- [ ] 6.4 Implement authenticated dispatch into forged TLS handshake.
-- [ ] 6.5 Implement fallback forwarding to dest for all unauthenticated and malformed cases.
-- [ ] 6.6 Implement `PrefixedStream` and bidirectional relay helpers.
+- [x] 6.3 Implement complete ClientHello read-before-response behavior.
+- [x] 6.4 Implement authenticated dispatch into forged TLS handshake.
+- [x] 6.5 Implement fallback forwarding to dest for all unauthenticated and malformed cases.
+- [x] 6.6 Implement `PrefixedStream` and bidirectional relay helpers.
 
 ## 7. Inner Transport
 

@@ -26,6 +26,7 @@ use umbra_transport::{
 
 #[test]
 fn scenario_segment_strategy_parses_and_unknown_is_rejected() {
+    assert!(TcpEvasionPolicy::Off.is_off());
     assert_eq!(
         parse_tcp_evasion("segment").expect("segment parses"),
         TcpEvasionPolicy::Segment {
@@ -44,6 +45,11 @@ fn scenario_segment_strategy_parses_and_unknown_is_rejected() {
         parse_tcp_evasion("geneva:fragment{tcp}").expect("geneva parses"),
         TcpEvasionPolicy::Geneva("fragment{tcp}".to_owned())
     );
+    assert!(parse_tcp_evasion("geneva:").is_err());
+    assert!(parse_tcp_evasion("segment:threshold=x,first=4").is_err());
+    assert!(parse_tcp_evasion("segment:threshold=10,extra=4").is_err());
+    assert!(parse_tcp_evasion("segment:first=4").is_err());
+    assert!(parse_tcp_evasion("segment:threshold=10").is_err());
     assert!(parse_tcp_evasion("unknown").is_err());
 }
 
@@ -66,6 +72,25 @@ fn scenario_clienthello_is_split_and_fallback_preserves_bytes() {
         fallback_plan_on_recoverable_error(&hello, Err(RecoverableBeforeSend)),
         EvasionPlan::Ordinary(hello)
     );
+    assert_eq!(
+        plan_client_hello_writes(
+            b"short",
+            &TcpEvasionPolicy::Segment {
+                threshold: 64,
+                first_segment_len: 16,
+            },
+        )
+        .expect("short ClientHello stays single write"),
+        vec![b"short".to_vec()]
+    );
+    assert!(plan_client_hello_writes(
+        b"hello",
+        &TcpEvasionPolicy::Segment {
+            threshold: 0,
+            first_segment_len: 16,
+        },
+    )
+    .is_err());
 }
 
 #[tokio::test]
@@ -178,6 +203,34 @@ fn scenario_bad_quic_auth_is_forwarded_and_stream_carries_target() {
 
     assert_eq!(decoded, target);
     assert_eq!(&stream.bytes[consumed..], b"payload");
+}
+
+#[test]
+fn scenario_quic_carrier_rejects_invalid_profile_surface() {
+    let profile = load_profile("chrome-latest").expect("load profile");
+    let mut fp = quic_fingerprint_from_profile(&profile);
+    let token = [0x33_u8; 32];
+
+    fp.alpn = "h2".to_owned();
+    assert!(build_quic_client_hello_surface(&token, &fp).is_err());
+
+    fp.alpn = "h3".to_owned();
+    fp.scid_len = 4;
+    assert!(build_quic_client_hello_surface(&token, &fp).is_err());
+
+    fp.scid_len = 8;
+    fp.grease_value_capacity = 8;
+    let mut surface = build_quic_client_hello_surface(&token, &fp).expect("split carrier");
+    surface.transport_parameters.clear();
+    assert!(recover_quic_auth_token(&surface, &fp).is_err());
+
+    surface
+        .transport_parameters
+        .push(umbra_transport::quic::QuicTransportParameter {
+            id: fp.grease_parameter,
+            value: vec![0xaa; 8],
+        });
+    assert!(recover_quic_auth_token(&surface, &fp).is_err());
 }
 
 fn sample_tcp_client_hello(sni: &str) -> Vec<u8> {

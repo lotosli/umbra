@@ -1503,6 +1503,7 @@ version = "0.0.0"
 dependencies = [
  "base64",
  "rand 0.8.6",
+ "rcgen",
  "serde",
  "thiserror 2.0.18",
  "tokio",

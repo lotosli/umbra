@@ -152,3 +152,120 @@ where
 fn tls_to_io(err: TlsError) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err)
 }
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use umbra_crypto::x25519;
+    use umbra_fingerprint::load_profile;
+    use umbra_tls::{
+        clienthello::{ClientHelloParams, MlkemShare},
+        handshake::{CertVerify, PeerKind, Tls13Client},
+        server::{DestProfile, ForgedCert, Tls13Server},
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn scenario_tls_app_bridge_relays_plaintext_both_directions() {
+        let params = client_hello_params();
+        let profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
+        let (mut client, chello) = Tls13Client::start(params).expect("client starts");
+        let (mut server, server_flight) =
+            Tls13Server::accept(&chello, forged_cert(), &profile).expect("server accepts");
+        let client_out = client
+            .drive(&server_flight, &AcceptAll)
+            .expect("client completes");
+        server
+            .drive(&client_out.outbound)
+            .expect("server completes");
+
+        let (client_raw, server_raw) = tokio::io::duplex(16 * 1024);
+        let mut client_plain = spawn_tls_app_io(client_raw, TlsAppEndpoint::Client(client));
+        let mut server_plain = spawn_tls_app_io(server_raw, TlsAppEndpoint::Server(server));
+
+        client_plain
+            .write_all(b"client bytes")
+            .await
+            .expect("client writes plaintext");
+        let mut server_observed = [0_u8; 12];
+        server_plain
+            .read_exact(&mut server_observed)
+            .await
+            .expect("server reads plaintext");
+        assert_eq!(&server_observed, b"client bytes");
+
+        server_plain
+            .write_all(b"server bytes")
+            .await
+            .expect("server writes plaintext");
+        let mut client_observed = [0_u8; 12];
+        client_plain
+            .read_exact(&mut client_observed)
+            .await
+            .expect("client reads plaintext");
+        assert_eq!(&client_observed, b"server bytes");
+    }
+
+    #[tokio::test]
+    async fn scenario_read_tls_record_handles_complete_eof_and_truncated_input() {
+        let (mut writer, mut reader) = tokio::io::duplex(64);
+        writer
+            .write_all(&[0x17, 0x03, 0x03, 0x00, 0x01, 0xaa])
+            .await
+            .expect("write record");
+        let record = read_tls_record(&mut reader)
+            .await
+            .expect("record read succeeds")
+            .expect("record present");
+        assert_eq!(record, [0x17, 0x03, 0x03, 0x00, 0x01, 0xaa]);
+
+        let (writer, mut reader) = tokio::io::duplex(64);
+        drop(writer);
+        assert!(read_tls_record(&mut reader)
+            .await
+            .expect("eof read succeeds")
+            .is_none());
+
+        let (mut writer, mut reader) = tokio::io::duplex(64);
+        writer
+            .write_all(&[0x17, 0x03, 0x03, 0x00, 0x02, 0xaa])
+            .await
+            .expect("write truncated record");
+        writer.shutdown().await.expect("close writer");
+        assert!(read_tls_record(&mut reader).await.is_err());
+    }
+
+    struct AcceptAll;
+
+    impl CertVerify for AcceptAll {
+        fn verify(&self, _leaf_der: &[u8], _chain: &[Vec<u8>]) -> PeerKind {
+            PeerKind::UmbraTrusted
+        }
+    }
+
+    fn client_hello_params() -> ClientHelloParams {
+        let profile = load_profile("chrome-latest").expect("profile loads");
+        let keypair = x25519::generate_keypair();
+        ClientHelloParams {
+            sni: "server.example".to_owned(),
+            session_id: [0x44; 32],
+            x25519_priv: *keypair.private.expose_secret(),
+            x25519_pub: *keypair.public.as_bytes(),
+            mlkem: MlkemShare::x25519_mlkem768(vec![0x42; 32]),
+            profile,
+            random: [0x22; 32],
+        }
+    }
+
+    fn forged_cert() -> ForgedCert {
+        let rcgen::CertifiedKey { cert, key_pair } =
+            rcgen::generate_simple_self_signed(["server.example".to_owned()])
+                .expect("test cert generates");
+        ForgedCert {
+            leaf_der: cert.der().as_ref().to_vec(),
+            chain_der: Vec::new(),
+            certificate_verify_key_der: key_pair.serialize_der(),
+        }
+    }
+}

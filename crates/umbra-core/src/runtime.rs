@@ -740,3 +740,70 @@ where
         Err(err) => Err(CoreError::from(err)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use tokio::io::AsyncWriteExt;
+
+    use super::*;
+
+    #[test]
+    fn scenario_target_to_host_port_formats_all_address_kinds() {
+        assert_eq!(
+            target_to_host_port(&TargetAddr::Ipv4(Ipv4Addr::new(192, 0, 2, 1), 443)),
+            "192.0.2.1:443"
+        );
+        assert_eq!(
+            target_to_host_port(&TargetAddr::domain("example.com", 8443).expect("domain")),
+            "example.com:8443"
+        );
+        assert_eq!(
+            target_to_host_port(&TargetAddr::Ipv6(Ipv6Addr::LOCALHOST, 443)),
+            "[::1]:443"
+        );
+    }
+
+    #[tokio::test]
+    async fn scenario_required_tls_record_rejects_eof() {
+        let (writer, mut reader) = tokio::io::duplex(32);
+        drop(writer);
+
+        assert!(matches!(
+            read_required_tls_record(&mut reader).await,
+            Err(CoreError::InvalidClientHello("unexpected TLS EOF"))
+        ));
+    }
+
+    #[tokio::test]
+    async fn scenario_mux_close_ack_helpers_ignore_broken_pipe() {
+        let (client, server) = tokio::io::duplex(64);
+        drop(server);
+        let pad = PadScheme::none();
+        let mut mux = MuxSession::client(client, &pad).expect("mux creates");
+
+        finish_stream_best_effort(&mut mux, 1)
+            .await
+            .expect("broken pipe during FIN is ignored");
+        send_window_update_best_effort(&mut mux, 1, 1)
+            .await
+            .expect("broken pipe during WINDOW_UPDATE is ignored");
+    }
+
+    #[tokio::test]
+    async fn scenario_required_tls_record_reads_complete_record() {
+        let (mut writer, mut reader) = tokio::io::duplex(32);
+        writer
+            .write_all(&[0x17, 0x03, 0x03, 0x00, 0x01, 0x42])
+            .await
+            .expect("write record");
+
+        assert_eq!(
+            read_required_tls_record(&mut reader)
+                .await
+                .expect("record reads"),
+            [0x17, 0x03, 0x03, 0x00, 0x01, 0x42]
+        );
+    }
+}

@@ -7,6 +7,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use proptest::prelude::*;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
     time::timeout,
@@ -209,6 +210,63 @@ fn scenario_config_validation_rejects_bad_values() {
         ClientCfg::from_toml_str(&client_toml().replace("203.0.113.10:443", "missing-port")),
         Err(CoreError::InvalidConfig(_))
     ));
+}
+
+proptest! {
+    #[test]
+    fn prop_client_config_accepts_valid_overrides(
+        label in "[a-z][a-z0-9]{0,12}",
+        server_port in 1_u16..=u16::MAX,
+        socks_port in 1_u16..=u16::MAX,
+        spider_tail in "[a-z0-9/_-]{0,16}",
+    ) {
+        let server_name = format!("{label}.example");
+        let cfg = ClientCfg::from_toml_str_with_overrides(
+            &client_toml(),
+            ClientConfigOverrides {
+                server: Some(format!("{server_name}:{server_port}")),
+                server_name: Some(server_name.clone()),
+                socks_listen: Some(format!("127.0.0.1:{socks_port}")),
+                spider_path: Some(format!("/{spider_tail}")),
+                ..ClientConfigOverrides::default()
+            },
+        )
+        .expect("valid generated client config");
+
+        prop_assert_eq!(&cfg.server_name, &server_name);
+        prop_assert_eq!(cfg.server, format!("{server_name}:{server_port}"));
+        prop_assert_eq!(cfg.socks_listen.port(), socks_port);
+    }
+
+    #[test]
+    fn prop_server_config_accepts_positive_time_diff(seconds in 1_u64..=86_400) {
+        let cfg = ServerCfg::from_toml_str_with_overrides(
+            &server_toml(),
+            ServerConfigOverrides {
+                max_time_diff: Some(format!("{seconds}s")),
+                ..ServerConfigOverrides::default()
+            },
+        )
+        .expect("valid generated server config");
+
+        prop_assert_eq!(cfg.max_time_diff, Duration::from_secs(seconds));
+    }
+
+    #[test]
+    fn prop_config_rejects_whitespace_server_names(
+        left in "[a-z]{1,8}",
+        right in "[a-z]{1,8}",
+    ) {
+        let rejected = ClientCfg::from_toml_str_with_overrides(
+            &client_toml(),
+            ClientConfigOverrides {
+                server_name: Some(format!("{left} {right}.example")),
+                ..ClientConfigOverrides::default()
+            },
+        );
+
+        prop_assert!(rejected.is_err());
+    }
 }
 
 #[test]

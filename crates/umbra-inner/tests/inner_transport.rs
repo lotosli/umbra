@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use proptest::prelude::*;
 use rand::RngCore;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
@@ -93,6 +94,40 @@ fn scenario_invalid_padding_scheme_is_rejected() {
     assert!(parse_pad_scheme("early=1,min=9,max=2,later=0").is_err());
     assert!(parse_pad_scheme("early=abc,min=1,max=2,later=0").is_err());
     assert!(parse_pad_scheme("unknown=1").is_err());
+}
+
+proptest! {
+    #[test]
+    fn prop_explicit_padding_scheme_schedules_declared_lengths(
+        early in 1_usize..8,
+        min in 1_usize..128,
+        extra in 0_usize..128,
+        later in 0_usize..16,
+    ) {
+        let max = min + extra;
+        let input = format!("early={early},min={min},max={max},later={later}");
+        let scheme = parse_pad_scheme(&input).expect("valid generated padding scheme");
+        let mut planner = PaddingPlanner::new(scheme).expect("planner");
+        let frame = MuxFrame::new(MuxCommand::Data, 7, b"body".to_vec()).expect("data frame");
+        let mut rng = FixedRng::default();
+        let frames = planner
+            .schedule_with_rng(frame.clone(), &mut rng)
+            .expect("schedule generated scheme");
+
+        prop_assert!(frames.iter().any(|candidate| candidate == &frame));
+        for padding in frames.iter().filter(|candidate| is_padding(candidate)) {
+            prop_assert!(padding.payload.len() >= min);
+            prop_assert!(padding.payload.len() <= max);
+        }
+    }
+
+    #[test]
+    fn prop_invalid_padding_min_max_ranges_fail(min in 1_usize..512, max in 0_usize..512) {
+        prop_assume!(min > max);
+        let input = format!("early=0,min={min},max={max},later=0");
+
+        prop_assert!(parse_pad_scheme(&input).is_err());
+    }
 }
 
 #[test]

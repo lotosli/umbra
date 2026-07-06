@@ -82,11 +82,11 @@
 
 ## 11. Tests And Coverage >= 90%
 
-- [ ] 11.1 Add unit and integration tests for every `#### Scenario` in this change.
-- [ ] 11.2 Add proptest coverage for address parsing, mux frames, ClientHello parsing, config validation, and padding strategy parsing.
+- [x] 11.1 Add unit and integration tests for every `#### Scenario` in this change.
+- [x] 11.2 Add proptest coverage for address parsing, mux frames, ClientHello parsing, config validation, and padding strategy parsing.
 - [x] 11.3 Add fuzz targets for network byte parsers: ClientHello, mux frame, target address, and QUIC auth carrier.
-- [ ] 11.4 Add RFC/FIPS/vector tests for TLS key schedule, record protection, PQ wrappers, and certificate binding.
-- [ ] 11.5 Add loopback testkit tests for dispatch fallback, authenticated path, SOCKS-to-inner relay, and CLI config overrides.
+- [x] 11.4 Add RFC/FIPS/vector tests for TLS key schedule, record protection, PQ wrappers, and certificate binding.
+- [x] 11.5 Add loopback testkit tests for dispatch fallback, authenticated path, SOCKS-to-inner relay, and CLI config overrides.
 - [ ] 11.6 Run `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo nextest run --workspace`.
 - [ ] 11.7 Run `cargo xtask coverage` and keep line coverage >= 90% without lowering the threshold.
 - [ ] 11.8 Run `cargo deny check` and OpenSpec strict validation.

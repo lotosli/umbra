@@ -1922,6 +1922,7 @@ version = "0.0.0"
 dependencies = [
  "base64",
  "bytes",
+ "proptest",
  "quinn",
  "quinn-proto",
  "rand 0.8.6",
@@ -1977,6 +1978,7 @@ dependencies = [
 name = "umbra-inner"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "rand 0.8.6",
  "thiserror 2.0.18",
  "tokio",
@@ -2014,8 +2016,12 @@ dependencies = [
 name = "umbra-testkit"
 version = "0.0.0"
 dependencies = [
+ "tokio",
  "umbra-core",
+ "umbra-crypto",
+ "umbra-inner",
  "umbra-proto",
+ "umbra-reality",
 ]
 
 [[package]]

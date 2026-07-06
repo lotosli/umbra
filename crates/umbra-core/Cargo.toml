@@ -33,3 +33,4 @@ bytes.workspace = true
 [dev-dependencies]
 # umbra-testkit（回环 e2e）
 rcgen.workspace = true
+proptest.workspace = true

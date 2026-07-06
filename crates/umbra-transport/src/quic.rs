@@ -5,6 +5,12 @@ use umbra_proto::addr::TargetAddr;
 
 use crate::TransportError;
 
+const QUIC_LONG_HEADER_BIT: u8 = 0x80;
+const QUIC_FIXED_BIT: u8 = 0x40;
+const QUIC_LONG_TYPE_MASK: u8 = 0x30;
+const QUIC_LONG_TYPE_INITIAL: u8 = 0x00;
+const MAX_QUIC_CID_LEN: usize = 20;
+
 /// QUIC transport parameter.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct QuicTransportParameter {
@@ -40,6 +46,25 @@ pub struct QuicClientHelloSurface {
     pub scid: Vec<u8>,
     /// QUIC transport parameters.
     pub transport_parameters: Vec<QuicTransportParameter>,
+}
+
+/// Parsed QUIC Initial invariant header fields.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct QuicInitialHeader {
+    /// QUIC version from the long header.
+    pub version: u32,
+    /// Destination connection id.
+    pub dcid: Vec<u8>,
+    /// Source connection id.
+    pub scid: Vec<u8>,
+    /// Retry/initial token bytes.
+    pub token: Vec<u8>,
+    /// Protected payload length, including packet number bytes.
+    pub payload_len: usize,
+    /// Offset where the protected packet number starts.
+    pub packet_number_offset: usize,
+    /// Total length of the first QUIC packet in this datagram.
+    pub packet_len: usize,
 }
 
 /// QUIC dispatch decision for unauthenticated Initial datagrams.
@@ -134,6 +159,63 @@ pub fn recover_quic_auth_token(
     Ok(out)
 }
 
+/// Parse the invariant header of a QUIC Initial packet.
+///
+/// This intentionally stops before header protection and packet protection.
+/// REALITY-over-QUIC dispatch uses it to obtain the client SCID and to decide
+/// whether malformed datagrams must be forwarded instead of answered locally.
+pub fn parse_quic_initial_header(datagram: &[u8]) -> Result<QuicInitialHeader, TransportError> {
+    if datagram.len() < 7 {
+        return Err(TransportError::InvalidQuicSurface("short QUIC datagram"));
+    }
+    let first = datagram[0];
+    if first & QUIC_LONG_HEADER_BIT == 0 {
+        return Err(TransportError::InvalidQuicSurface(
+            "QUIC packet is not long header",
+        ));
+    }
+    if first & QUIC_FIXED_BIT == 0 {
+        return Err(TransportError::InvalidQuicSurface(
+            "QUIC fixed bit is not set",
+        ));
+    }
+    if first & QUIC_LONG_TYPE_MASK != QUIC_LONG_TYPE_INITIAL {
+        return Err(TransportError::InvalidQuicSurface(
+            "QUIC packet is not Initial",
+        ));
+    }
+
+    let mut offset = 1_usize;
+    let version = read_u32(datagram, &mut offset)?;
+    let dcid = read_cid(datagram, &mut offset)?;
+    let scid = read_cid(datagram, &mut offset)?;
+    let token_len = read_varint_usize(datagram, &mut offset)?;
+    let token = take(datagram, &mut offset, token_len)?.to_vec();
+    let payload_len = read_varint_usize(datagram, &mut offset)?;
+    let packet_number_offset = offset;
+    let packet_len =
+        packet_number_offset
+            .checked_add(payload_len)
+            .ok_or(TransportError::InvalidQuicSurface(
+                "QUIC packet length overflows",
+            ))?;
+    if datagram.len() < packet_len {
+        return Err(TransportError::InvalidQuicSurface(
+            "truncated QUIC Initial payload",
+        ));
+    }
+
+    Ok(QuicInitialHeader {
+        version,
+        dcid,
+        scid,
+        token,
+        payload_len,
+        packet_number_offset,
+        packet_len,
+    })
+}
+
 /// Decide whether a bad QUIC auth result must be forwarded.
 #[must_use]
 pub fn quic_dispatch_bad_auth(datagram: &[u8]) -> QuicDispatchDecision {
@@ -168,4 +250,50 @@ fn split_auth_token(
         scid[..8].copy_from_slice(&auth_token[..8]);
         Ok((scid, auth_token[8..].to_vec()))
     }
+}
+
+fn read_u32(input: &[u8], offset: &mut usize) -> Result<u32, TransportError> {
+    let bytes = take(input, offset, 4)?;
+    Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn read_cid(input: &[u8], offset: &mut usize) -> Result<Vec<u8>, TransportError> {
+    let len = usize::from(
+        *input
+            .get(*offset)
+            .ok_or(TransportError::InvalidQuicSurface(
+                "missing QUIC CID length",
+            ))?,
+    );
+    *offset += 1;
+    if len > MAX_QUIC_CID_LEN {
+        return Err(TransportError::InvalidQuicSurface(
+            "QUIC CID length is too large",
+        ));
+    }
+    Ok(take(input, offset, len)?.to_vec())
+}
+
+fn read_varint_usize(input: &[u8], offset: &mut usize) -> Result<usize, TransportError> {
+    let first = *input
+        .get(*offset)
+        .ok_or(TransportError::InvalidQuicSurface("missing QUIC varint"))?;
+    let len = 1_usize << usize::from(first >> 6);
+    let bytes = take(input, offset, len)?;
+    let mut value = u64::from(bytes[0] & 0x3f);
+    for byte in &bytes[1..] {
+        value = (value << 8) | u64::from(*byte);
+    }
+    usize::try_from(value).map_err(|_| TransportError::InvalidQuicSurface("QUIC varint too large"))
+}
+
+fn take<'a>(input: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8], TransportError> {
+    let end = offset
+        .checked_add(len)
+        .ok_or(TransportError::InvalidQuicSurface("QUIC offset overflows"))?;
+    let bytes = input
+        .get(*offset..end)
+        .ok_or(TransportError::InvalidQuicSurface("truncated QUIC field"))?;
+    *offset = end;
+    Ok(bytes)
 }

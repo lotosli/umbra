@@ -15,8 +15,9 @@ use umbra_transport::{
         EvasionPlan, RecoverableBeforeSend, TcpEvasionPolicy,
     },
     quic::{
-        build_quic_client_hello_surface, open_target_stream, quic_dispatch_bad_auth,
-        quic_fingerprint_from_profile, recover_quic_auth_token, QuicDispatchDecision,
+        build_quic_client_hello_surface, open_target_stream, parse_quic_initial_header,
+        quic_dispatch_bad_auth, quic_fingerprint_from_profile, recover_quic_auth_token,
+        QuicDispatchDecision,
     },
     tcp::{
         accept_once_with_dispatch, bind_listener, build_tcp_client_hello, send_client_hello,
@@ -233,6 +234,48 @@ fn scenario_quic_carrier_rejects_invalid_profile_surface() {
     assert!(recover_quic_auth_token(&surface, &fp).is_err());
 }
 
+#[test]
+fn scenario_quic_initial_header_exposes_scid_for_dispatch() {
+    let datagram = sample_quic_initial();
+    let header = parse_quic_initial_header(&datagram).expect("Initial header parses");
+
+    assert_eq!(header.version, 1);
+    assert_eq!(header.dcid, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(
+        header.scid,
+        vec![0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7]
+    );
+    assert_eq!(header.token, vec![0xbb, 0xcc]);
+    assert_eq!(header.payload_len, 4);
+    assert_eq!(header.packet_number_offset, 27);
+    assert_eq!(header.packet_len, 31);
+}
+
+#[test]
+fn scenario_quic_initial_header_rejects_malformed_datagrams() {
+    assert!(parse_quic_initial_header(b"short").is_err());
+
+    let mut short_header = sample_quic_initial();
+    short_header[0] = 0x40;
+    assert!(parse_quic_initial_header(&short_header).is_err());
+
+    let mut fixed_bit_missing = sample_quic_initial();
+    fixed_bit_missing[0] = 0x80;
+    assert!(parse_quic_initial_header(&fixed_bit_missing).is_err());
+
+    let mut zero_rtt = sample_quic_initial();
+    zero_rtt[0] = 0xd0;
+    assert!(parse_quic_initial_header(&zero_rtt).is_err());
+
+    let mut cid_too_large = sample_quic_initial();
+    cid_too_large[5] = 21;
+    assert!(parse_quic_initial_header(&cid_too_large).is_err());
+
+    let mut truncated_payload = sample_quic_initial();
+    truncated_payload.pop();
+    assert!(parse_quic_initial_header(&truncated_payload).is_err());
+}
+
 fn sample_tcp_client_hello(sni: &str) -> Vec<u8> {
     let profile = load_profile("chrome-latest").expect("load profile");
     let keypair = x25519::generate_keypair();
@@ -246,4 +289,19 @@ fn sample_tcp_client_hello(sni: &str) -> Vec<u8> {
         random: [0x22_u8; 32],
     })
     .expect("build TCP ClientHello")
+}
+
+fn sample_quic_initial() -> Vec<u8> {
+    let mut datagram = Vec::new();
+    datagram.push(0xc0);
+    datagram.extend_from_slice(&1_u32.to_be_bytes());
+    datagram.push(8);
+    datagram.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    datagram.push(8);
+    datagram.extend_from_slice(&[0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7]);
+    datagram.push(2);
+    datagram.extend_from_slice(&[0xbb, 0xcc]);
+    datagram.push(4);
+    datagram.extend_from_slice(&[0, 0, 0, 1]);
+    datagram
 }

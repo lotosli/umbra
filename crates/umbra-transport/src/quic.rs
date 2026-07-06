@@ -22,6 +22,9 @@ const QUIC_FRAME_ACK_ECN: u8 = 0x03;
 const QUIC_FRAME_CRYPTO: u8 = 0x06;
 const QUIC_FRAME_CONNECTION_CLOSE_TRANSPORT: u8 = 0x1c;
 const QUIC_FRAME_CONNECTION_CLOSE_APPLICATION: u8 = 0x1d;
+const QUIC_MIN_INITIAL_DATAGRAM_LEN: usize = 1200;
+const QUIC_INITIAL_PACKET_NUMBER: u64 = 1;
+const QUIC_INITIAL_PACKET_NUMBER_LEN: usize = 4;
 
 /// QUIC transport parameter.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -199,6 +202,37 @@ pub fn recover_quic_auth_token_from_initial(
     recover_quic_auth_token(&surface, fp)
 }
 
+/// Build a protected client QUIC Initial packet carrying raw ClientHello CRYPTO bytes.
+pub fn build_quic_initial_crypto_packet(
+    crypto: &[u8],
+    dcid: &[u8],
+    scid: &[u8],
+    token: &[u8],
+) -> Result<Vec<u8>, TransportError> {
+    validate_cid(dcid)?;
+    validate_cid(scid)?;
+    let mut padding_len = 0_usize;
+    loop {
+        let plaintext = crypto_plaintext(crypto, padding_len)?;
+        let packet = seal_client_initial_plaintext(
+            &plaintext,
+            dcid,
+            scid,
+            token,
+            QUIC_INITIAL_PACKET_NUMBER,
+            QUIC_INITIAL_PACKET_NUMBER_LEN,
+        )?;
+        if packet.len() >= QUIC_MIN_INITIAL_DATAGRAM_LEN {
+            return Ok(packet);
+        }
+        padding_len = padding_len
+            .checked_add(QUIC_MIN_INITIAL_DATAGRAM_LEN - packet.len())
+            .ok_or(TransportError::InvalidQuicSurface(
+                "QUIC Initial padding length overflows",
+            ))?;
+    }
+}
+
 /// Parse the invariant header of a QUIC Initial packet.
 ///
 /// This intentionally stops before header protection and packet protection.
@@ -340,6 +374,168 @@ fn split_auth_token(
     }
 }
 
+fn validate_cid(cid: &[u8]) -> Result<(), TransportError> {
+    if cid.len() > MAX_QUIC_CID_LEN {
+        return Err(TransportError::InvalidQuicSurface(
+            "QUIC CID length is too large",
+        ));
+    }
+    Ok(())
+}
+
+fn append_packet_number(
+    packet_number: u64,
+    packet_number_len: usize,
+    out: &mut Vec<u8>,
+) -> Result<(), TransportError> {
+    if !(1..=4).contains(&packet_number_len) {
+        return Err(TransportError::InvalidQuicSurface(
+            "invalid QUIC packet number length",
+        ));
+    }
+    let bytes = packet_number.to_be_bytes();
+    out.extend_from_slice(&bytes[bytes.len() - packet_number_len..]);
+    Ok(())
+}
+
+fn crypto_plaintext(crypto: &[u8], padding_len: usize) -> Result<Vec<u8>, TransportError> {
+    let mut plaintext = Vec::new();
+    plaintext.push(QUIC_FRAME_CRYPTO);
+    write_varint(0, &mut plaintext)?;
+    write_varint(
+        u64::try_from(crypto.len())
+            .map_err(|_| TransportError::InvalidQuicSurface("CRYPTO length is too large"))?,
+        &mut plaintext,
+    )?;
+    plaintext.extend_from_slice(crypto);
+    let new_len =
+        plaintext
+            .len()
+            .checked_add(padding_len)
+            .ok_or(TransportError::InvalidQuicSurface(
+                "QUIC padding length overflows",
+            ))?;
+    plaintext.resize(new_len, QUIC_FRAME_PADDING);
+    Ok(plaintext)
+}
+
+fn seal_client_initial_plaintext(
+    plaintext: &[u8],
+    dcid: &[u8],
+    scid: &[u8],
+    token: &[u8],
+    packet_number: u64,
+    packet_number_len: usize,
+) -> Result<Vec<u8>, TransportError> {
+    if !(1..=4).contains(&packet_number_len) {
+        return Err(TransportError::InvalidQuicSurface(
+            "invalid QUIC packet number length",
+        ));
+    }
+    validate_cid(dcid)?;
+    validate_cid(scid)?;
+    let suite = initial_quic_suite()?;
+    let keys = suite.keys(dcid, Side::Client, Version::V1);
+
+    let mut header = Vec::new();
+    header.push(
+        0xc0 | u8::try_from(packet_number_len - 1)
+            .map_err(|_| TransportError::InvalidQuicSurface("invalid QUIC packet number length"))?,
+    );
+    header.extend_from_slice(&1_u32.to_be_bytes());
+    header.push(
+        u8::try_from(dcid.len())
+            .map_err(|_| TransportError::InvalidQuicSurface("QUIC DCID length is too large"))?,
+    );
+    header.extend_from_slice(dcid);
+    header.push(
+        u8::try_from(scid.len())
+            .map_err(|_| TransportError::InvalidQuicSurface("QUIC SCID length is too large"))?,
+    );
+    header.extend_from_slice(scid);
+    write_varint(
+        u64::try_from(token.len())
+            .map_err(|_| TransportError::InvalidQuicSurface("QUIC token length is too large"))?,
+        &mut header,
+    )?;
+    header.extend_from_slice(token);
+    let payload_len = packet_number_len
+        .checked_add(plaintext.len())
+        .and_then(|len| len.checked_add(keys.local.packet.tag_len()))
+        .ok_or(TransportError::InvalidQuicSurface(
+            "QUIC Initial payload length overflows",
+        ))?;
+    write_varint(
+        u64::try_from(payload_len).map_err(|_| {
+            TransportError::InvalidQuicSurface("QUIC Initial payload length is too large")
+        })?,
+        &mut header,
+    )?;
+    let packet_number_offset = header.len();
+    append_packet_number(packet_number, packet_number_len, &mut header)?;
+
+    let mut payload = plaintext.to_vec();
+    let tag = keys
+        .local
+        .packet
+        .encrypt_in_place(packet_number, &header, &mut payload)
+        .map_err(|_| TransportError::InvalidQuicSurface("QUIC Initial encryption failed"))?;
+    let mut packet = header;
+    packet.extend_from_slice(&payload);
+    packet.extend_from_slice(tag.as_ref());
+    add_header_protection(
+        &mut packet,
+        packet_number_offset,
+        keys.local.header.as_ref(),
+    )?;
+    Ok(packet)
+}
+
+fn add_header_protection(
+    packet: &mut [u8],
+    packet_number_offset: usize,
+    key: &dyn HeaderProtectionKey,
+) -> Result<(), TransportError> {
+    let sample_start =
+        packet_number_offset
+            .checked_add(4)
+            .ok_or(TransportError::InvalidQuicSurface(
+                "QUIC sample offset overflows",
+            ))?;
+    let sample_end =
+        sample_start
+            .checked_add(key.sample_len())
+            .ok_or(TransportError::InvalidQuicSurface(
+                "QUIC sample length overflows",
+            ))?;
+    let sample = packet
+        .get(sample_start..sample_end)
+        .ok_or(TransportError::InvalidQuicSurface(
+            "QUIC header protection sample is truncated",
+        ))?
+        .to_vec();
+    let packet_number_end =
+        packet_number_offset
+            .checked_add(4)
+            .ok_or(TransportError::InvalidQuicSurface(
+                "QUIC packet number offset overflows",
+            ))?;
+    if packet_number_end > packet.len() {
+        return Err(TransportError::InvalidQuicSurface(
+            "truncated QUIC protected packet number",
+        ));
+    }
+    let (first, rest) = packet.split_at_mut(1);
+    let pn_start =
+        packet_number_offset
+            .checked_sub(1)
+            .ok_or(TransportError::InvalidQuicSurface(
+                "invalid QUIC packet number offset",
+            ))?;
+    key.encrypt_in_place(&sample, &mut first[0], &mut rest[pn_start..pn_start + 4])
+        .map_err(|_| TransportError::InvalidQuicSurface("QUIC header protection failed"))
+}
+
 fn read_u32(input: &[u8], offset: &mut usize) -> Result<u32, TransportError> {
     let bytes = take(input, offset, 4)?;
     Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
@@ -373,6 +569,31 @@ fn read_varint_usize(input: &[u8], offset: &mut usize) -> Result<usize, Transpor
         value = (value << 8) | u64::from(*byte);
     }
     usize::try_from(value).map_err(|_| TransportError::InvalidQuicSurface("QUIC varint too large"))
+}
+
+fn write_varint(value: u64, out: &mut Vec<u8>) -> Result<(), TransportError> {
+    if value < 64 {
+        out.push(
+            u8::try_from(value)
+                .map_err(|_| TransportError::InvalidQuicSurface("QUIC varint is too large"))?,
+        );
+    } else if value < 16_384 {
+        let encoded = u16::try_from(value | 0x4000)
+            .map_err(|_| TransportError::InvalidQuicSurface("QUIC varint is too large"))?;
+        out.extend_from_slice(&encoded.to_be_bytes());
+    } else if value < 1_073_741_824 {
+        let encoded = u32::try_from(value | 0x8000_0000)
+            .map_err(|_| TransportError::InvalidQuicSurface("QUIC varint is too large"))?;
+        out.extend_from_slice(&encoded.to_be_bytes());
+    } else if value < 4_611_686_018_427_387_904 {
+        let encoded = value | 0xc000_0000_0000_0000;
+        out.extend_from_slice(&encoded.to_be_bytes());
+    } else {
+        return Err(TransportError::InvalidQuicSurface(
+            "QUIC varint is too large",
+        ));
+    }
+    Ok(())
 }
 
 fn initial_quic_suite() -> Result<rustls::quic::Suite, TransportError> {
@@ -539,6 +760,24 @@ mod tests {
         let crypto = b"\x01\x00\x00\x00test-client-hello";
         let datagram = seal_client_initial_crypto_for_test(crypto, &[]);
 
+        assert_eq!(
+            decrypt_quic_initial_crypto(&datagram).expect("Initial decrypts"),
+            crypto
+        );
+    }
+
+    #[test]
+    fn scenario_quic_initial_builder_encrypts_clienthello_crypto() {
+        let crypto = b"\x01\x00\x00\x04test";
+        let dcid = [9_u8, 8, 7, 6, 5, 4, 3, 2];
+        let scid = [0x11_u8, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18];
+        let datagram =
+            build_quic_initial_crypto_packet(crypto, &dcid, &scid, &[]).expect("Initial builds");
+
+        assert!(datagram.len() >= QUIC_MIN_INITIAL_DATAGRAM_LEN);
+        let header = parse_quic_initial_header(&datagram).expect("header parses");
+        assert_eq!(header.dcid, dcid);
+        assert_eq!(header.scid, scid);
         assert_eq!(
             decrypt_quic_initial_crypto(&datagram).expect("Initial decrypts"),
             crypto

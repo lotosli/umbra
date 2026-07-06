@@ -39,8 +39,8 @@
 
 ## 6. Destination Prebuild And Dispatch
 
-- [ ] 6.1 Implement `DestProfile` model and destination probe collection.
-- [ ] 6.2 Implement startup and periodic profile refresh with last-known-good retention.
+- [x] 6.1 Implement `DestProfile` model and destination probe collection.
+- [x] 6.2 Implement startup and periodic profile refresh with last-known-good retention.
 - [ ] 6.3 Implement complete ClientHello read-before-response behavior.
 - [ ] 6.4 Implement authenticated dispatch into forged TLS handshake.
 - [ ] 6.5 Implement fallback forwarding to dest for all unauthenticated and malformed cases.

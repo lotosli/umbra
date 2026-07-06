@@ -30,6 +30,15 @@ pub enum RealityError {
     /// ClientHello SNI is not allowed by the server configuration.
     #[error("REALITY server name is not allowed")]
     ServerNameRejected,
+    /// Destination address or collected destination data is invalid.
+    #[error("invalid destination profile: {0}")]
+    InvalidDestProfile(&'static str),
+    /// No destination profile has been built yet.
+    #[error("no active destination profile")]
+    NoActiveProfile,
+    /// Destination probing failed.
+    #[error("destination probing failed: {0}")]
+    ProbeFailed(&'static str),
     /// Replay cache rejected a repeated token/key.
     #[error("REALITY replay detected")]
     Replay,

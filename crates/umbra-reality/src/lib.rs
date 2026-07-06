@@ -5,6 +5,7 @@
 
 pub mod auth;
 pub mod error;
+pub mod prebuild;
 pub mod replay;
 
 pub use error::RealityError;

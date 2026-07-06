@@ -269,7 +269,7 @@ impl Tls13Server {
     }
 }
 
-fn sign_certificate_verify(
+pub(crate) fn sign_certificate_verify(
     leaf_private_key_der: &[u8],
     transcript_hash: &[u8],
 ) -> Result<Vec<u8>, TlsError> {
@@ -284,7 +284,7 @@ fn sign_certificate_verify(
     Ok(signature.as_ref().to_vec())
 }
 
-fn parse_client_finished(input: &[u8]) -> Result<[u8; 32], TlsError> {
+pub(crate) fn parse_client_finished(input: &[u8]) -> Result<[u8; 32], TlsError> {
     if input.len() != 36 || input[0] != HANDSHAKE_FINISHED {
         return Err(TlsError::InvalidInput("bad client Finished"));
     }

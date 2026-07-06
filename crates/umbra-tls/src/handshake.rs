@@ -89,16 +89,16 @@ pub struct ServerHelloData {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-struct ParsedServerFlight {
-    encrypted_extensions: Vec<u8>,
-    certificate: Vec<u8>,
-    certificate_chain: Vec<Vec<u8>>,
-    certificate_verify_scheme: u16,
-    certificate_verify_signature: Vec<u8>,
-    finished: [u8; 32],
-    transcript_before_certificate_verify: Vec<u8>,
-    transcript_before_finished: Vec<u8>,
-    transcript_after_finished: Vec<u8>,
+pub(crate) struct ParsedServerFlight {
+    pub(crate) encrypted_extensions: Vec<u8>,
+    pub(crate) certificate: Vec<u8>,
+    pub(crate) certificate_chain: Vec<Vec<u8>>,
+    pub(crate) certificate_verify_scheme: u16,
+    pub(crate) certificate_verify_signature: Vec<u8>,
+    pub(crate) finished: [u8; 32],
+    pub(crate) transcript_before_certificate_verify: Vec<u8>,
+    pub(crate) transcript_before_finished: Vec<u8>,
+    pub(crate) transcript_after_finished: Vec<u8>,
 }
 
 impl Tls13Client {
@@ -372,6 +372,11 @@ pub(crate) fn split_first_record(input: &[u8]) -> Result<(&[u8], &[u8]), TlsErro
 /// Parse a plaintext ServerHello handshake record.
 pub fn parse_server_hello_record(record: &[u8]) -> Result<ServerHelloData, TlsError> {
     let handshake = first_record_payload(record)?;
+    parse_server_hello_handshake(&handshake)
+}
+
+/// Parse a plaintext ServerHello handshake message.
+pub fn parse_server_hello_handshake(handshake: &[u8]) -> Result<ServerHelloData, TlsError> {
     if handshake.len() < 4 || handshake[0] != HANDSHAKE_SERVER_HELLO {
         return Err(TlsError::InvalidInput("not a ServerHello"));
     }
@@ -419,7 +424,7 @@ pub fn parse_server_hello_record(record: &[u8]) -> Result<ServerHelloData, TlsEr
     }
 
     Ok(ServerHelloData {
-        handshake,
+        handshake: handshake.to_vec(),
         session_id,
         cipher_suite,
         x25519_key_share: x25519_key_share
@@ -427,7 +432,7 @@ pub fn parse_server_hello_record(record: &[u8]) -> Result<ServerHelloData, TlsEr
     })
 }
 
-fn parse_server_flight(
+pub(crate) fn parse_server_flight(
     input: &[u8],
     transcript_prefix: &[u8],
 ) -> Result<ParsedServerFlight, TlsError> {
@@ -550,7 +555,7 @@ pub(crate) fn certificate_verify_input(transcript_hash: &[u8]) -> Vec<u8> {
     input
 }
 
-fn verify_certificate_verify(
+pub(crate) fn verify_certificate_verify(
     leaf_der: &[u8],
     scheme: u16,
     signature: &[u8],

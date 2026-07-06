@@ -9,6 +9,7 @@ pub mod error;
 pub mod handshake;
 pub mod keyschedule;
 pub mod parse;
+pub mod quic;
 pub mod records;
 pub mod server;
 

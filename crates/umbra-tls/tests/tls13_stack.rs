@@ -15,6 +15,7 @@ use umbra_tls::{
         hkdf_extract, transcript_hash,
     },
     parse::parse_client_hello,
+    quic::{QuicTlsClient, QuicTlsServer},
     records::{
         open_record, seal_record, RecordLayer, CONTENT_TYPE_ALERT, CONTENT_TYPE_APPLICATION_DATA,
         CONTENT_TYPE_HANDSHAKE,
@@ -438,6 +439,63 @@ fn scenario_client_handshake_completes_against_test_server() {
             .drive(&client_out.outbound)
             .expect_err("second server drive must fail"),
         TlsError::InvalidInput("server handshake already complete")
+    );
+}
+
+#[test]
+fn scenario_quic_tls_raw_handshake_derives_matching_secrets() {
+    let mut params = client_hello_params();
+    params.session_id = Vec::new();
+    let profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
+    let (mut client, chello) = QuicTlsClient::start(&params).expect("QUIC client should start");
+
+    assert_eq!(chello[0], 0x01);
+    let mut accepted =
+        QuicTlsServer::accept(&chello, forged_cert(), &profile).expect("QUIC server accepts");
+    assert_eq!(accepted.server_hello[0], 0x02);
+    let client_hs = client
+        .read_server_hello(&accepted.server_hello)
+        .expect("client reads ServerHello");
+    assert_eq!(
+        client_hs.cipher_suite,
+        accepted.handshake_secrets.cipher_suite
+    );
+    assert_eq!(client_hs.client, accepted.handshake_secrets.client);
+    assert_eq!(client_hs.server, accepted.handshake_secrets.server);
+
+    let client_finished = client
+        .read_server_flight(&accepted.server_flight, &AcceptAll)
+        .expect("client reads server flight");
+    assert_eq!(client_finished.peer_kind, PeerKind::UmbraTrusted);
+    assert_eq!(client_finished.finished[0], 0x14);
+    let server_app = accepted
+        .server
+        .read_client_finished(&client_finished.finished)
+        .expect("server reads client Finished");
+    assert_eq!(
+        server_app.cipher_suite,
+        client_finished.application_secrets.cipher_suite
+    );
+    assert_eq!(
+        server_app.client,
+        client_finished.application_secrets.client
+    );
+    assert_eq!(
+        server_app.server,
+        client_finished.application_secrets.server
+    );
+}
+
+#[test]
+fn scenario_quic_tls_rejects_compatibility_session_id() {
+    let params = client_hello_params();
+
+    let Err(err) = QuicTlsClient::start(&params) else {
+        panic!("non-empty QUIC session id must fail");
+    };
+    assert_eq!(
+        err,
+        TlsError::InvalidInput("QUIC ClientHello legacy_session_id must be empty")
     );
 }
 

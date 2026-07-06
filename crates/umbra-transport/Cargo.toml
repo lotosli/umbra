@@ -1,6 +1,6 @@
 [package]
 name = "umbra-transport"
-description = "外层传输：TCP / QUIC(HTTP-3) / Geneva 式 TCP 分段抗 RST（组件 G/H）"
+description = "外层传输：TCP / QUIC(HTTP-3) / Geneva 式 TCP 分段抗 RST"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,7 @@ umbra-proto.workspace = true
 umbra-crypto.workspace = true
 umbra-tls.workspace = true
 umbra-fingerprint.workspace = true
-# 实现时：tokio / socket2（分段/TTL）/ quinn 或 quiche（QUIC）
+thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]

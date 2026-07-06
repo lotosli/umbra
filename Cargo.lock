@@ -1478,6 +1478,8 @@ dependencies = [
 name = "umbra-transport"
 version = "0.0.0"
 dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
  "umbra-crypto",
  "umbra-fingerprint",
  "umbra-proto",

@@ -57,11 +57,11 @@
 
 ## 8. Transport Layer
 
-- [ ] 8.1 Implement TCP outer connect, listener, and ordinary ClientHello send path.
-- [ ] 8.2 Implement TCP evasion strategy parser and conservative segmentation writer.
-- [ ] 8.3 Implement evasion fallback to ordinary TCP sending.
-- [ ] 8.4 Implement QUIC fingerprint model and REALITY-over-QUIC auth carrier parsing.
-- [ ] 8.5 Implement QUIC dispatch fallback and authenticated stream carrying surface.
+- [x] 8.1 Implement TCP outer connect, listener, and ordinary ClientHello send path.
+- [x] 8.2 Implement TCP evasion strategy parser and conservative segmentation writer.
+- [x] 8.3 Implement evasion fallback to ordinary TCP sending.
+- [x] 8.4 Implement QUIC fingerprint model and REALITY-over-QUIC auth carrier parsing.
+- [x] 8.5 Implement QUIC dispatch fallback and authenticated stream carrying surface.
 
 ## 9. Core Runtime
 

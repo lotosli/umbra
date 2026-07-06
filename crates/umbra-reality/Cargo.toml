@@ -16,6 +16,8 @@ workspace = true
 umbra-proto.workspace = true
 umbra-crypto.workspace = true
 umbra-tls.workspace = true
-# 实现时：rcgen / x509-parser / lru（反重放）/ tokio（探测 dest）
+subtle.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true

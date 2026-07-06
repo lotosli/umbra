@@ -1003,6 +1003,9 @@ dependencies = [
 name = "umbra-reality"
 version = "0.0.0"
 dependencies = [
+ "proptest",
+ "subtle",
+ "thiserror",
  "umbra-crypto",
  "umbra-proto",
  "umbra-tls",

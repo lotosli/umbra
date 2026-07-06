@@ -30,9 +30,9 @@
 
 ## 5. REALITY Authentication And Certificates
 
-- [ ] 5.1 Implement `HELLO0` construction and REALITY session id seal/open.
-- [ ] 5.2 Implement version, timestamp, short id, SNI policy, and bounded replay validation.
-- [ ] 5.3 Implement replay cache capacity, TTL cleanup, and constant-time comparisons where secrets are involved.
+- [x] 5.1 Implement `HELLO0` construction and REALITY session id seal/open.
+- [x] 5.2 Implement version, timestamp, short id, SNI policy, and bounded replay validation.
+- [x] 5.3 Implement replay cache capacity, TTL cleanup, and constant-time comparisons where secrets are involved.
 - [ ] 5.4 Implement forged certificate generation from `DestProfile`.
 - [ ] 5.5 Implement cert MAC private extension and verifier classification.
 - [ ] 5.6 Implement ML-DSA certificate extension signing and verification.

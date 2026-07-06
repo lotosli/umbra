@@ -1500,6 +1500,237 @@ mod tests {
         assert!(recover_quic_auth_token_from_initial(&datagram, &fp).is_err());
     }
 
+    #[test]
+    fn scenario_quic_retry_integrity_tag_validates_and_rejects_tamper() {
+        let orig_dst_cid = [0x51_u8; 8];
+        let header = b"\xf0retry-header";
+        let body = b"retry-body";
+        let mut pseudo_packet = header.to_vec();
+        pseudo_packet.extend_from_slice(body);
+
+        let tag = quic_retry_integrity_tag(1, &orig_dst_cid, &pseudo_packet)
+            .expect("v1 Retry tag builds");
+        let mut payload = body.to_vec();
+        payload.extend_from_slice(&tag);
+        assert!(quic_retry_integrity_valid(
+            1,
+            &orig_dst_cid,
+            header,
+            &payload
+        ));
+
+        let draft_tag = quic_retry_integrity_tag(0xff00_001d, &orig_dst_cid, &pseudo_packet)
+            .expect("draft Retry tag builds");
+        let mut draft_payload = body.to_vec();
+        draft_payload.extend_from_slice(&draft_tag);
+        assert!(quic_retry_integrity_valid(
+            0xff00_001d,
+            &orig_dst_cid,
+            header,
+            &draft_payload
+        ));
+
+        let mut tampered_body = payload.clone();
+        tampered_body[0] ^= 0x01;
+        assert!(!quic_retry_integrity_valid(
+            1,
+            &orig_dst_cid,
+            header,
+            &tampered_body
+        ));
+
+        let mut tampered_tag = payload.clone();
+        let last = tampered_tag.len() - 1;
+        tampered_tag[last] ^= 0x01;
+        assert!(!quic_retry_integrity_valid(
+            1,
+            &orig_dst_cid,
+            header,
+            &tampered_tag
+        ));
+
+        assert!(!quic_retry_integrity_valid(
+            2,
+            &orig_dst_cid,
+            header,
+            &payload
+        ));
+        assert!(!quic_retry_integrity_valid(
+            1,
+            &orig_dst_cid,
+            header,
+            &payload[..QUIC_PACKET_TAG_LEN - 1]
+        ));
+        assert!(quic_retry_integrity_tag(1, &[0_u8; 256], &pseudo_packet).is_err());
+    }
+
+    #[test]
+    fn scenario_quic_packet_key_derivation_and_protection_round_trip() {
+        let secret = [0x42_u8; 32];
+        let secrets = QuicTrafficSecrets {
+            cipher_suite: TLS_AES_128_GCM_SHA256,
+            client: secret,
+            server: [0x24_u8; 32],
+        };
+
+        assert!(derive_quic_packet_protection_pair(&secrets).is_ok());
+        assert!(derive_quinn_packet_keys(&secrets, QuinnSide::Client).is_ok());
+        assert!(derive_quinn_packet_keys(&secrets, QuinnSide::Server).is_ok());
+        assert!(derive_initial_quinn_packet_keys(1, &[1_u8; 8], QuinnSide::Client).is_ok());
+        assert!(
+            derive_initial_quinn_packet_keys(0xff00_001d, &[1_u8; 8], QuinnSide::Server).is_ok()
+        );
+        assert!(derive_initial_quinn_packet_keys(2, &[1_u8; 8], QuinnSide::Client).is_err());
+
+        for cipher_suite in [
+            TLS_AES_128_GCM_SHA256,
+            TLS_AES_256_GCM_SHA384,
+            TLS_CHACHA20_POLY1305_SHA256,
+        ] {
+            let protection = derive_quic_packet_protection(cipher_suite, &secret)
+                .expect("packet protection derives");
+            assert_eq!(protection.tag_len(), QUIC_PACKET_TAG_LEN);
+
+            let header = b"protected-header";
+            let mut payload = b"payload".to_vec();
+            let tag = protection
+                .seal_packet_payload(7, header, &mut payload)
+                .expect("payload seals");
+            payload.extend_from_slice(&tag);
+            assert_eq!(
+                protection
+                    .open_packet_payload(7, header, &mut payload)
+                    .expect("payload opens"),
+                b"payload"
+            );
+
+            let mut tampered = payload.clone();
+            tampered[0] ^= 0x01;
+            assert!(protection
+                .open_packet_payload(7, header, &mut tampered)
+                .is_err());
+
+            let sample = [0x55_u8; QUIC_PACKET_TAG_LEN];
+            let mut first = 0xc3;
+            let mut packet_number = [0_u8, 0, 0, 7];
+            let original_first = first;
+            let original_packet_number = packet_number;
+            protection
+                .apply_header_protection(&sample, &mut first, &mut packet_number)
+                .expect("header protection applies");
+            assert_ne!(
+                (first, packet_number),
+                (original_first, original_packet_number)
+            );
+            protection
+                .remove_header_protection(&sample, &mut first, &mut packet_number)
+                .expect("header protection removes");
+            assert_eq!(
+                (first, packet_number),
+                (original_first, original_packet_number)
+            );
+
+            let mut too_long_packet_number = [0_u8; 5];
+            assert!(protection
+                .apply_header_protection(&sample, &mut first, &mut too_long_packet_number)
+                .is_err());
+        }
+
+        assert!(derive_quic_packet_protection(0x9999, &secret).is_err());
+    }
+
+    #[test]
+    fn scenario_quic_initial_header_rejects_malformed_invariant_fields() {
+        let datagram = seal_client_initial_crypto_for_test(b"\x01\x00\x00\x00", &[]);
+        let parsed = parse_quic_initial_header(&datagram).expect("valid header parses");
+        assert_eq!(parsed.token, Vec::<u8>::new());
+
+        assert!(parse_quic_initial_header(&datagram[..6]).is_err());
+
+        let mut not_long = datagram.clone();
+        not_long[0] &= !QUIC_LONG_HEADER_BIT;
+        assert!(parse_quic_initial_header(&not_long).is_err());
+
+        let mut no_fixed = datagram.clone();
+        no_fixed[0] &= !QUIC_FIXED_BIT;
+        assert!(parse_quic_initial_header(&no_fixed).is_err());
+
+        let mut not_initial = datagram.clone();
+        not_initial[0] = (not_initial[0] & !QUIC_LONG_TYPE_MASK) | 0x10;
+        assert!(parse_quic_initial_header(&not_initial).is_err());
+
+        let mut too_long_cid = vec![0xc0];
+        too_long_cid.extend_from_slice(&1_u32.to_be_bytes());
+        too_long_cid.push(u8::try_from(MAX_QUIC_CID_LEN + 1).expect("CID len"));
+        too_long_cid.extend_from_slice(&[0_u8; MAX_QUIC_CID_LEN + 1]);
+        assert!(parse_quic_initial_header(&too_long_cid).is_err());
+
+        let mut truncated_token = vec![0xc0];
+        truncated_token.extend_from_slice(&1_u32.to_be_bytes());
+        truncated_token.extend_from_slice(&[1, 1, 1, 2, 0xaa]);
+        assert!(parse_quic_initial_header(&truncated_token).is_err());
+
+        let mut missing_payload_len = vec![0xc0];
+        missing_payload_len.extend_from_slice(&1_u32.to_be_bytes());
+        missing_payload_len.extend_from_slice(&[1, 1, 1, 2, 0xaa, 0xbb]);
+        assert!(parse_quic_initial_header(&missing_payload_len).is_err());
+
+        let mut truncated_payload = datagram;
+        truncated_payload.truncate(parsed.packet_len - 1);
+        assert!(parse_quic_initial_header(&truncated_payload).is_err());
+    }
+
+    #[test]
+    fn scenario_quic_initial_frame_parser_handles_ack_ecn_and_truncation() {
+        let plaintext = [
+            QUIC_FRAME_ACK_ECN,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            QUIC_FRAME_CRYPTO,
+            0,
+            1,
+            0xee,
+        ];
+        let datagram = seal_client_initial_plaintext_for_test(&plaintext, &[]);
+        assert_eq!(
+            decrypt_quic_initial_crypto(&datagram).expect("ACK_ECN is skipped"),
+            [0xee]
+        );
+
+        let truncated_ack = seal_client_initial_plaintext_for_test(
+            &[QUIC_FRAME_ACK, 0, 0, 1, 0, 0, QUIC_FRAME_CRYPTO, 0, 1, 0xee],
+            &[],
+        );
+        assert!(decrypt_quic_initial_crypto(&truncated_ack).is_err());
+
+        let truncated_crypto =
+            seal_client_initial_plaintext_for_test(&[QUIC_FRAME_CRYPTO, 0, 2, 0xaa], &[]);
+        assert!(decrypt_quic_initial_crypto(&truncated_crypto).is_err());
+    }
+
+    #[test]
+    fn scenario_quic_target_stream_payload_round_trips_and_rejects_bad_prefix() {
+        let target = TargetAddr::domain("example.com", 443).expect("target");
+        let stream = open_target_stream(&target, b"GET / HTTP/3").expect("stream opens");
+        let (parsed, remaining) =
+            parse_target_stream_payload(&stream.bytes).expect("stream parses");
+
+        assert_eq!(parsed, target);
+        assert_eq!(remaining, b"GET / HTTP/3");
+        assert_eq!(
+            quic_dispatch_bad_auth(b"bad initial"),
+            QuicDispatchDecision::ForwardToDest {
+                datagram: b"bad initial".to_vec(),
+            }
+        );
+        assert!(parse_target_stream_payload(&[0xff]).is_err());
+    }
+
     fn quic_client_hello_crypto_for_test(
         session_id: Vec<u8>,
         token: [u8; 32],

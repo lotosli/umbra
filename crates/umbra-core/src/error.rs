@@ -18,6 +18,24 @@ pub enum CoreError {
     /// Runtime configuration is invalid.
     #[error("invalid runtime configuration: {0}")]
     InvalidConfig(&'static str),
+    /// Runtime configuration could not be parsed.
+    #[error("configuration parse failed: {0}")]
+    ConfigParse(String),
+    /// SOCKS5 negotiation or request parsing failed.
+    #[error("SOCKS5 error: {0}")]
+    Socks(&'static str),
+    /// Shared wire protocol parser failed.
+    #[error(transparent)]
+    Protocol(#[from] umbra_proto::ProtocolError),
+    /// Inner transport failed.
+    #[error(transparent)]
+    Inner(#[from] umbra_inner::InnerError),
+    /// Outer transport failed.
+    #[error(transparent)]
+    Transport(#[from] umbra_transport::TransportError),
+    /// Fingerprint profile loading or validation failed.
+    #[error(transparent)]
+    Fingerprint(#[from] umbra_fingerprint::FingerprintError),
     /// TLS component failed.
     #[error(transparent)]
     Tls(#[from] umbra_tls::TlsError),

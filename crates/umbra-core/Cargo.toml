@@ -22,6 +22,10 @@ umbra-inner.workspace = true
 umbra-transport.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+serde.workspace = true
+toml.workspace = true
+base64.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 # umbra-testkit（回环 e2e）

@@ -5,7 +5,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    time::Instant,
+};
 use umbra_crypto::{secret::Secret, x25519};
 use umbra_reality::{
     auth::{open_session_id, validate_server_name},
@@ -19,7 +22,7 @@ use umbra_tls::{
     server::Tls13Server,
 };
 
-use crate::CoreError;
+use crate::{probe::TimingAlignment, CoreError};
 
 const TLS_RECORD_HEADER_LEN: usize = 5;
 const TLS_RECORD_HANDSHAKE: u8 = 0x16;
@@ -299,7 +302,7 @@ where
 
 /// Dispatch with an injected destination connector, primarily for tests.
 pub async fn dispatch_with_connector<C, D, Connect, ConnectFuture>(
-    mut conn: C,
+    conn: C,
     cfg: &ServerCfg,
     profile: &DestProfile,
     replay: &ReplayCache,
@@ -312,6 +315,35 @@ where
     Connect: FnOnce(String) -> ConnectFuture,
     ConnectFuture: Future<Output = Result<D, std::io::Error>>,
 {
+    dispatch_with_connector_and_timing(
+        conn,
+        cfg,
+        profile,
+        replay,
+        now_unix,
+        connect_dest,
+        TimingAlignment::disabled(),
+    )
+    .await
+}
+
+/// Dispatch with an injected destination connector and first-byte timing policy.
+pub async fn dispatch_with_connector_and_timing<C, D, Connect, ConnectFuture>(
+    mut conn: C,
+    cfg: &ServerCfg,
+    profile: &DestProfile,
+    replay: &ReplayCache,
+    now_unix: u64,
+    connect_dest: Connect,
+    timing: TimingAlignment,
+) -> Result<DispatchOutcome, CoreError>
+where
+    C: AsyncRead + AsyncWrite + Unpin,
+    D: AsyncRead + AsyncWrite + Unpin,
+    Connect: FnOnce(String) -> ConnectFuture,
+    ConnectFuture: Future<Output = Result<D, std::io::Error>>,
+{
+    let started_at = Instant::now();
     let chello_raw = read_client_hello_raw(&mut conn, cfg.hello_limits).await?;
     match classify_client_hello(
         chello_raw,
@@ -323,6 +355,7 @@ where
         },
     )? {
         DispatchDecision::Authenticated(authenticated) => {
+            timing.wait_started_at(started_at, profile).await;
             conn.write_all(&authenticated.server_flight).await?;
             conn.flush().await?;
             Ok(DispatchOutcome::Authenticated {

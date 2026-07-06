@@ -6,8 +6,13 @@
 //! 规范来源：`docs/protocol-design.md` 的服务端分派、SOCKS5、运行参数章节；OpenSpec 能力：
 //! `server-dispatch`、`socks-inbound`、`config`、`orchestration`。
 
+pub mod config;
 pub mod dispatch;
 pub mod error;
 pub mod prefixed;
+pub mod probe;
+pub mod relay;
+pub mod runtime;
+pub mod socks;
 
 pub use error::CoreError;

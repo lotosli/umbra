@@ -1,0 +1,948 @@
+//! Integration tests for configuration, SOCKS5, runtime orchestration, and probe resistance.
+
+use std::{
+    fs,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use tokio::{
+    io::{self, AsyncReadExt, AsyncWriteExt},
+    time::timeout,
+};
+use umbra_core::{
+    config::{ClientCfg, ClientConfigOverrides, ServerCfg, ServerConfigOverrides, TransportKind},
+    probe::{
+        FallbackRelayPolicy, ProbeResistancePolicy, TimingAlignment, UselessRecordAction,
+        UselessRecordPolicy,
+    },
+    relay::relay_bidirectional,
+    runtime::{
+        client_session_with_outer, open_outer_from_config, run_realsite_spider, ClientConnectPlan,
+        ClientInnerMode, ClientRuntime, ServerRuntime,
+    },
+    socks::{accept_connect, negotiate_no_auth},
+    CoreError,
+};
+use umbra_crypto::x25519;
+use umbra_inner::mux::MuxSession;
+use umbra_proto::addr::TargetAddr;
+use umbra_reality::prebuild::{CertTemplate, DestProfile};
+use umbra_tls::parse::parse_client_hello;
+
+#[test]
+fn scenario_complete_server_config_loads() {
+    let cfg = ServerCfg::from_toml_str(&server_toml()).expect("server config loads");
+
+    assert_eq!(cfg.listen.to_string(), "127.0.0.1:0");
+    assert_eq!(
+        cfg.udp_listen.expect("udp listen configured").to_string(),
+        "127.0.0.1:0"
+    );
+    assert_eq!(cfg.private_key.expose_secret(), &[1_u8; 32]);
+    assert_eq!(
+        cfg.short_ids,
+        vec![Vec::<u8>::new(), vec![1, 35, 69, 103, 137, 171, 205, 239]]
+    );
+    assert_eq!(cfg.dest, "www.microsoft.com:443");
+    assert_eq!(cfg.server_names, vec!["www.microsoft.com"]);
+    assert_eq!(cfg.max_time_diff, Duration::from_mins(2));
+    assert!(cfg.prebuild);
+    assert!(format!("{cfg:?}").contains("<redacted>"));
+    assert!(!format!("{cfg:?}").contains(&b64(1)));
+}
+
+#[test]
+fn scenario_complete_client_config_loads() {
+    let cfg = ClientCfg::from_toml_str(&client_toml()).expect("client config loads");
+
+    assert_eq!(cfg.server, "203.0.113.10:443");
+    assert_eq!(cfg.transport, TransportKind::Tcp);
+    assert_eq!(cfg.public_key.as_bytes(), &[3_u8; 32]);
+    assert_eq!(cfg.short_id, vec![1, 35, 69, 103, 137, 171, 205, 239]);
+    assert_eq!(cfg.server_name, "www.microsoft.com");
+    assert_eq!(cfg.fingerprint, "chrome-latest");
+    assert_eq!(cfg.mldsa_verify, vec![4_u8; 32]);
+    assert_eq!(cfg.spider_path, "/client-a");
+    assert!(cfg.mux);
+    assert!(!format!("{cfg:?}").contains(&b64(3)));
+}
+
+#[test]
+fn scenario_invalid_key_is_rejected() {
+    let bad = server_toml().replace(&b64(1), "not-base64");
+    let err = ServerCfg::from_toml_str(&bad).expect_err("invalid key rejected");
+
+    assert!(matches!(err, CoreError::InvalidConfig(_)));
+}
+
+#[test]
+fn scenario_cli_listen_overrides_file() {
+    let cfg = ServerCfg::from_toml_str_with_overrides(
+        &server_toml(),
+        ServerConfigOverrides {
+            listen: Some("127.0.0.1:9443".to_owned()),
+            ..ServerConfigOverrides::default()
+        },
+    )
+    .expect("override config loads");
+
+    assert_eq!(cfg.listen.to_string(), "127.0.0.1:9443");
+}
+
+#[test]
+fn scenario_client_cli_transport_override_is_validated() {
+    let err = ClientCfg::from_toml_str_with_overrides(
+        &client_toml(),
+        ClientConfigOverrides {
+            transport: Some("invalid".to_owned()),
+            ..ClientConfigOverrides::default()
+        },
+    )
+    .expect_err("invalid override rejected");
+
+    assert!(matches!(err, CoreError::InvalidConfig(_)));
+}
+
+#[test]
+fn scenario_config_file_load_and_all_overrides_apply() {
+    let path = std::env::temp_dir().join(format!("umbra-core-config-{}.toml", std::process::id()));
+    fs::write(&path, server_toml()).expect("write temp config");
+
+    let cfg = ServerCfg::from_file_with_overrides(
+        &path,
+        ServerConfigOverrides {
+            listen: Some("127.0.0.1:9443".to_owned()),
+            udp_listen: Some("127.0.0.1:9444".to_owned()),
+            private_key: Some(b64(8)),
+            short_ids: Some(vec!["aa".to_owned()]),
+            dest: Some("override.example:443".to_owned()),
+            server_names: Some(vec!["override.example".to_owned()]),
+            max_time_diff: Some("2m".to_owned()),
+            mldsa_seed: Some(b64(9)),
+            prebuild: Some(false),
+            padding_scheme: Some("default".to_owned()),
+            tcp_evasion: Some("segment:threshold=128,first=64".to_owned()),
+        },
+    )
+    .expect("file config with overrides loads");
+    fs::remove_file(&path).expect("remove temp config");
+
+    assert_eq!(cfg.listen.to_string(), "127.0.0.1:9443");
+    assert_eq!(cfg.udp_listen.expect("udp").to_string(), "127.0.0.1:9444");
+    assert_eq!(cfg.private_key.expose_secret(), &[8_u8; 32]);
+    assert_eq!(cfg.short_ids, vec![vec![0xaa]]);
+    assert_eq!(cfg.dest, "override.example:443");
+    assert_eq!(cfg.server_names, vec!["override.example"]);
+    assert_eq!(cfg.max_time_diff, Duration::from_mins(2));
+    assert!(!cfg.prebuild);
+}
+
+#[test]
+fn scenario_client_all_overrides_apply() {
+    let cfg = ClientCfg::from_toml_str_with_overrides(
+        &client_toml(),
+        ClientConfigOverrides {
+            server: Some("198.51.100.7:8443".to_owned()),
+            transport: Some("quic".to_owned()),
+            public_key: Some(b64(10)),
+            short_id: Some(String::new()),
+            server_name: Some("alt.example".to_owned()),
+            fingerprint: Some("chrome-latest".to_owned()),
+            mldsa_verify: Some(b64(11)),
+            spider_path: Some("/alt".to_owned()),
+            socks_listen: Some("127.0.0.1:2080".to_owned()),
+            mux: Some(false),
+            padding_scheme: Some("default".to_owned()),
+            tcp_evasion: Some("geneva:fragment{tcp:flags:PA}".to_owned()),
+        },
+    )
+    .expect("client overrides load");
+
+    assert_eq!(cfg.server, "198.51.100.7:8443");
+    assert_eq!(cfg.transport, TransportKind::Quic);
+    assert_eq!(cfg.public_key.as_bytes(), &[10_u8; 32]);
+    assert!(cfg.short_id.is_empty());
+    assert_eq!(cfg.server_name, "alt.example");
+    assert_eq!(cfg.spider_path, "/alt");
+    assert_eq!(cfg.socks_listen.to_string(), "127.0.0.1:2080");
+    assert!(!cfg.mux);
+}
+
+#[test]
+fn scenario_config_validation_rejects_bad_values() {
+    assert!(matches!(
+        ServerCfg::from_toml_str(&server_toml().replace("120s", "0s")),
+        Err(CoreError::InvalidConfig(_))
+    ));
+    assert!(matches!(
+        ServerCfg::from_toml_str(&server_toml().replace("www.microsoft.com", "bad name")),
+        Err(CoreError::InvalidConfig(_))
+    ));
+    assert!(matches!(
+        ServerCfg::from_toml_str(&server_toml().replace("0123456789abcdef", "abc")),
+        Err(CoreError::InvalidConfig(_))
+    ));
+    assert!(matches!(
+        ClientCfg::from_toml_str(&client_toml().replace("/client-a", "relative")),
+        Err(CoreError::InvalidConfig(_))
+    ));
+    assert!(matches!(
+        ClientCfg::from_toml_str(&client_toml().replace("203.0.113.10:443", "missing-port")),
+        Err(CoreError::InvalidConfig(_))
+    ));
+}
+
+#[test]
+fn scenario_dispatch_config_conversion_preserves_runtime_values() {
+    let cfg = ServerCfg::from_toml_str(&server_toml()).expect("server config loads");
+    let dispatch_cfg = cfg.into_dispatch_cfg();
+
+    assert_eq!(dispatch_cfg.dest, "www.microsoft.com:443");
+    assert_eq!(dispatch_cfg.max_time_diff, 120);
+    assert_eq!(dispatch_cfg.server_names, vec!["www.microsoft.com"]);
+    assert_eq!(dispatch_cfg.short_ids.len(), 2);
+}
+
+#[test]
+fn scenario_config_defaults_file_loading_and_debug_paths() {
+    let server = format!(
+        r#"
+listen = "127.0.0.1:0"
+private_key = "{}"
+short_ids = ["aa"]
+dest = "default.example:443"
+server_names = ["default.example"]
+max_time_diff = "1h"
+mldsa_seed = "{}"
+"#,
+        b64(12),
+        b64(13)
+    );
+    let cfg = ServerCfg::from_toml_str(&server).expect("server defaults load");
+    assert!(cfg.udp_listen.is_none());
+    assert!(cfg.prebuild);
+    assert_eq!(cfg.max_time_diff, Duration::from_hours(1));
+
+    let path = std::env::temp_dir().join(format!("umbra-core-client-{}.toml", std::process::id()));
+    fs::write(&path, client_toml()).expect("write client config");
+    let cfg = ClientCfg::from_file_with_overrides(
+        &path,
+        ClientConfigOverrides {
+            socks_listen: Some("127.0.0.1:2081".to_owned()),
+            ..ClientConfigOverrides::default()
+        },
+    )
+    .expect("client file loads");
+    fs::remove_file(&path).expect("remove client config");
+    assert_eq!(cfg.socks_listen.to_string(), "127.0.0.1:2081");
+
+    let err = ServerCfg::from_toml_str("unknown = true").expect_err("unknown field rejected");
+    assert!(matches!(err, CoreError::ConfigParse(_)));
+
+    let server_overrides = ServerConfigOverrides {
+        private_key: Some(b64(1)),
+        short_ids: Some(vec!["aa".to_owned(), "bb".to_owned()]),
+        dest: Some("secret.example:443".to_owned()),
+        mldsa_seed: Some(b64(2)),
+        ..ServerConfigOverrides::default()
+    };
+    let debug = format!("{server_overrides:?}");
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains("secret.example"));
+
+    let client_overrides = ClientConfigOverrides {
+        server: Some("secret.example:443".to_owned()),
+        public_key: Some(b64(3)),
+        short_id: Some("aa".to_owned()),
+        mldsa_verify: Some(b64(4)),
+        ..ClientConfigOverrides::default()
+    };
+    let debug = format!("{client_overrides:?}");
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains("secret.example"));
+}
+
+#[tokio::test]
+async fn scenario_no_auth_method_selected() {
+    let (mut client, mut server) = io::duplex(64);
+
+    client
+        .write_all(&[0x05, 0x02, 0x02, 0x00])
+        .await
+        .expect("write negotiation");
+    negotiate_no_auth(&mut server)
+        .await
+        .expect("no-auth selected");
+
+    let mut reply = [0_u8; 2];
+    client.read_exact(&mut reply).await.expect("read reply");
+    assert_eq!(reply, [0x05, 0x00]);
+}
+
+#[tokio::test]
+async fn scenario_domain_connect_creates_target_address() {
+    let (mut client, mut server) = io::duplex(128);
+    client
+        .write_all(&socks_connect_domain("example.com", 443, 0x01))
+        .await
+        .expect("write connect");
+
+    let connect = accept_connect(&mut server)
+        .await
+        .expect("domain connect accepted");
+
+    assert_eq!(
+        connect.target,
+        TargetAddr::domain("example.com", 443).expect("valid domain")
+    );
+    let mut replies = [0_u8; 12];
+    client.read_exact(&mut replies).await.expect("read replies");
+    assert_eq!(&replies[..2], &[0x05, 0x00]);
+    assert_eq!(&replies[2..4], &[0x05, 0x00]);
+}
+
+#[tokio::test]
+async fn scenario_udp_associate_is_rejected() {
+    let (mut client, mut server) = io::duplex(128);
+    client
+        .write_all(&socks_connect_domain("example.com", 443, 0x03))
+        .await
+        .expect("write associate");
+
+    let err = accept_connect(&mut server)
+        .await
+        .expect_err("UDP associate rejected");
+
+    assert!(matches!(err, CoreError::Socks("unsupported SOCKS command")));
+    let mut replies = [0_u8; 12];
+    client.read_exact(&mut replies).await.expect("read replies");
+    assert_eq!(&replies[..2], &[0x05, 0x00]);
+    assert_eq!(&replies[2..4], &[0x05, 0x07]);
+}
+
+#[tokio::test]
+async fn scenario_socks_ipv4_and_ipv6_connect_requests_parse() {
+    let (mut client4, mut server4) = io::duplex(128);
+    client4
+        .write_all(&[
+            0x05, 0x01, 0x00, 0x05, 0x01, 0x00, 0x01, 192, 0, 2, 1, 0x01, 0xbb,
+        ])
+        .await
+        .expect("write ipv4 request");
+    let ipv4 = accept_connect(&mut server4).await.expect("ipv4 accepted");
+    assert_eq!(
+        ipv4.target,
+        TargetAddr::Ipv4(std::net::Ipv4Addr::new(192, 0, 2, 1), 443)
+    );
+
+    let (mut client6, mut server6) = io::duplex(128);
+    let mut request = vec![0x05, 0x01, 0x00, 0x05, 0x01, 0x00, 0x04];
+    request.extend_from_slice(&std::net::Ipv6Addr::LOCALHOST.octets());
+    request.extend_from_slice(&443_u16.to_be_bytes());
+    client6
+        .write_all(&request)
+        .await
+        .expect("write ipv6 request");
+    let ipv6 = accept_connect(&mut server6).await.expect("ipv6 accepted");
+    assert_eq!(
+        ipv6.target,
+        TargetAddr::Ipv6(std::net::Ipv6Addr::LOCALHOST, 443)
+    );
+}
+
+#[tokio::test]
+async fn scenario_socks_negotiation_failures_are_explicit() {
+    let (mut client, mut server) = io::duplex(64);
+    client
+        .write_all(&[0x05, 0x01, 0x02])
+        .await
+        .expect("write methods");
+    let err = negotiate_no_auth(&mut server)
+        .await
+        .expect_err("missing no-auth rejected");
+    assert!(matches!(
+        err,
+        CoreError::Socks("SOCKS no-auth method missing")
+    ));
+    let mut reply = [0_u8; 2];
+    client.read_exact(&mut reply).await.expect("read reply");
+    assert_eq!(reply, [0x05, 0xff]);
+
+    let (mut client, mut server) = io::duplex(64);
+    client
+        .write_all(&[0x04, 0x01, 0x00])
+        .await
+        .expect("write bad version");
+    assert!(matches!(
+        negotiate_no_auth(&mut server).await,
+        Err(CoreError::Socks("unsupported SOCKS version"))
+    ));
+}
+
+#[tokio::test]
+async fn scenario_socks_request_failures_are_explicit() {
+    let (mut client, mut server) = io::duplex(64);
+    client
+        .write_all(&[0x05, 0x00])
+        .await
+        .expect("write empty methods");
+    assert!(matches!(
+        negotiate_no_auth(&mut server).await,
+        Err(CoreError::Socks("no SOCKS auth methods offered"))
+    ));
+    let mut reply = [0_u8; 2];
+    client.read_exact(&mut reply).await.expect("read reply");
+    assert_eq!(reply, [0x05, 0xff]);
+
+    let (mut client, mut server) = io::duplex(128);
+    client
+        .write_all(&[0x05, 0x01, 0x00, 0x05, 0x01, 0x01, 0x01])
+        .await
+        .expect("write bad reserved byte");
+    let err = accept_connect(&mut server)
+        .await
+        .expect_err("reserved byte rejected");
+    assert!(matches!(
+        err,
+        CoreError::Socks("SOCKS reserved byte is invalid")
+    ));
+
+    let (mut client, mut server) = io::duplex(128);
+    client
+        .write_all(&[0x05, 0x01, 0x00, 0x05, 0x01, 0x00, 0x09])
+        .await
+        .expect("write unsupported address type");
+    let err = accept_connect(&mut server)
+        .await
+        .expect_err("unsupported atyp rejected");
+    assert!(matches!(
+        err,
+        CoreError::Socks("unsupported SOCKS address type")
+    ));
+
+    let (mut client, mut server) = io::duplex(128);
+    client
+        .write_all(&[0x05, 0x01, 0x00, 0x05, 0x01, 0x00, 0x03, 0x00])
+        .await
+        .expect("write empty domain");
+    let err = accept_connect(&mut server)
+        .await
+        .expect_err("empty domain rejected");
+    assert!(matches!(err, CoreError::Socks("SOCKS domain is empty")));
+}
+
+#[tokio::test]
+async fn scenario_server_starts_configured_listeners() {
+    let cfg = ServerCfg::from_toml_str(&server_toml()).expect("server config loads");
+    let runtime = ServerRuntime::bind_with_profile(
+        cfg,
+        sample_dest_profile(),
+        ProbeResistancePolicy::default(),
+    )
+    .await
+    .expect("runtime binds");
+
+    assert_eq!(runtime.listener_count(), 2);
+    assert!(runtime.prebuild_enabled());
+    assert!(matches!(
+        runtime.tcp_evasion(),
+        umbra_transport::evasion::TcpEvasionPolicy::Off
+    ));
+    assert_eq!(
+        runtime.padding_scheme(),
+        &umbra_inner::padding::PadScheme::none()
+    );
+    assert_ne!(runtime.local_addr().expect("tcp addr").port(), 0);
+    assert_ne!(
+        runtime
+            .udp_local_addr()
+            .expect("udp addr")
+            .expect("udp bound")
+            .port(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn scenario_socks_request_opens_selected_tcp_mux_stream() {
+    let cfg = ClientCfg::from_toml_str(&client_toml()).expect("client config loads");
+    let (mut socks_client, mut socks_server) = io::duplex(4096);
+    let (outer_client, outer_server) = io::duplex(4096);
+    let observed_plan = Arc::new(Mutex::new(None));
+    let plan_slot = Arc::clone(&observed_plan);
+    let server_task = tokio::spawn(async move {
+        let mut mux = MuxSession::server(outer_server, &umbra_inner::padding::PadScheme::none())
+            .expect("server mux");
+        mux.accept().await.expect("server accepts mux stream").1
+    });
+
+    socks_client
+        .write_all(&socks_connect_domain("target.example", 8443, 0x01))
+        .await
+        .expect("write SOCKS request");
+    let session = client_session_with_outer(&cfg, &mut socks_server, move |plan| {
+        *plan_slot.lock().expect("plan mutex") = Some(plan.clone());
+        async move { Ok::<_, CoreError>(outer_client) }
+    })
+    .await
+    .expect("client session opens mux");
+
+    let mut replies = [0_u8; 12];
+    socks_client
+        .read_exact(&mut replies)
+        .await
+        .expect("read SOCKS replies");
+    assert_eq!(&replies[..2], &[0x05, 0x00]);
+    assert_eq!(&replies[2..4], &[0x05, 0x00]);
+    assert_eq!(session.transport, TransportKind::Tcp);
+    assert_eq!(session.mode, ClientInnerMode::Mux);
+    assert_eq!(
+        session.target,
+        TargetAddr::domain("target.example", 8443).expect("valid target")
+    );
+    assert_eq!(
+        observed_plan
+            .lock()
+            .expect("plan mutex")
+            .as_ref()
+            .expect("plan")
+            .mode,
+        ClientInnerMode::Mux
+    );
+    assert_eq!(
+        server_task.await.expect("server task"),
+        TargetAddr::domain("target.example", 8443).expect("valid target")
+    );
+}
+
+#[tokio::test]
+async fn scenario_socks_request_opens_solo_vision_preface() {
+    let cfg = ClientCfg::from_toml_str_with_overrides(
+        &client_toml(),
+        ClientConfigOverrides {
+            mux: Some(false),
+            ..ClientConfigOverrides::default()
+        },
+    )
+    .expect("client config loads");
+    let (mut socks_client, mut socks_server) = io::duplex(4096);
+    let (outer_client, mut outer_server) = io::duplex(4096);
+    socks_client
+        .write_all(&socks_connect_domain("solo.example", 443, 0x01))
+        .await
+        .expect("write SOCKS request");
+
+    let session = client_session_with_outer(&cfg, &mut socks_server, |_plan| async move {
+        Ok::<_, CoreError>(outer_client)
+    })
+    .await
+    .expect("client session opens solo");
+
+    let mut preface = [0_u8; 16];
+    outer_server
+        .read_exact(&mut preface)
+        .await
+        .expect("read solo preface");
+    assert_eq!(preface[0], 0x03);
+    assert_eq!(session.mode, ClientInnerMode::VisionSolo);
+}
+
+#[tokio::test]
+async fn scenario_server_runtime_accepts_and_dispatches_fallback() {
+    let cfg = ServerCfg::from_toml_str(&server_toml()).expect("server config loads");
+    let runtime = ServerRuntime::bind_with_profile(
+        cfg,
+        sample_dest_profile(),
+        ProbeResistancePolicy::default(),
+    )
+    .await
+    .expect("runtime binds");
+    let addr = runtime.local_addr().expect("runtime addr");
+    let (dest_stream, mut dest_peer) = io::duplex(4096);
+    let accept_task = tokio::spawn(async move {
+        runtime
+            .accept_one_with_connector(
+                move |_dest| async move { Ok::<_, std::io::Error>(dest_stream) },
+            )
+            .await
+    });
+    let mut client = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("connect runtime");
+    let malformed = malformed_client_hello_record();
+    client
+        .write_all(&malformed)
+        .await
+        .expect("write malformed ClientHello");
+    client.write_all(b"tail").await.expect("write tail");
+    client.shutdown().await.expect("shutdown client");
+
+    let mut forwarded = vec![0_u8; malformed.len() + 4];
+    dest_peer
+        .read_exact(&mut forwarded)
+        .await
+        .expect("dest receives fallback bytes");
+    assert_eq!(&forwarded[..malformed.len()], malformed.as_slice());
+    assert_eq!(&forwarded[malformed.len()..], b"tail");
+    dest_peer.shutdown().await.expect("close dest");
+
+    let accepted = timeout(Duration::from_secs(1), accept_task)
+        .await
+        .expect("accept completes")
+        .expect("accept task")
+        .expect("fallback dispatch succeeds");
+    assert!(matches!(
+        accepted.outcome,
+        umbra_core::dispatch::DispatchOutcome::Forwarded { .. }
+    ));
+}
+
+#[tokio::test]
+async fn scenario_runtime_shutdown_returns_without_accepting() {
+    let cfg = ServerCfg::from_toml_str(&server_toml()).expect("server config loads");
+    let runtime = ServerRuntime::bind_with_profile(
+        cfg,
+        sample_dest_profile(),
+        ProbeResistancePolicy::default(),
+    )
+    .await
+    .expect("runtime binds");
+
+    runtime
+        .run_until_shutdown(async {})
+        .await
+        .expect("server shutdown completes");
+
+    let cfg = ClientCfg::from_toml_str(&client_toml()).expect("client config loads");
+    let client = ClientRuntime::bind(cfg)
+        .await
+        .expect("client runtime binds");
+    client
+        .run_until_shutdown(async {})
+        .await
+        .expect("client shutdown completes");
+}
+
+#[tokio::test]
+async fn scenario_tcp_outer_sends_profile_shaped_clienthello() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind capture listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let server_key = x25519::generate_keypair();
+    let cfg = ClientCfg::from_toml_str_with_overrides(
+        &client_toml(),
+        ClientConfigOverrides {
+            server: Some(addr.to_string()),
+            public_key: Some(b64_bytes(server_key.public.as_bytes())),
+            ..ClientConfigOverrides::default()
+        },
+    )
+    .expect("client config loads");
+    let plan = ClientConnectPlan {
+        target: TargetAddr::domain("target.example", 443).expect("target"),
+        server: cfg.server.clone(),
+        transport: TransportKind::Tcp,
+        mode: ClientInnerMode::Mux,
+        server_name: cfg.server_name.clone(),
+    };
+    let capture = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept outer");
+        let mut header = [0_u8; 5];
+        stream.read_exact(&mut header).await.expect("read header");
+        let len = usize::from(u16::from_be_bytes([header[3], header[4]]));
+        let mut payload = vec![0_u8; len];
+        stream.read_exact(&mut payload).await.expect("read payload");
+        let mut record = header.to_vec();
+        record.extend_from_slice(&payload);
+        record
+    });
+
+    let stream = open_outer_from_config(&cfg, &plan)
+        .await
+        .expect("open tcp outer");
+    drop(stream);
+    let record = capture.await.expect("capture task");
+    let parsed = parse_client_hello(&record[5..]).expect("parse captured ClientHello");
+    assert_eq!(parsed.sni.as_deref(), Some("www.microsoft.com"));
+}
+
+#[tokio::test]
+async fn scenario_quic_network_runtime_fails_fast_until_supported() {
+    let cfg = ClientCfg::from_toml_str_with_overrides(
+        &client_toml(),
+        ClientConfigOverrides {
+            transport: Some("quic".to_owned()),
+            ..ClientConfigOverrides::default()
+        },
+    )
+    .expect("client config loads");
+    let plan = ClientConnectPlan {
+        target: TargetAddr::domain("target.example", 443).expect("target"),
+        server: cfg.server.clone(),
+        transport: TransportKind::Quic,
+        mode: ClientInnerMode::Mux,
+        server_name: cfg.server_name.clone(),
+    };
+
+    assert!(matches!(
+        open_outer_from_config(&cfg, &plan).await,
+        Err(CoreError::InvalidConfig(_))
+    ));
+}
+
+#[tokio::test]
+async fn scenario_client_runtime_binds_socks_listener() {
+    let cfg = ClientCfg::from_toml_str(&client_toml()).expect("client config loads");
+    let runtime = ClientRuntime::bind(cfg)
+        .await
+        .expect("client runtime binds");
+
+    assert_ne!(runtime.local_addr().expect("socks addr").port(), 0);
+}
+
+#[tokio::test]
+async fn scenario_client_runtime_accept_one_uses_injected_outer() {
+    let cfg = ClientCfg::from_toml_str(&client_toml()).expect("client config loads");
+    let runtime = ClientRuntime::bind(cfg)
+        .await
+        .expect("client runtime binds");
+    let addr = runtime.local_addr().expect("runtime addr");
+    let (outer_client, outer_server) = io::duplex(4096);
+    let server_task = tokio::spawn(async move {
+        let mut mux = MuxSession::server(outer_server, &umbra_inner::padding::PadScheme::none())
+            .expect("server mux");
+        mux.accept().await.expect("server accepts").1
+    });
+    let accept_task = tokio::spawn(async move {
+        runtime
+            .accept_one_with_outer(|_plan| async move { Ok::<_, CoreError>(outer_client) })
+            .await
+    });
+    let mut socks = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("connect socks runtime");
+    socks
+        .write_all(&socks_connect_domain("runtime.example", 443, 0x01))
+        .await
+        .expect("write request");
+    let mut replies = [0_u8; 12];
+    socks.read_exact(&mut replies).await.expect("read replies");
+    assert_eq!(&replies[..2], &[0x05, 0x00]);
+    assert_eq!(&replies[2..4], &[0x05, 0x00]);
+    let outcome = accept_task
+        .await
+        .expect("accept task")
+        .expect("accept succeeds");
+    assert_eq!(outcome.mode, ClientInnerMode::Mux);
+    assert_eq!(
+        server_task.await.expect("server task"),
+        TargetAddr::domain("runtime.example", 443).expect("target")
+    );
+}
+
+#[tokio::test]
+async fn scenario_eof_closes_peer_direction() {
+    let (mut left_writer, mut left_relay) = io::duplex(64);
+    let (mut right_relay, mut right_peer) = io::duplex(64);
+    let mut relay = Box::pin(relay_bidirectional(&mut left_relay, &mut right_relay));
+
+    left_writer
+        .write_all(b"hello")
+        .await
+        .expect("write left bytes");
+    left_writer.shutdown().await.expect("left half-close");
+
+    let mut observed = [0_u8; 5];
+    {
+        let mut read_right = Box::pin(right_peer.read_exact(&mut observed));
+        timeout(Duration::from_secs(1), async {
+            tokio::select! {
+                read = &mut read_right => read.expect("right receives bytes"),
+                outcome = &mut relay => panic!("relay finished too early: {outcome:?}"),
+            }
+        })
+        .await
+        .expect("right read completes");
+    }
+    assert_eq!(&observed, b"hello");
+    right_peer.shutdown().await.expect("right half-close");
+
+    let outcome = timeout(Duration::from_secs(1), &mut relay)
+        .await
+        .expect("relay finishes")
+        .expect("relay succeeds");
+    assert_eq!(outcome.left_to_right, 5);
+}
+
+#[test]
+fn scenario_auth_path_waits_for_profile_rtt() {
+    let timing = TimingAlignment::enabled(Duration::from_millis(2));
+
+    assert_eq!(
+        timing.delay_for(Duration::from_millis(40), Duration::from_millis(10)),
+        Duration::from_millis(30)
+    );
+    assert_eq!(
+        timing.delay_for(Duration::from_millis(40), Duration::from_millis(39)),
+        Duration::ZERO
+    );
+}
+
+#[test]
+fn scenario_useless_flood_follows_fallback_policy() {
+    let policy = UselessRecordPolicy {
+        max_useless_records: 2,
+        action: UselessRecordAction::ForwardToDest,
+    };
+
+    assert_eq!(policy.action_for(2), None);
+    assert_eq!(
+        policy.action_for(3),
+        Some(UselessRecordAction::ForwardToDest)
+    );
+}
+
+#[test]
+fn scenario_forwarded_bytes_use_ordinary_relay_policy() {
+    assert!(FallbackRelayPolicy::ordinary().is_probe_resistant());
+    assert!(!FallbackRelayPolicy {
+        rate_limited: true,
+        early_close_on_garbage: false
+    }
+    .is_probe_resistant());
+}
+
+#[test]
+fn scenario_probe_policy_validation_rejects_distinguishable_fallback() {
+    assert_eq!(
+        TimingAlignment::disabled().delay_for(Duration::from_secs(1), Duration::ZERO),
+        Duration::ZERO
+    );
+    assert!(UselessRecordPolicy {
+        max_useless_records: 1,
+        action: UselessRecordAction::Close,
+    }
+    .validate()
+    .is_ok());
+    assert!(UselessRecordPolicy {
+        max_useless_records: 0,
+        action: UselessRecordAction::Close,
+    }
+    .validate()
+    .is_err());
+    assert!(ProbeResistancePolicy {
+        fallback: FallbackRelayPolicy {
+            rate_limited: false,
+            early_close_on_garbage: true,
+        },
+        ..ProbeResistancePolicy::default()
+    }
+    .validate()
+    .is_err());
+}
+
+#[tokio::test]
+async fn scenario_realsite_triggers_spider_path() {
+    let (client, mut site) = io::duplex(4096);
+    let spider = tokio::spawn(run_realsite_spider(client, "/spider"));
+
+    let mut request = vec![0_u8; 256];
+    let read = site.read(&mut request).await.expect("read spider request");
+    assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /spider HTTP/1.1"));
+    site.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        .await
+        .expect("write response");
+    site.shutdown().await.expect("close site");
+
+    spider
+        .await
+        .expect("spider task")
+        .expect("spider completes");
+}
+
+fn server_toml() -> String {
+    format!(
+        r#"
+listen = "127.0.0.1:0"
+udp_listen = "127.0.0.1:0"
+private_key = "{}"
+short_ids = ["", "0123456789abcdef"]
+dest = "www.microsoft.com:443"
+server_names = ["www.microsoft.com"]
+max_time_diff = "120s"
+mldsa_seed = "{}"
+prebuild = true
+padding_scheme = "none"
+tcp_evasion = "off"
+"#,
+        b64(1),
+        b64(2)
+    )
+}
+
+fn client_toml() -> String {
+    format!(
+        r#"
+server = "203.0.113.10:443"
+transport = "tcp"
+public_key = "{}"
+short_id = "0123456789abcdef"
+server_name = "www.microsoft.com"
+fingerprint = "chrome-latest"
+mldsa_verify = "{}"
+spider_path = "/client-a"
+socks_listen = "127.0.0.1:0"
+mux = true
+padding_scheme = "none"
+tcp_evasion = "off"
+"#,
+        b64(3),
+        b64(4)
+    )
+}
+
+fn b64(byte: u8) -> String {
+    STANDARD.encode([byte; 32])
+}
+
+fn b64_bytes(bytes: &[u8]) -> String {
+    STANDARD.encode(bytes)
+}
+
+fn socks_connect_domain(domain: &str, port: u16, command: u8) -> Vec<u8> {
+    let mut out = vec![0x05, 0x01, 0x00, 0x05, command, 0x00, 0x03];
+    out.push(u8::try_from(domain.len()).expect("domain length fits"));
+    out.extend_from_slice(domain.as_bytes());
+    out.extend_from_slice(&port.to_be_bytes());
+    out
+}
+
+fn malformed_client_hello_record() -> Vec<u8> {
+    vec![0x16, 0x03, 0x03, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00]
+}
+
+fn sample_dest_profile() -> DestProfile {
+    DestProfile {
+        dest: "template.example:443".to_owned(),
+        tls_ver: 0x0304,
+        cipher: 0x1301,
+        group: 0x001d,
+        alpn: vec![b"h2".to_vec()],
+        ee_exts: vec![0x0010],
+        leaf_template: CertTemplate {
+            subject: "CN=template.example".to_owned(),
+            issuer: "CN=Template CA".to_owned(),
+            not_before_unix: 1_700_000_000,
+            not_after_unix: 1_800_000_000,
+            san_dns: vec!["template.example".to_owned()],
+            sct: Vec::new(),
+            signature_algorithm: "ecdsa-with-SHA256".to_owned(),
+            leaf_der: Vec::new(),
+        },
+        ocsp: None,
+        rtt: Duration::from_millis(40),
+    }
+}

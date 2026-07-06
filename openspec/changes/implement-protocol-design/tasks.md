@@ -65,12 +65,12 @@
 
 ## 9. Core Runtime
 
-- [ ] 9.1 Implement server and client config structs, TOML parsing, validation, and redacted debug output.
-- [ ] 9.2 Implement CLI override merge for server and client configs.
-- [ ] 9.3 Implement SOCKS5 no-auth handshake and CONNECT parsing.
-- [ ] 9.4 Implement server orchestration for TCP, UDP, dest profile, replay cache, dispatch, and shutdown.
-- [ ] 9.5 Implement client orchestration for SOCKS, TCP/QUIC selection, mux/Vision selection, and relay lifecycle.
-- [ ] 9.6 Implement probe-resistance timing alignment, useless-record policy, and no-throttled fallback invariants.
+- [x] 9.1 Implement server and client config structs, TOML parsing, validation, and redacted debug output.
+- [x] 9.2 Implement CLI override merge for server and client configs.
+- [x] 9.3 Implement SOCKS5 no-auth handshake and CONNECT parsing.
+- [x] 9.4 Implement server orchestration for TCP, UDP, dest profile, replay cache, dispatch, and shutdown.
+- [x] 9.5 Implement client orchestration for SOCKS, TCP/QUIC selection, mux/Vision selection, and relay lifecycle.
+- [x] 9.6 Implement probe-resistance timing alignment, useless-record policy, and no-throttled fallback invariants.
 
 ## 10. CLI
 

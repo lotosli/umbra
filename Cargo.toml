@@ -78,6 +78,7 @@ webpki-roots = "1.0.8"
 # 外层传输（组件 G/H）
 socket2 = "0.5"
 quinn = "0.11"          # 或 quiche（BoringSSL 系，指纹更易定制）
+quinn-proto = "0.11"
 
 # 配置 / CLI / 日志
 serde = { version = "1", features = ["derive"] }

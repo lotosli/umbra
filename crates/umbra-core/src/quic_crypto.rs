@@ -1,0 +1,859 @@
+//! Internal quinn crypto adapter backed by Umbra's QUIC-facing TLS stack.
+
+use std::{
+    any::Any,
+    collections::VecDeque,
+    io,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use rand::{rngs::OsRng, RngCore};
+use umbra_crypto::{mlkem::mlkem_keygen, secret::Secret, x25519};
+use umbra_fingerprint::{load_profile, FingerprintProfile};
+use umbra_reality::{
+    auth::try_seal_session_id,
+    cert::{classify_peer_certificate, forge_leaf_certificate, PeerKind as RealityPeerKind},
+    prebuild::DestProfile,
+};
+use umbra_tls::{
+    clienthello::{
+        build_client_hello_handshake, quic_hello0, ClientHelloParams, ClientQuicTransportParameter,
+        MlkemShare, EXT_QUIC_TRANSPORT_PARAMETERS,
+    },
+    handshake::{CertVerify, PeerKind as TlsPeerKind},
+    keyschedule::hkdf_expand_label,
+    quic::{QuicTlsClient, QuicTlsServer, QuicTrafficSecrets},
+};
+use umbra_transport::quic::{
+    derive_initial_quinn_packet_keys, derive_quinn_packet_keys, quic_retry_integrity_tag,
+    quic_retry_integrity_valid,
+};
+
+use crate::{config::ClientCfg, CoreError};
+
+const EXT_PADDING: u16 = 0x0015;
+const TLS_HANDSHAKE_FINISHED: u8 = 0x14;
+const TRAFFIC_SECRET_LEN: usize = 32;
+
+pub(crate) fn client_config(cfg: &ClientCfg) -> Result<quinn::ClientConfig, CoreError> {
+    let profile = load_profile(&cfg.fingerprint)?;
+    let (profile, grease_parameter, cid_len) = quic_profile(profile)?;
+    let crypto = UmbraQuicClientConfig {
+        public_key: *cfg.public_key.as_bytes(),
+        short_id: cfg.short_id.clone(),
+        profile,
+        grease_parameter,
+        mldsa_verify: cfg.mldsa_verify.clone(),
+    };
+    let mut config = quinn::ClientConfig::new(Arc::new(crypto));
+    config.initial_dst_cid_provider(Arc::new(move || random_connection_id(cid_len)));
+    Ok(config)
+}
+
+pub(crate) struct AuthenticatedServerCrypto {
+    pub(crate) sni: String,
+    pub(crate) session_id: [u8; 32],
+    pub(crate) shared_secret: [u8; 32],
+    pub(crate) client_hello: Vec<u8>,
+    pub(crate) profile: DestProfile,
+    pub(crate) mldsa_seed: [u8; 32],
+}
+
+pub(crate) fn server_config(authenticated: AuthenticatedServerCrypto) -> quinn::ServerConfig {
+    quinn::ServerConfig::with_crypto(Arc::new(UmbraQuicServerConfig { authenticated }))
+}
+
+struct UmbraQuicClientConfig {
+    public_key: [u8; 32],
+    short_id: Vec<u8>,
+    profile: FingerprintProfile,
+    grease_parameter: u64,
+    mldsa_verify: Vec<u8>,
+}
+
+impl quinn_proto::crypto::ClientConfig for UmbraQuicClientConfig {
+    fn start_session(
+        self: Arc<Self>,
+        version: u32,
+        server_name: &str,
+        params: &quinn_proto::transport_parameters::TransportParameters,
+    ) -> Result<Box<dyn quinn_proto::crypto::Session>, quinn_proto::ConnectError> {
+        if version != 1 {
+            return Err(quinn_proto::ConnectError::UnsupportedVersion);
+        }
+        if server_name.is_empty() {
+            return Err(quinn_proto::ConnectError::InvalidServerName(
+                server_name.to_owned(),
+            ));
+        }
+        let session = build_client_session(&self, server_name, params)
+            .map_err(|_| quinn_proto::ConnectError::InvalidServerName(server_name.to_owned()))?;
+        Ok(Box::new(session))
+    }
+}
+
+struct UmbraQuicServerConfig {
+    authenticated: AuthenticatedServerCrypto,
+}
+
+impl quinn_proto::crypto::ServerConfig for UmbraQuicServerConfig {
+    fn initial_keys(
+        &self,
+        version: u32,
+        dst_cid: &quinn_proto::ConnectionId,
+    ) -> Result<quinn_proto::crypto::Keys, quinn_proto::crypto::UnsupportedVersion> {
+        derive_initial_quinn_packet_keys(version, dst_cid, quinn_proto::Side::Server)
+            .map_err(|_| quinn_proto::crypto::UnsupportedVersion)
+    }
+
+    fn retry_tag(
+        &self,
+        version: u32,
+        orig_dst_cid: &quinn_proto::ConnectionId,
+        packet: &[u8],
+    ) -> [u8; 16] {
+        quic_retry_integrity_tag(version, orig_dst_cid, packet).unwrap_or([0_u8; 16])
+    }
+
+    fn start_session(
+        self: Arc<Self>,
+        _version: u32,
+        params: &quinn_proto::transport_parameters::TransportParameters,
+    ) -> Box<dyn quinn_proto::crypto::Session> {
+        let local_transport_parameters = encode_transport_parameters(params);
+        Box::new(UmbraQuicSession {
+            side: quinn_proto::Side::Server,
+            server_name: Some(self.authenticated.sni.clone()),
+            state: SessionState::ServerExpectClientHello {
+                authenticated: Box::new(ServerExpected {
+                    sni: self.authenticated.sni.clone(),
+                    session_id: self.authenticated.session_id,
+                    shared_secret: self.authenticated.shared_secret,
+                    client_hello: self.authenticated.client_hello.clone(),
+                    profile: self.authenticated.profile.clone(),
+                    mldsa_seed: self.authenticated.mldsa_seed,
+                    local_transport_parameters,
+                }),
+            },
+            inbound: Vec::new(),
+            outgoing: VecDeque::new(),
+            pending_keys: VecDeque::new(),
+            next_1rtt: None,
+            peer_transport_parameters: None,
+            handshake_data_ready: false,
+            handshake_data_reported: false,
+        })
+    }
+}
+
+struct UmbraQuicSession {
+    side: quinn_proto::Side,
+    server_name: Option<String>,
+    state: SessionState,
+    inbound: Vec<u8>,
+    outgoing: VecDeque<Vec<u8>>,
+    pending_keys: VecDeque<PendingKeys>,
+    next_1rtt: Option<QuicTrafficSecrets>,
+    peer_transport_parameters: Option<Vec<u8>>,
+    handshake_data_ready: bool,
+    handshake_data_reported: bool,
+}
+
+enum SessionState {
+    ClientExpectServerHello {
+        client: QuicTlsClient,
+        verifier: QuicRealityCertVerifier,
+    },
+    ClientExpectServerFlight {
+        client: QuicTlsClient,
+        verifier: QuicRealityCertVerifier,
+    },
+    ServerExpectClientHello {
+        authenticated: Box<ServerExpected>,
+    },
+    ServerExpectClientFinished {
+        server: QuicTlsServer,
+    },
+    Connected,
+    Failed,
+}
+
+struct ServerExpected {
+    sni: String,
+    session_id: [u8; 32],
+    shared_secret: [u8; 32],
+    client_hello: Vec<u8>,
+    profile: DestProfile,
+    mldsa_seed: [u8; 32],
+    local_transport_parameters: Vec<u8>,
+}
+
+struct QuicRealityCertVerifier {
+    shared: [u8; 32],
+    session_id: [u8; 32],
+    mldsa_verify: Vec<u8>,
+}
+
+impl CertVerify for QuicRealityCertVerifier {
+    fn verify(&self, leaf_der: &[u8], _chain: &[Vec<u8>]) -> TlsPeerKind {
+        match classify_peer_certificate(
+            leaf_der,
+            &self.shared,
+            &self.session_id,
+            &self.mldsa_verify,
+            true,
+        ) {
+            RealityPeerKind::UmbraTrusted => TlsPeerKind::UmbraTrusted,
+            RealityPeerKind::RealSite => TlsPeerKind::RealSite,
+            RealityPeerKind::Invalid => TlsPeerKind::Invalid,
+        }
+    }
+}
+
+enum PendingKeys {
+    Handshake(QuicTrafficSecrets),
+    Application(QuicTrafficSecrets),
+}
+
+struct UmbraQuicHandshakeData {
+    _protocol: Option<Vec<u8>>,
+    _server_name: Option<String>,
+}
+
+impl quinn_proto::crypto::Session for UmbraQuicSession {
+    fn initial_keys(
+        &self,
+        dst_cid: &quinn_proto::ConnectionId,
+        side: quinn_proto::Side,
+    ) -> quinn_proto::crypto::Keys {
+        derive_initial_quinn_packet_keys(1, dst_cid, side).unwrap_or_else(|_| empty_keys())
+    }
+
+    fn handshake_data(&self) -> Option<Box<dyn Any>> {
+        if !self.handshake_data_ready {
+            return None;
+        }
+        let server_name = match &self.state {
+            SessionState::ServerExpectClientFinished { .. } | SessionState::Connected => {
+                self.server_name()
+            }
+            _ => None,
+        };
+        Some(Box::new(UmbraQuicHandshakeData {
+            _protocol: Some(b"h3".to_vec()),
+            _server_name: server_name,
+        }))
+    }
+
+    fn peer_identity(&self) -> Option<Box<dyn Any>> {
+        None
+    }
+
+    fn early_crypto(
+        &self,
+    ) -> Option<(
+        Box<dyn quinn_proto::crypto::HeaderKey>,
+        Box<dyn quinn_proto::crypto::PacketKey>,
+    )> {
+        None
+    }
+
+    fn early_data_accepted(&self) -> Option<bool> {
+        None
+    }
+
+    fn is_handshaking(&self) -> bool {
+        !matches!(self.state, SessionState::Connected | SessionState::Failed)
+    }
+
+    fn read_handshake(&mut self, buf: &[u8]) -> Result<bool, quinn_proto::TransportError> {
+        self.inbound.extend_from_slice(buf);
+        let result = if matches!(&self.state, SessionState::ClientExpectServerHello { .. }) {
+            self.client_read_server_hello()
+        } else if matches!(&self.state, SessionState::ClientExpectServerFlight { .. }) {
+            self.client_read_server_flight()
+        } else if matches!(&self.state, SessionState::ServerExpectClientHello { .. }) {
+            self.server_read_client_hello()
+        } else if matches!(&self.state, SessionState::ServerExpectClientFinished { .. }) {
+            self.server_read_client_finished()
+        } else if matches!(&self.state, SessionState::Connected) {
+            Ok(false)
+        } else {
+            Err(proto_error("QUIC TLS session failed"))
+        };
+        if result.is_err() {
+            self.state = SessionState::Failed;
+        }
+        result
+    }
+
+    fn transport_parameters(
+        &self,
+    ) -> Result<
+        Option<quinn_proto::transport_parameters::TransportParameters>,
+        quinn_proto::TransportError,
+    > {
+        let Some(parameters) = &self.peer_transport_parameters else {
+            return Ok(None);
+        };
+        let filtered;
+        let parameters = if self.side.is_server() {
+            filtered = filter_tls_grease_transport_parameters(parameters)
+                .map_err(|err| proto_error(err.to_string()))?;
+            filtered.as_slice()
+        } else {
+            parameters.as_slice()
+        };
+        quinn_proto::transport_parameters::TransportParameters::read(
+            self.side,
+            &mut io::Cursor::new(parameters),
+        )
+        .map(Some)
+        .map_err(|err| proto_error(err.to_string()))
+    }
+
+    fn write_handshake(&mut self, buf: &mut Vec<u8>) -> Option<quinn_proto::crypto::Keys> {
+        if let Some(outgoing) = self.outgoing.pop_front() {
+            buf.extend_from_slice(&outgoing);
+        }
+        let pending = self.pending_keys.pop_front()?;
+        match pending {
+            PendingKeys::Handshake(secrets) => derive_quinn_packet_keys(&secrets, self.side).ok(),
+            PendingKeys::Application(secrets) => {
+                self.next_1rtt = next_application_secrets(&secrets).ok();
+                derive_quinn_packet_keys(&secrets, self.side).ok()
+            }
+        }
+    }
+
+    fn next_1rtt_keys(
+        &mut self,
+    ) -> Option<quinn_proto::crypto::KeyPair<Box<dyn quinn_proto::crypto::PacketKey>>> {
+        let secrets = self.next_1rtt.take()?;
+        self.next_1rtt = next_application_secrets(&secrets).ok();
+        let keys = derive_quinn_packet_keys(&secrets, self.side).ok()?;
+        Some(keys.packet)
+    }
+
+    fn is_valid_retry(
+        &self,
+        orig_dst_cid: &quinn_proto::ConnectionId,
+        header: &[u8],
+        payload: &[u8],
+    ) -> bool {
+        quic_retry_integrity_valid(1, orig_dst_cid, header, payload)
+    }
+
+    fn export_keying_material(
+        &self,
+        _output: &mut [u8],
+        _label: &[u8],
+        _context: &[u8],
+    ) -> Result<(), quinn_proto::crypto::ExportKeyingMaterialError> {
+        Err(quinn_proto::crypto::ExportKeyingMaterialError)
+    }
+}
+
+impl UmbraQuicSession {
+    fn client_read_server_hello(&mut self) -> Result<bool, quinn_proto::TransportError> {
+        let Some(server_hello) = take_first_handshake_message(&mut self.inbound)? else {
+            return Ok(false);
+        };
+        let state = std::mem::replace(&mut self.state, SessionState::Failed);
+        let SessionState::ClientExpectServerHello {
+            mut client,
+            verifier,
+        } = state
+        else {
+            self.state = state;
+            return Err(proto_error("unexpected client QUIC state"));
+        };
+        let handshake_secrets = client
+            .read_server_hello(&server_hello)
+            .map_err(|err| proto_error(err.to_string()))?;
+        self.pending_keys
+            .push_back(PendingKeys::Handshake(handshake_secrets));
+        self.state = SessionState::ClientExpectServerFlight { client, verifier };
+        self.client_read_server_flight()
+    }
+
+    fn client_read_server_flight(&mut self) -> Result<bool, quinn_proto::TransportError> {
+        let Some(server_flight) = take_finished_flight(&mut self.inbound)? else {
+            return Ok(false);
+        };
+        let state = std::mem::replace(&mut self.state, SessionState::Failed);
+        let SessionState::ClientExpectServerFlight {
+            mut client,
+            verifier,
+        } = state
+        else {
+            self.state = state;
+            return Err(proto_error("unexpected client QUIC state"));
+        };
+        let finished = client
+            .read_server_flight(&server_flight, &verifier)
+            .map_err(|err| proto_error(err.to_string()))?;
+        self.peer_transport_parameters = Some(finished.peer_transport_parameters);
+        self.outgoing.push_back(finished.finished);
+        self.pending_keys
+            .push_back(PendingKeys::Application(finished.application_secrets));
+        self.handshake_data_ready = true;
+        self.state = SessionState::Connected;
+        Ok(self.report_handshake_data_once())
+    }
+
+    fn server_read_client_hello(&mut self) -> Result<bool, quinn_proto::TransportError> {
+        let Some(client_hello) = take_first_handshake_message(&mut self.inbound)? else {
+            return Ok(false);
+        };
+        let state = std::mem::replace(&mut self.state, SessionState::Failed);
+        let SessionState::ServerExpectClientHello { authenticated } = state else {
+            self.state = state;
+            return Err(proto_error("unexpected server QUIC state"));
+        };
+        if client_hello != authenticated.client_hello {
+            return Err(proto_error("authenticated QUIC ClientHello changed"));
+        }
+        let seed = Secret::new(authenticated.mldsa_seed);
+        let forged = forge_leaf_certificate(
+            &authenticated.profile,
+            &authenticated.sni,
+            &authenticated.shared_secret,
+            &authenticated.session_id,
+            &seed,
+        )
+        .map_err(|err| proto_error(err.to_string()))?;
+        let accepted = QuicTlsServer::accept_with_transport_parameters(
+            &client_hello,
+            forged.tls_cert,
+            &authenticated.profile.to_tls_server_profile(),
+            &authenticated.local_transport_parameters,
+        )
+        .map_err(|err| proto_error(err.to_string()))?;
+        self.peer_transport_parameters = Some(accepted.peer_transport_parameters);
+        self.outgoing.push_back(accepted.server_hello);
+        self.outgoing.push_back(accepted.server_flight);
+        self.pending_keys
+            .push_back(PendingKeys::Handshake(accepted.handshake_secrets));
+        self.handshake_data_ready = true;
+        self.state = SessionState::ServerExpectClientFinished {
+            server: accepted.server,
+        };
+        Ok(self.report_handshake_data_once())
+    }
+
+    fn server_read_client_finished(&mut self) -> Result<bool, quinn_proto::TransportError> {
+        let Some(client_finished) = take_first_handshake_message(&mut self.inbound)? else {
+            return Ok(false);
+        };
+        let state = std::mem::replace(&mut self.state, SessionState::Failed);
+        let SessionState::ServerExpectClientFinished { mut server } = state else {
+            self.state = state;
+            return Err(proto_error("unexpected server QUIC state"));
+        };
+        let application_secrets = server
+            .read_client_finished(&client_finished)
+            .map_err(|err| proto_error(err.to_string()))?;
+        self.pending_keys
+            .push_back(PendingKeys::Application(application_secrets));
+        self.state = SessionState::Connected;
+        Ok(false)
+    }
+
+    fn report_handshake_data_once(&mut self) -> bool {
+        if self.handshake_data_reported {
+            false
+        } else {
+            self.handshake_data_reported = true;
+            true
+        }
+    }
+
+    fn server_name(&self) -> Option<String> {
+        self.server_name.clone()
+    }
+}
+
+fn build_client_session(
+    cfg: &UmbraQuicClientConfig,
+    server_name: &str,
+    params: &quinn_proto::transport_parameters::TransportParameters,
+) -> Result<UmbraQuicSession, CoreError> {
+    let transport_parameters = encode_transport_parameters(params);
+    let mut parsed_parameters = parse_transport_parameters(&transport_parameters)?;
+    parsed_parameters.retain(|parameter| parameter.id != cfg.grease_parameter);
+
+    let keypair = x25519::generate_keypair();
+    let shared = x25519::agree(&keypair.private, &cfg.public_key)?;
+    let mut random = [0_u8; 32];
+    OsRng.fill_bytes(&mut random);
+    let mlkem_key_exchange = hybrid_mlkem_key_exchange(keypair.public.as_bytes());
+
+    let mut zero_parameters = parsed_parameters.clone();
+    zero_parameters.push(ClientQuicTransportParameter {
+        id: cfg.grease_parameter,
+        value: vec![0_u8; 32],
+    });
+    let zero_hello = build_client_hello_handshake(&client_hello_params(
+        server_name,
+        &keypair,
+        cfg.profile.clone(),
+        random,
+        mlkem_key_exchange.clone(),
+        zero_parameters,
+    ))?;
+    let aad = quic_hello0(&zero_hello, cfg.grease_parameter)?;
+    let auth_token = try_seal_session_id(
+        shared.expose_secret(),
+        &cfg.short_id,
+        &aad,
+        current_unix_time()?,
+    )?;
+
+    parsed_parameters.push(ClientQuicTransportParameter {
+        id: cfg.grease_parameter,
+        value: auth_token.to_vec(),
+    });
+    let params = client_hello_params(
+        server_name,
+        &keypair,
+        cfg.profile.clone(),
+        random,
+        mlkem_key_exchange,
+        parsed_parameters,
+    );
+    let (client, client_hello) = QuicTlsClient::start(&params)?;
+    let verifier = QuicRealityCertVerifier {
+        shared: *shared.expose_secret(),
+        session_id: auth_token,
+        mldsa_verify: cfg.mldsa_verify.clone(),
+    };
+    let mut outgoing = VecDeque::new();
+    outgoing.push_back(client_hello);
+    Ok(UmbraQuicSession {
+        side: quinn_proto::Side::Client,
+        server_name: None,
+        state: SessionState::ClientExpectServerHello { client, verifier },
+        inbound: Vec::new(),
+        outgoing,
+        pending_keys: VecDeque::new(),
+        next_1rtt: None,
+        peer_transport_parameters: None,
+        handshake_data_ready: false,
+        handshake_data_reported: false,
+    })
+}
+
+fn client_hello_params(
+    server_name: &str,
+    keypair: &x25519::Keypair,
+    profile: FingerprintProfile,
+    random: [u8; 32],
+    mlkem_key_exchange: Vec<u8>,
+    quic_transport_parameters: Vec<ClientQuicTransportParameter>,
+) -> ClientHelloParams {
+    ClientHelloParams {
+        sni: server_name.to_owned(),
+        session_id: Vec::new(),
+        x25519_priv: *keypair.private.expose_secret(),
+        x25519_pub: *keypair.public.as_bytes(),
+        mlkem: MlkemShare::x25519_mlkem768(mlkem_key_exchange),
+        profile,
+        random,
+        quic_transport_parameters,
+    }
+}
+
+fn quic_profile(
+    mut profile: FingerprintProfile,
+) -> Result<(FingerprintProfile, u64, usize), CoreError> {
+    if profile.quic.alpn != "h3" {
+        return Err(CoreError::InvalidConfig("QUIC ALPN must be h3"));
+    }
+    if !(8..=20).contains(&profile.quic.scid_len) {
+        return Err(CoreError::InvalidConfig(
+            "QUIC connection id length must be between 8 and 20 bytes",
+        ));
+    }
+    let grease_parameter = profile.quic.grease_parameter;
+    let cid_len = profile.quic.scid_len;
+    profile.alpn = vec![profile.quic.alpn.clone()];
+    if !profile
+        .extension_order
+        .contains(&EXT_QUIC_TRANSPORT_PARAMETERS)
+    {
+        let insert_at = profile
+            .extension_order
+            .iter()
+            .position(|ext| *ext == EXT_PADDING)
+            .unwrap_or(profile.extension_order.len());
+        profile
+            .extension_order
+            .insert(insert_at, EXT_QUIC_TRANSPORT_PARAMETERS);
+    }
+    Ok((profile, grease_parameter, cid_len))
+}
+
+fn encode_transport_parameters(
+    params: &quinn_proto::transport_parameters::TransportParameters,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    params.write(&mut out);
+    out
+}
+
+fn parse_transport_parameters(raw: &[u8]) -> Result<Vec<ClientQuicTransportParameter>, CoreError> {
+    let mut offset = 0_usize;
+    let mut out = Vec::new();
+    while offset < raw.len() {
+        let id = read_quic_varint(raw, &mut offset)?;
+        let len = usize::try_from(read_quic_varint(raw, &mut offset)?)
+            .map_err(|_| CoreError::InvalidConfig("QUIC transport parameter length too large"))?;
+        let value = take(raw, &mut offset, len)?.to_vec();
+        out.push(ClientQuicTransportParameter { id, value });
+    }
+    Ok(out)
+}
+
+fn filter_tls_grease_transport_parameters(raw: &[u8]) -> Result<Vec<u8>, CoreError> {
+    let mut offset = 0_usize;
+    let mut out = Vec::new();
+    while offset < raw.len() {
+        let id = read_quic_varint(raw, &mut offset)?;
+        let len = usize::try_from(read_quic_varint(raw, &mut offset)?)
+            .map_err(|_| CoreError::InvalidConfig("QUIC transport parameter length too large"))?;
+        let value = take(raw, &mut offset, len)?;
+        if is_tls_grease_u64(id) {
+            continue;
+        }
+        write_quic_varint(id, &mut out)?;
+        write_quic_varint(
+            u64::try_from(value.len())
+                .map_err(|_| CoreError::InvalidConfig("QUIC transport parameter too large"))?,
+            &mut out,
+        )?;
+        out.extend_from_slice(value);
+    }
+    Ok(out)
+}
+
+fn is_tls_grease_u64(value: u64) -> bool {
+    u16::try_from(value).is_ok_and(|value| value & 0x0f0f == 0x0a0a && value >> 8 == value & 0xff)
+}
+
+fn write_quic_varint(value: u64, out: &mut Vec<u8>) -> Result<(), CoreError> {
+    if value < 64 {
+        out.push(
+            u8::try_from(value)
+                .map_err(|_| CoreError::InvalidConfig("QUIC varint is too large"))?,
+        );
+    } else if value < 16_384 {
+        let encoded = u16::try_from(value | 0x4000)
+            .map_err(|_| CoreError::InvalidConfig("QUIC varint is too large"))?;
+        out.extend_from_slice(&encoded.to_be_bytes());
+    } else if value < 1_073_741_824 {
+        let encoded = u32::try_from(value | 0x8000_0000)
+            .map_err(|_| CoreError::InvalidConfig("QUIC varint is too large"))?;
+        out.extend_from_slice(&encoded.to_be_bytes());
+    } else if value < 4_611_686_018_427_387_904 {
+        out.extend_from_slice(&(value | 0xc000_0000_0000_0000).to_be_bytes());
+    } else {
+        return Err(CoreError::InvalidConfig("QUIC varint is too large"));
+    }
+    Ok(())
+}
+
+fn next_application_secrets(secrets: &QuicTrafficSecrets) -> Result<QuicTrafficSecrets, CoreError> {
+    let client = next_traffic_secret(&secrets.client)?;
+    let server = next_traffic_secret(&secrets.server)?;
+    Ok(QuicTrafficSecrets {
+        cipher_suite: secrets.cipher_suite,
+        client,
+        server,
+    })
+}
+
+fn next_traffic_secret(
+    secret: &[u8; TRAFFIC_SECRET_LEN],
+) -> Result<[u8; TRAFFIC_SECRET_LEN], CoreError> {
+    let next = hkdf_expand_label(secret, "traffic upd", &[], TRAFFIC_SECRET_LEN)?;
+    next.try_into()
+        .map_err(|_| CoreError::InvalidConfig("QUIC traffic secret length mismatch"))
+}
+
+fn take_first_handshake_message(
+    buf: &mut Vec<u8>,
+) -> Result<Option<Vec<u8>>, quinn_proto::TransportError> {
+    let Some(len) = first_handshake_len(buf)? else {
+        return Ok(None);
+    };
+    Ok(Some(buf.drain(..len).collect()))
+}
+
+fn take_finished_flight(buf: &mut Vec<u8>) -> Result<Option<Vec<u8>>, quinn_proto::TransportError> {
+    let Some(len) = complete_finished_flight_len(buf)? else {
+        return Ok(None);
+    };
+    Ok(Some(buf.drain(..len).collect()))
+}
+
+fn first_handshake_len(buf: &[u8]) -> Result<Option<usize>, quinn_proto::TransportError> {
+    if buf.len() < 4 {
+        return Ok(None);
+    }
+    let len = read_u24(&buf[1..4])?;
+    let needed = len
+        .checked_add(4)
+        .ok_or_else(|| proto_error("TLS handshake length overflows"))?;
+    if buf.len() < needed {
+        return Ok(None);
+    }
+    Ok(Some(needed))
+}
+
+fn complete_finished_flight_len(buf: &[u8]) -> Result<Option<usize>, quinn_proto::TransportError> {
+    let mut offset = 0_usize;
+    while offset < buf.len() {
+        if buf.len() - offset < 4 {
+            return Ok(None);
+        }
+        let handshake_type = buf[offset];
+        let len = read_u24(&buf[offset + 1..offset + 4])?;
+        let next = offset
+            .checked_add(4)
+            .and_then(|value| value.checked_add(len))
+            .ok_or_else(|| proto_error("TLS handshake flight length overflows"))?;
+        if buf.len() < next {
+            return Ok(None);
+        }
+        offset = next;
+        if handshake_type == TLS_HANDSHAKE_FINISHED {
+            return Ok(Some(offset));
+        }
+    }
+    Ok(None)
+}
+
+fn read_u24(input: &[u8]) -> Result<usize, quinn_proto::TransportError> {
+    if input.len() != 3 {
+        return Err(proto_error("bad TLS uint24"));
+    }
+    Ok((usize::from(input[0]) << 16) | (usize::from(input[1]) << 8) | usize::from(input[2]))
+}
+
+fn read_quic_varint(input: &[u8], offset: &mut usize) -> Result<u64, CoreError> {
+    let first = *input
+        .get(*offset)
+        .ok_or(CoreError::InvalidConfig("missing QUIC varint"))?;
+    let len = 1_usize << usize::from(first >> 6);
+    let bytes = take(input, offset, len)?;
+    let mut value = u64::from(bytes[0] & 0x3f);
+    for byte in &bytes[1..] {
+        value = (value << 8) | u64::from(*byte);
+    }
+    Ok(value)
+}
+
+fn take<'a>(input: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8], CoreError> {
+    let end = offset
+        .checked_add(len)
+        .ok_or(CoreError::InvalidConfig("QUIC offset overflows"))?;
+    if end > input.len() {
+        return Err(CoreError::InvalidConfig(
+            "truncated QUIC transport parameter",
+        ));
+    }
+    let out = &input[*offset..end];
+    *offset = end;
+    Ok(out)
+}
+
+fn random_connection_id(len: usize) -> quinn_proto::ConnectionId {
+    let mut bytes = vec![0_u8; len];
+    OsRng.fill_bytes(&mut bytes);
+    quinn_proto::ConnectionId::new(&bytes)
+}
+
+fn hybrid_mlkem_key_exchange(x25519_public: &[u8; 32]) -> Vec<u8> {
+    let mlkem = mlkem_keygen();
+    let mut key_exchange = Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
+    key_exchange.extend_from_slice(x25519_public);
+    key_exchange.extend_from_slice(&mlkem.encapsulation_key);
+    key_exchange
+}
+
+fn current_unix_time() -> Result<u64, CoreError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| CoreError::InvalidConfig("system clock is before Unix epoch"))
+        .map(|duration| duration.as_secs())
+}
+
+fn proto_error(reason: impl Into<String>) -> quinn_proto::TransportError {
+    quinn_proto::TransportError {
+        code: quinn_proto::TransportErrorCode::PROTOCOL_VIOLATION,
+        frame: None,
+        reason: reason.into(),
+    }
+}
+
+fn empty_keys() -> quinn_proto::crypto::Keys {
+    let secrets = QuicTrafficSecrets {
+        cipher_suite: umbra_tls::clienthello::TLS_AES_128_GCM_SHA256,
+        client: [0_u8; TRAFFIC_SECRET_LEN],
+        server: [0_u8; TRAFFIC_SECRET_LEN],
+    };
+    derive_quinn_packet_keys(&secrets, quinn_proto::Side::Client)
+        .unwrap_or_else(|_| panic_free_empty_keys())
+}
+
+fn panic_free_empty_keys() -> quinn_proto::crypto::Keys {
+    derive_initial_quinn_packet_keys(1, &[0_u8; 8], quinn_proto::Side::Client)
+        .unwrap_or_else(|_| unreachable_keys())
+}
+
+fn unreachable_keys() -> quinn_proto::crypto::Keys {
+    struct NullHeaderKey;
+    struct NullPacketKey;
+
+    impl quinn_proto::crypto::HeaderKey for NullHeaderKey {
+        fn decrypt(&self, _pn_offset: usize, _packet: &mut [u8]) {}
+        fn encrypt(&self, _pn_offset: usize, _packet: &mut [u8]) {}
+        fn sample_size(&self) -> usize {
+            16
+        }
+    }
+
+    impl quinn_proto::crypto::PacketKey for NullPacketKey {
+        fn encrypt(&self, _packet: u64, _buf: &mut [u8], _header_len: usize) {}
+        fn decrypt(
+            &self,
+            _packet: u64,
+            _header: &[u8],
+            _payload: &mut bytes::BytesMut,
+        ) -> Result<(), quinn_proto::crypto::CryptoError> {
+            Err(quinn_proto::crypto::CryptoError)
+        }
+        fn tag_len(&self) -> usize {
+            16
+        }
+        fn confidentiality_limit(&self) -> u64 {
+            0
+        }
+        fn integrity_limit(&self) -> u64 {
+            0
+        }
+    }
+
+    quinn_proto::crypto::Keys {
+        header: quinn_proto::crypto::KeyPair {
+            local: Box::new(NullHeaderKey),
+            remote: Box::new(NullHeaderKey),
+        },
+        packet: quinn_proto::crypto::KeyPair {
+            local: Box::new(NullPacketKey),
+            remote: Box::new(NullPacketKey),
+        },
+    }
+}

@@ -11,6 +11,7 @@ pub mod dispatch;
 pub mod error;
 pub mod prefixed;
 pub mod probe;
+pub(crate) mod quic_crypto;
 pub mod relay;
 pub mod runtime;
 pub mod socks;

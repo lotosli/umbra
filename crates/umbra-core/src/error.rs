@@ -30,6 +30,9 @@ pub enum CoreError {
     /// Inner transport failed.
     #[error(transparent)]
     Inner(#[from] umbra_inner::InnerError),
+    /// QUIC runtime failed.
+    #[error("QUIC runtime failed: {0}")]
+    Quic(String),
     /// Outer transport failed.
     #[error(transparent)]
     Transport(#[from] umbra_transport::TransportError),

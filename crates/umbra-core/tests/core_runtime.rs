@@ -23,9 +23,9 @@ use umbra_core::{
     },
     relay::relay_bidirectional,
     runtime::{
-        build_quic_client_initial, client_session_with_outer, open_outer_from_config,
-        run_realsite_spider, ClientConnectPlan, ClientInnerMode, ClientRuntime, QuicRuntimeOutcome,
-        ServerRuntime,
+        build_quic_client_initial, client_session_from_config, client_session_with_outer,
+        open_outer_from_config, run_realsite_spider, ClientConnectPlan, ClientInnerMode,
+        ClientRuntime, QuicRuntimeOutcome, ServerRuntime,
     },
     socks::{accept_connect, negotiate_no_auth},
     CoreError,
@@ -885,27 +885,74 @@ async fn scenario_tcp_outer_sends_profile_shaped_clienthello() {
 }
 
 #[tokio::test]
-async fn scenario_quic_network_runtime_fails_fast_until_supported() {
-    let cfg = ClientCfg::from_toml_str_with_overrides(
-        &client_toml(),
-        ClientConfigOverrides {
-            transport: Some("quic".to_owned()),
-            ..ClientConfigOverrides::default()
-        },
+async fn scenario_quic_network_runtime_relays_direct_stream() {
+    let server_key = x25519::generate_keypair();
+    let mldsa_seed = [0x6d_u8; 32];
+    let mldsa = mldsa_keygen_from_seed(&mldsa_seed);
+    let runtime = ServerRuntime::bind_with_profile(
+        quic_runtime_server_cfg(&server_key, &mldsa_seed),
+        sample_dest_profile(),
+        ProbeResistancePolicy::default(),
     )
-    .expect("client config loads");
-    let plan = ClientConnectPlan {
-        target: TargetAddr::domain("target.example", 443).expect("target"),
-        server: cfg.server.clone(),
-        transport: TransportKind::Quic,
-        mode: ClientInnerMode::Mux,
-        server_name: cfg.server_name.clone(),
-    };
+    .await
+    .expect("server runtime binds");
+    let quic_addr = runtime
+        .udp_local_addr()
+        .expect("udp local addr")
+        .expect("udp listener");
 
+    let (target_addr, target_task) = spawn_ping_pong_target().await;
+    let server_task = tokio::spawn(async move {
+        runtime
+            .accept_one_quic_with_idle_timeout(Duration::from_secs(1))
+            .await
+    });
+    let cfg = quic_runtime_client_cfg(quic_addr, &server_key.public, &mldsa.verifying_key);
+    let (mut socks_client, mut socks_server) = io::duplex(4096);
+    let client_task =
+        tokio::spawn(async move { client_session_from_config(&cfg, &mut socks_server).await });
+
+    socks_client
+        .write_all(&socks_connect_domain("127.0.0.1", target_addr.port(), 0x01))
+        .await
+        .expect("write SOCKS request");
+    let mut replies = [0_u8; 12];
+    socks_client
+        .read_exact(&mut replies)
+        .await
+        .expect("read SOCKS replies");
+    assert_eq!(&replies[..2], &[0x05, 0x00]);
+    assert_eq!(&replies[2..4], &[0x05, 0x00]);
+    socks_client
+        .write_all(b"ping")
+        .await
+        .expect("write request");
+    socks_client.shutdown().await.expect("close socks write");
+    let mut response = [0_u8; 4];
+    socks_client
+        .read_exact(&mut response)
+        .await
+        .expect("read response");
+    assert_eq!(&response, b"pong");
+
+    let client_outcome = timeout(Duration::from_secs(5), client_task)
+        .await
+        .expect("client completes")
+        .expect("client task")
+        .expect("client session succeeds");
+    assert_eq!(client_outcome.transport, TransportKind::Quic);
+    assert_eq!(client_outcome.mode, ClientInnerMode::QuicStream);
+
+    let server_outcome = timeout(Duration::from_secs(5), server_task)
+        .await
+        .expect("server completes")
+        .expect("server task")
+        .expect("server QUIC accepts");
     assert!(matches!(
-        open_outer_from_config(&cfg, &plan).await,
-        Err(CoreError::InvalidConfig(_))
+        server_outcome.outcome,
+        QuicRuntimeOutcome::Authenticated { .. }
     ));
+    target_task.await.expect("target task");
 }
 
 #[test]
@@ -1225,6 +1272,67 @@ async fn scenario_realsite_triggers_spider_path() {
         .await
         .expect("spider task")
         .expect("spider completes");
+}
+
+fn quic_runtime_server_cfg(server_key: &x25519::Keypair, mldsa_seed: &[u8; 32]) -> ServerCfg {
+    ServerCfg::from_toml_str(&format!(
+        r#"
+listen = "127.0.0.1:0"
+udp_listen = "127.0.0.1:0"
+private_key = "{}"
+short_ids = ["0123456789abcdef"]
+dest = "www.microsoft.com:443"
+server_names = ["www.microsoft.com"]
+max_time_diff = "120s"
+mldsa_seed = "{}"
+prebuild = true
+padding_scheme = "none"
+tcp_evasion = "off"
+"#,
+        b64_bytes(server_key.private.expose_secret()),
+        b64_bytes(mldsa_seed)
+    ))
+    .expect("server config loads")
+}
+
+fn quic_runtime_client_cfg(
+    quic_addr: std::net::SocketAddr,
+    server_public: &x25519::PublicKeyBytes,
+    mldsa_verify: &[u8],
+) -> ClientCfg {
+    ClientCfg::from_toml_str_with_overrides(
+        &client_toml(),
+        ClientConfigOverrides {
+            server: Some(quic_addr.to_string()),
+            transport: Some("quic".to_owned()),
+            public_key: Some(b64_bytes(server_public.as_bytes())),
+            mldsa_verify: Some(b64_bytes(mldsa_verify)),
+            ..ClientConfigOverrides::default()
+        },
+    )
+    .expect("client config loads")
+}
+
+async fn spawn_ping_pong_target() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let target_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind target");
+    let target_addr = target_listener.local_addr().expect("target addr");
+    let target_task = tokio::spawn(async move {
+        let (mut stream, _) = target_listener.accept().await.expect("accept target");
+        let mut request = [0_u8; 4];
+        stream
+            .read_exact(&mut request)
+            .await
+            .expect("target reads request");
+        assert_eq!(&request, b"ping");
+        stream
+            .write_all(b"pong")
+            .await
+            .expect("target writes reply");
+        stream.shutdown().await.expect("target closes");
+    });
+    (target_addr, target_task)
 }
 
 fn server_toml() -> String {

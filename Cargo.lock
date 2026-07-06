@@ -1921,6 +1921,9 @@ name = "umbra-core"
 version = "0.0.0"
 dependencies = [
  "base64",
+ "bytes",
+ "quinn",
+ "quinn-proto",
  "rand 0.8.6",
  "rcgen",
  "serde",

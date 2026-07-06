@@ -45,6 +45,18 @@ const QUIC_INITIAL_PACKET_NUMBER: u64 = 1;
 const QUIC_INITIAL_PACKET_NUMBER_LEN: usize = 4;
 const QUIC_PACKET_TAG_LEN: usize = 16;
 const QUIC_IV_LEN: usize = 12;
+const RETRY_INTEGRITY_KEY_DRAFT: [u8; 16] = [
+    0xcc, 0xce, 0x18, 0x7e, 0xd0, 0x9a, 0x09, 0xd0, 0x57, 0x28, 0x15, 0x5a, 0x6c, 0xb9, 0x6b, 0xe1,
+];
+const RETRY_INTEGRITY_NONCE_DRAFT: [u8; 12] = [
+    0xe5, 0x49, 0x30, 0xf9, 0x7f, 0x21, 0x36, 0xf0, 0x53, 0x0a, 0x8c, 0x1c,
+];
+const RETRY_INTEGRITY_KEY_V1: [u8; 16] = [
+    0xbe, 0x0c, 0x69, 0x0b, 0x9f, 0x66, 0x57, 0x5a, 0x1d, 0x76, 0x6b, 0x54, 0xe3, 0x68, 0xc8, 0x4e,
+];
+const RETRY_INTEGRITY_NONCE_V1: [u8; 12] = [
+    0x46, 0x15, 0x99, 0xd3, 0x5d, 0x63, 0x2b, 0xf2, 0x23, 0x98, 0x25, 0xbb,
+];
 
 /// QUIC transport parameter.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -100,6 +112,15 @@ pub struct QuicInitialHeader {
     pub packet_number_offset: usize,
     /// Total length of the first QUIC packet in this datagram.
     pub packet_len: usize,
+}
+
+/// Decrypted QUIC CRYPTO frame chunk from an Initial packet.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct QuicCryptoFrame {
+    /// CRYPTO stream offset.
+    pub offset: usize,
+    /// CRYPTO frame payload bytes.
+    pub bytes: Vec<u8>,
 }
 
 /// QUIC dispatch decision for unauthenticated Initial datagrams.
@@ -306,6 +327,93 @@ pub fn derive_quinn_packet_keys(
     })
 }
 
+/// Derive quinn-compatible Initial keys from a destination connection id.
+pub fn derive_initial_quinn_packet_keys(
+    version: u32,
+    dst_cid: &[u8],
+    side: QuinnSide,
+) -> Result<QuinnKeys, TransportError> {
+    let version = rustls_quic_version(version)?;
+    let side = if side.is_client() {
+        Side::Client
+    } else {
+        Side::Server
+    };
+    let keys = initial_quic_suite()?.keys(dst_cid, side, version);
+    Ok(QuinnKeys {
+        header: QuinnKeyPair {
+            local: Box::new(keys.local.header),
+            remote: Box::new(keys.remote.header),
+        },
+        packet: QuinnKeyPair {
+            local: Box::new(keys.local.packet),
+            remote: Box::new(keys.remote.packet),
+        },
+    })
+}
+
+/// Generate the QUIC Retry integrity tag for a Retry pseudo-packet.
+pub fn quic_retry_integrity_tag(
+    version: u32,
+    orig_dst_cid: &[u8],
+    packet: &[u8],
+) -> Result<[u8; QUIC_PACKET_TAG_LEN], TransportError> {
+    let (nonce, key) = retry_integrity_material(version)?;
+    let cid_len = u8::try_from(orig_dst_cid.len())
+        .map_err(|_| TransportError::InvalidQuicSurface("QUIC CID length is too large"))?;
+    let mut pseudo_packet = Vec::with_capacity(packet.len() + orig_dst_cid.len() + 1);
+    pseudo_packet.push(cid_len);
+    pseudo_packet.extend_from_slice(orig_dst_cid);
+    pseudo_packet.extend_from_slice(packet);
+    let key = LessSafeKey::new(
+        UnboundKey::new(&aead::AES_128_GCM, key)
+            .map_err(|_| TransportError::InvalidQuicSurface("invalid QUIC retry key"))?,
+    );
+    let mut empty = [];
+    let tag = key
+        .seal_in_place_separate_tag(
+            Nonce::assume_unique_for_key(*nonce),
+            Aad::from(pseudo_packet),
+            &mut empty,
+        )
+        .map_err(|_| TransportError::InvalidQuicSurface("QUIC retry tag failed"))?;
+    let mut out = [0_u8; QUIC_PACKET_TAG_LEN];
+    out.copy_from_slice(tag.as_ref());
+    Ok(out)
+}
+
+/// Verify the QUIC Retry integrity tag on a received Retry packet.
+pub fn quic_retry_integrity_valid(
+    version: u32,
+    orig_dst_cid: &[u8],
+    header: &[u8],
+    payload: &[u8],
+) -> bool {
+    let Some(payload_tag_start) = payload.len().checked_sub(QUIC_PACKET_TAG_LEN) else {
+        return false;
+    };
+    let Ok((nonce, key)) = retry_integrity_material(version) else {
+        return false;
+    };
+    let Ok(cid_len) = u8::try_from(orig_dst_cid.len()) else {
+        return false;
+    };
+    let mut pseudo_packet =
+        Vec::with_capacity(header.len() + payload.len() + orig_dst_cid.len() + 1);
+    pseudo_packet.push(cid_len);
+    pseudo_packet.extend_from_slice(orig_dst_cid);
+    pseudo_packet.extend_from_slice(header);
+    let tag_start = pseudo_packet.len() + payload_tag_start;
+    pseudo_packet.extend_from_slice(payload);
+    let key = match UnboundKey::new(&aead::AES_128_GCM, key) {
+        Ok(key) => LessSafeKey::new(key),
+        Err(_) => return false,
+    };
+    let (aad, tag) = pseudo_packet.split_at_mut(tag_start);
+    key.open_in_place(Nonce::assume_unique_for_key(*nonce), Aad::from(aad), tag)
+        .is_ok()
+}
+
 /// Build a protected client QUIC Initial packet carrying raw ClientHello CRYPTO bytes.
 pub fn build_quic_initial_crypto_packet(
     crypto: &[u8],
@@ -400,6 +508,14 @@ pub fn parse_quic_initial_header(datagram: &[u8]) -> Result<QuicInitialHeader, T
 /// pass them to `umbra_tls::parse::parse_client_hello` to inspect SNI,
 /// key_share, empty QUIC `legacy_session_id`, and QUIC transport parameters.
 pub fn decrypt_quic_initial_crypto(datagram: &[u8]) -> Result<Vec<u8>, TransportError> {
+    let frames = decrypt_quic_initial_crypto_frames(datagram)?;
+    assemble_contiguous_crypto_frames(&frames)
+}
+
+/// Decrypt a client QUIC Initial packet and return CRYPTO frame chunks.
+pub fn decrypt_quic_initial_crypto_frames(
+    datagram: &[u8],
+) -> Result<Vec<QuicCryptoFrame>, TransportError> {
     let header = parse_quic_initial_header(datagram)?;
     if header.version != 1 {
         return Err(TransportError::InvalidQuicSurface(
@@ -439,7 +555,7 @@ pub fn decrypt_quic_initial_crypto(datagram: &[u8]) -> Result<Vec<u8>, Transport
         .packet
         .decrypt_in_place(packet_number, aad, payload)
         .map_err(|_| TransportError::InvalidQuicSurface("QUIC Initial authentication failed"))?;
-    extract_crypto_frames(plaintext)
+    extract_crypto_frame_chunks(plaintext)
 }
 
 /// Decide whether a bad QUIC auth result must be forwarded.
@@ -1075,6 +1191,28 @@ fn initial_quic_suite() -> Result<rustls::quic::Suite, TransportError> {
         ))
 }
 
+fn rustls_quic_version(version: u32) -> Result<Version, TransportError> {
+    match version {
+        0xff00_001d..=0xff00_0020 => Ok(Version::V1Draft),
+        0x0000_0001 | 0xff00_0021..=0xff00_0022 => Ok(Version::V1),
+        _ => Err(TransportError::InvalidQuicSurface(
+            "unsupported QUIC version",
+        )),
+    }
+}
+
+fn retry_integrity_material(
+    version: u32,
+) -> Result<(&'static [u8; QUIC_IV_LEN], &'static [u8; 16]), TransportError> {
+    match rustls_quic_version(version)? {
+        Version::V1Draft => Ok((&RETRY_INTEGRITY_NONCE_DRAFT, &RETRY_INTEGRITY_KEY_DRAFT)),
+        Version::V1 => Ok((&RETRY_INTEGRITY_NONCE_V1, &RETRY_INTEGRITY_KEY_V1)),
+        _ => Err(TransportError::InvalidQuicSurface(
+            "unsupported QUIC version",
+        )),
+    }
+}
+
 fn remove_header_protection(
     packet: &mut [u8],
     packet_number_offset: usize,
@@ -1126,9 +1264,29 @@ fn decode_packet_number(bytes: &[u8]) -> u64 {
     })
 }
 
-fn extract_crypto_frames(plaintext: &[u8]) -> Result<Vec<u8>, TransportError> {
-    let mut offset = 0_usize;
+fn assemble_contiguous_crypto_frames(
+    frames: &[QuicCryptoFrame],
+) -> Result<Vec<u8>, TransportError> {
     let mut crypto = Vec::new();
+    for frame in frames {
+        if frame.offset != crypto.len() {
+            return Err(TransportError::InvalidQuicSurface(
+                "non-contiguous QUIC CRYPTO data",
+            ));
+        }
+        crypto.extend_from_slice(&frame.bytes);
+    }
+    if crypto.is_empty() {
+        return Err(TransportError::InvalidQuicSurface(
+            "QUIC Initial has no CRYPTO frame",
+        ));
+    }
+    Ok(crypto)
+}
+
+fn extract_crypto_frame_chunks(plaintext: &[u8]) -> Result<Vec<QuicCryptoFrame>, TransportError> {
+    let mut offset = 0_usize;
+    let mut frames = Vec::new();
     while offset < plaintext.len() {
         let frame_type = read_u8(plaintext, &mut offset)?;
         match frame_type {
@@ -1137,12 +1295,10 @@ fn extract_crypto_frames(plaintext: &[u8]) -> Result<Vec<u8>, TransportError> {
             QUIC_FRAME_CRYPTO => {
                 let crypto_offset = read_varint_usize(plaintext, &mut offset)?;
                 let len = read_varint_usize(plaintext, &mut offset)?;
-                if crypto_offset != crypto.len() {
-                    return Err(TransportError::InvalidQuicSurface(
-                        "non-contiguous QUIC CRYPTO data",
-                    ));
-                }
-                crypto.extend_from_slice(take(plaintext, &mut offset, len)?);
+                frames.push(QuicCryptoFrame {
+                    offset: crypto_offset,
+                    bytes: take(plaintext, &mut offset, len)?.to_vec(),
+                });
             }
             QUIC_FRAME_CONNECTION_CLOSE_TRANSPORT => {
                 skip_varint(plaintext, &mut offset)?;
@@ -1160,12 +1316,13 @@ fn extract_crypto_frames(plaintext: &[u8]) -> Result<Vec<u8>, TransportError> {
             }
         }
     }
-    if crypto.is_empty() {
+    if frames.is_empty() {
         return Err(TransportError::InvalidQuicSurface(
             "QUIC Initial has no CRYPTO frame",
         ));
     }
-    Ok(crypto)
+    frames.sort_by_key(|frame| frame.offset);
+    Ok(frames)
 }
 
 fn skip_ack_frame(input: &[u8], offset: &mut usize) -> Result<(), TransportError> {

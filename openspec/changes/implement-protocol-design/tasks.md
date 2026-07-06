@@ -61,15 +61,15 @@
 - [x] 8.2 Implement TCP evasion strategy parser and conservative segmentation writer.
 - [x] 8.3 Implement evasion fallback to ordinary TCP sending.
 - [x] 8.4 Implement QUIC fingerprint model and REALITY-over-QUIC auth carrier parsing.
-- [ ] 8.5 Implement QUIC dispatch fallback and authenticated stream carrying surface. (Initial parse/decrypt/auth, client first flight, bad-auth UDP fallback relay, QUIC packet/header protection, and target stream prefix helpers complete; authenticated network QUIC stream engine pending)
+- [x] 8.5 Implement QUIC dispatch fallback and authenticated stream carrying surface. (Initial parse/decrypt/auth, client first flight, bad-auth UDP fallback relay, QUIC packet/header protection, target stream prefix helpers, multi-datagram ClientHello prefetch, authenticated quinn stream relay complete)
 
 ## 9. Core Runtime
 
 - [x] 9.1 Implement server and client config structs, TOML parsing, validation, and redacted debug output.
 - [x] 9.2 Implement CLI override merge for server and client configs.
 - [x] 9.3 Implement SOCKS5 no-auth handshake and CONNECT parsing.
-- [ ] 9.4 Implement server orchestration for TCP, UDP, dest profile, replay cache, dispatch, and shutdown. (TCP and bad-auth UDP/QUIC fallback complete; authenticated QUIC server path pending)
-- [ ] 9.5 Implement client orchestration for SOCKS, TCP/QUIC selection, mux/Vision selection, and relay lifecycle. (TCP mux/Vision relay and QUIC first flight complete; QUIC stream relay pending)
+- [x] 9.4 Implement server orchestration for TCP, UDP, dest profile, replay cache, dispatch, and shutdown. (TCP, UDP/QUIC fallback, and authenticated QUIC server stream path complete)
+- [x] 9.5 Implement client orchestration for SOCKS, TCP/QUIC selection, mux/Vision selection, and relay lifecycle. (TCP mux/Vision relay and QUIC authenticated stream relay complete)
 - [x] 9.6 Implement probe-resistance timing alignment, useless-record policy, and no-throttled fallback invariants.
 
 ## 10. CLI

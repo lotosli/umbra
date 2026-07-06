@@ -329,6 +329,17 @@ pub fn classify_quic_initial(
             datagram,
         ));
     };
+    classify_quic_client_hello(datagram, client_hello, &header.scid, ctx)
+}
+
+/// Classify a complete QUIC ClientHello recovered from Initial CRYPTO data.
+pub fn classify_quic_client_hello(
+    datagram: Vec<u8>,
+    client_hello: Vec<u8>,
+    scid: &[u8],
+    ctx: DispatchContext<'_>,
+) -> Result<QuicDispatchDecision, CoreError> {
+    validate_cfg(ctx.cfg)?;
     let Ok(parsed) = parse_client_hello(&client_hello) else {
         return Ok(fallback_quic(
             FallbackReason::MalformedClientHello,
@@ -350,7 +361,7 @@ pub fn classify_quic_initial(
         return Ok(fallback_quic(FallbackReason::MissingKeyShare, datagram));
     };
     let Some((grease_parameter, session_id)) =
-        quic_session_id_array(&parsed.quic_transport_parameters, &header.scid)
+        quic_session_id_array(&parsed.quic_transport_parameters, scid)
     else {
         return Ok(fallback_quic(FallbackReason::InvalidSessionId, datagram));
     };

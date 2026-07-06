@@ -1,5 +1,6 @@
 //! Integration tests for TCP outer transport, TCP evasion, and QUIC surfaces.
 
+use bytes::BytesMut;
 use tokio::{
     io::{self, AsyncReadExt},
     net::TcpStream,
@@ -8,6 +9,7 @@ use tokio::{
 use umbra_crypto::x25519;
 use umbra_fingerprint::load_profile;
 use umbra_proto::addr::TargetAddr;
+use umbra_tls::quic::QuicTrafficSecrets;
 use umbra_tls::{
     clienthello::{TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256},
     parse::parse_client_hello,
@@ -18,10 +20,10 @@ use umbra_transport::{
         EvasionPlan, RecoverableBeforeSend, TcpEvasionPolicy,
     },
     quic::{
-        build_quic_client_hello_surface, derive_quic_packet_protection, open_target_stream,
-        parse_quic_initial_header, parse_target_stream_payload, quic_dispatch_bad_auth,
-        quic_fingerprint_from_profile, read_target_stream, recover_quic_auth_token,
-        write_target_stream, QuicDispatchDecision,
+        build_quic_client_hello_surface, derive_quic_packet_protection, derive_quinn_packet_keys,
+        open_target_stream, parse_quic_initial_header, parse_target_stream_payload,
+        quic_dispatch_bad_auth, quic_fingerprint_from_profile, read_target_stream,
+        recover_quic_auth_token, write_target_stream, QuicDispatchDecision,
     },
     tcp::{
         accept_once_with_dispatch, bind_listener, build_tcp_client_hello, send_client_hello,
@@ -277,6 +279,69 @@ fn scenario_quic_packet_protection_round_trips_supported_cipher_suites() {
             .expect("remove header protection");
         assert_eq!(first, original_first);
         assert_eq!(packet_number, original_packet_number);
+
+        let secrets = QuicTrafficSecrets {
+            cipher_suite,
+            client: secret,
+            server: [0x44_u8; 32],
+        };
+        let client_keys =
+            derive_quinn_packet_keys(&secrets, quinn::Side::Client).expect("derive client keys");
+        let server_keys =
+            derive_quinn_packet_keys(&secrets, quinn::Side::Server).expect("derive server keys");
+        assert_eq!(client_keys.packet.local.tag_len(), 16);
+        assert_eq!(client_keys.header.local.sample_size(), 16);
+        assert_eq!(
+            client_keys.packet.local.confidentiality_limit(),
+            expected_quic_confidentiality_limit(cipher_suite)
+        );
+        assert_eq!(
+            client_keys.packet.local.integrity_limit(),
+            expected_quic_integrity_limit(cipher_suite)
+        );
+
+        let header_len = 5;
+        let mut quinn_packet = b"\x40\x00\x00\x00\x07quinn payload".to_vec();
+        quinn_packet.resize(
+            quinn_packet.len() + client_keys.packet.local.tag_len(),
+            0_u8,
+        );
+        client_keys
+            .packet
+            .local
+            .encrypt(7, &mut quinn_packet, header_len);
+        let header = quinn_packet[..header_len].to_vec();
+        let mut payload = BytesMut::from(&quinn_packet[header_len..]);
+        server_keys
+            .packet
+            .remote
+            .decrypt(7, &header, &mut payload)
+            .expect("server remote key decrypts client local packet");
+        assert_eq!(payload.as_ref(), b"quinn payload");
+
+        let mut header_packet = vec![0x41, 0x00, 0x00, 0x00, 0x07];
+        header_packet.extend_from_slice(&[0x55_u8; 20]);
+        let original_header = header_packet[..5].to_vec();
+        client_keys.header.local.encrypt(1, &mut header_packet);
+        assert_ne!(&header_packet[..5], original_header.as_slice());
+        server_keys.header.remote.decrypt(1, &mut header_packet);
+        assert_eq!(&header_packet[..5], original_header.as_slice());
+    }
+}
+
+fn expected_quic_confidentiality_limit(cipher_suite: u16) -> u64 {
+    match cipher_suite {
+        TLS_AES_128_GCM_SHA256 | TLS_AES_256_GCM_SHA384 => 1_u64 << 23,
+        TLS_CHACHA20_POLY1305_SHA256 => u64::MAX,
+        _ => 0,
+    }
+}
+
+fn expected_quic_integrity_limit(cipher_suite: u16) -> u64 {
+    match cipher_suite {
+        TLS_AES_128_GCM_SHA256 | TLS_AES_256_GCM_SHA384 => 1_u64 << 52,
+        TLS_CHACHA20_POLY1305_SHA256 => 1_u64 << 36,
+        _ => 0,
     }
 }
 

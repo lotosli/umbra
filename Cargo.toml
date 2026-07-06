@@ -47,6 +47,7 @@ umbra-testkit = { path = "crates/umbra-testkit" }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 futures = "0.3"
+bytes = "1"
 
 # 密码学（组件 I / §15）
 x25519-dalek = { version = "2", features = ["static_secrets"] }

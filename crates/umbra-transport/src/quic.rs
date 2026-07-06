@@ -1,5 +1,13 @@
 //! QUIC fingerprint, REALITY carrier, fallback, and target stream helpers.
 
+use bytes::BytesMut;
+use quinn::{
+    crypto::{
+        CryptoError as QuinnCryptoError, HeaderKey as QuinnHeaderKey, KeyPair as QuinnKeyPair,
+        Keys as QuinnKeys, PacketKey as QuinnPacketKey,
+    },
+    Side as QuinnSide,
+};
 use ring::aead::{self, quic as ring_quic, Aad, LessSafeKey, Nonce, UnboundKey};
 use rustls::{
     quic::{HeaderProtectionKey as RustlsHeaderProtectionKey, Version},
@@ -123,6 +131,8 @@ pub struct QuicPacketProtection {
 pub struct QuicPacketProtectionKey {
     key: LessSafeKey,
     iv: [u8; QUIC_IV_LEN],
+    confidentiality_limit: u64,
+    integrity_limit: u64,
 }
 
 /// QUIC header protection key for one traffic direction.
@@ -249,8 +259,14 @@ pub fn derive_quic_packet_protection(
     );
     let header = ring_quic::HeaderProtectionKey::new(header_algorithm(cipher_suite)?, &header_key)
         .map_err(|_| TransportError::InvalidQuicSurface("invalid QUIC header key"))?;
+    let (confidentiality_limit, integrity_limit) = packet_limits(cipher_suite)?;
     Ok(QuicPacketProtection {
-        packet: QuicPacketProtectionKey { key, iv },
+        packet: QuicPacketProtectionKey {
+            key,
+            iv,
+            confidentiality_limit,
+            integrity_limit,
+        },
         header: QuicHeaderProtectionKey { key: header },
     })
 }
@@ -263,6 +279,31 @@ pub fn derive_quic_packet_protection_pair(
         derive_quic_packet_protection(secrets.cipher_suite, &secrets.client)?,
         derive_quic_packet_protection(secrets.cipher_suite, &secrets.server)?,
     ))
+}
+
+/// Derive quinn-compatible QUIC packet and header keys for one encryption level.
+pub fn derive_quinn_packet_keys(
+    secrets: &QuicTrafficSecrets,
+    side: QuinnSide,
+) -> Result<QuinnKeys, TransportError> {
+    let (client, server) = derive_quic_packet_protection_pair(secrets)?;
+    let (local, remote) = if side.is_client() {
+        (client, server)
+    } else {
+        (server, client)
+    };
+    let (local_header, local_packet) = local.into_quinn_parts();
+    let (remote_header, remote_packet) = remote.into_quinn_parts();
+    Ok(QuinnKeys {
+        header: QuinnKeyPair {
+            local: local_header,
+            remote: remote_header,
+        },
+        packet: QuinnKeyPair {
+            local: local_packet,
+            remote: remote_packet,
+        },
+    })
 }
 
 /// Build a protected client QUIC Initial packet carrying raw ClientHello CRYPTO bytes.
@@ -486,6 +527,10 @@ where
 }
 
 impl QuicPacketProtection {
+    fn into_quinn_parts(self) -> (Box<dyn QuinnHeaderKey>, Box<dyn QuinnPacketKey>) {
+        (Box::new(self.header), Box::new(self.packet))
+    }
+
     /// Seal a QUIC packet payload and return the authentication tag.
     pub fn seal_packet_payload(
         &self,
@@ -534,6 +579,49 @@ impl QuicPacketProtection {
     }
 }
 
+impl QuinnPacketKey for QuicPacketProtectionKey {
+    fn encrypt(&self, packet: u64, buf: &mut [u8], header_len: usize) {
+        let Some(payload_and_tag_len) = buf.len().checked_sub(header_len) else {
+            return;
+        };
+        if payload_and_tag_len < QUIC_PACKET_TAG_LEN {
+            return;
+        }
+        let payload_len = payload_and_tag_len - QUIC_PACKET_TAG_LEN;
+        let (header, payload_and_tag) = buf.split_at_mut(header_len);
+        let (payload, tag_storage) = payload_and_tag.split_at_mut(payload_len);
+        if let Ok(tag) = self.seal_in_place(packet, header, payload) {
+            tag_storage.copy_from_slice(&tag);
+        }
+    }
+
+    fn decrypt(
+        &self,
+        packet: u64,
+        header: &[u8],
+        payload: &mut BytesMut,
+    ) -> Result<(), QuinnCryptoError> {
+        let plaintext_len = self
+            .open_in_place(packet, header, payload.as_mut())
+            .map_err(|_| QuinnCryptoError)?
+            .len();
+        payload.truncate(plaintext_len);
+        Ok(())
+    }
+
+    fn tag_len(&self) -> usize {
+        QUIC_PACKET_TAG_LEN
+    }
+
+    fn confidentiality_limit(&self) -> u64 {
+        self.confidentiality_limit
+    }
+
+    fn integrity_limit(&self) -> u64 {
+        self.integrity_limit
+    }
+}
+
 impl QuicPacketProtectionKey {
     fn seal_in_place(
         &self,
@@ -571,7 +659,49 @@ impl QuicPacketProtectionKey {
     }
 }
 
+impl QuinnHeaderKey for QuicHeaderProtectionKey {
+    fn decrypt(&self, pn_offset: usize, packet: &mut [u8]) {
+        self.apply_quinn_header_protection(pn_offset, packet, false);
+    }
+
+    fn encrypt(&self, pn_offset: usize, packet: &mut [u8]) {
+        self.apply_quinn_header_protection(pn_offset, packet, true);
+    }
+
+    fn sample_size(&self) -> usize {
+        QUIC_PACKET_TAG_LEN
+    }
+}
+
 impl QuicHeaderProtectionKey {
+    fn apply_quinn_header_protection(&self, pn_offset: usize, packet: &mut [u8], encrypt: bool) {
+        let Some(sample_start) = pn_offset.checked_add(4) else {
+            return;
+        };
+        let Some(sample_end) = sample_start.checked_add(QUIC_PACKET_TAG_LEN) else {
+            return;
+        };
+        let Some(sample) = packet.get(sample_start..sample_end).map(<[u8]>::to_vec) else {
+            return;
+        };
+        let Some(packet_number_start) = pn_offset.checked_sub(1) else {
+            return;
+        };
+        let Some(packet_number_end) = packet_number_start.checked_add(4) else {
+            return;
+        };
+        let (first, rest) = packet.split_at_mut(1);
+        let Some(packet_number) = rest.get_mut(packet_number_start..packet_number_end) else {
+            return;
+        };
+        let result = if encrypt {
+            self.encrypt_in_place(&sample, &mut first[0], packet_number)
+        } else {
+            self.decrypt_in_place(&sample, &mut first[0], packet_number)
+        };
+        let _ = result;
+    }
+
     fn encrypt_in_place(
         &self,
         sample: &[u8],
@@ -667,6 +797,16 @@ fn header_algorithm(cipher_suite: u16) -> Result<&'static ring_quic::Algorithm, 
         TLS_AES_128_GCM_SHA256 => Ok(&ring_quic::AES_128),
         TLS_AES_256_GCM_SHA384 => Ok(&ring_quic::AES_256),
         TLS_CHACHA20_POLY1305_SHA256 => Ok(&ring_quic::CHACHA20),
+        _ => Err(TransportError::InvalidQuicSurface(
+            "unsupported QUIC cipher suite",
+        )),
+    }
+}
+
+fn packet_limits(cipher_suite: u16) -> Result<(u64, u64), TransportError> {
+    match cipher_suite {
+        TLS_AES_128_GCM_SHA256 | TLS_AES_256_GCM_SHA384 => Ok((1_u64 << 23, 1_u64 << 52)),
+        TLS_CHACHA20_POLY1305_SHA256 => Ok((u64::MAX, 1_u64 << 36)),
         _ => Err(TransportError::InvalidQuicSurface(
             "unsupported QUIC cipher suite",
         )),

@@ -87,14 +87,14 @@
 - [x] 11.3 Add fuzz targets for network byte parsers: ClientHello, mux frame, target address, and QUIC auth carrier.
 - [x] 11.4 Add RFC/FIPS/vector tests for TLS key schedule, record protection, PQ wrappers, and certificate binding.
 - [x] 11.5 Add loopback testkit tests for dispatch fallback, authenticated path, SOCKS-to-inner relay, and CLI config overrides.
-- [ ] 11.6 Run `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo nextest run --workspace`.
-- [ ] 11.7 Run `cargo xtask coverage` and keep line coverage >= 90% without lowering the threshold.
-- [ ] 11.8 Run `cargo deny check` and OpenSpec strict validation.
+- [x] 11.6 Run `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo nextest run --workspace`.
+- [x] 11.7 Run `cargo xtask coverage` and keep line coverage >= 90% without lowering the threshold.
+- [x] 11.8 Run `cargo deny check` and OpenSpec strict validation.
 
 ## 12. Protocol Document Review
 
-- [ ] 12.1 Perform a line-by-line implementation review against `docs/protocol-design.md`.
-- [ ] 12.2 Record every protocol-design requirement as implemented, intentionally pending, or requiring a protocol/OpenSpec amendment.
-- [ ] 12.3 Fix any code behavior that diverges from `docs/protocol-design.md` before marking implementation complete.
-- [ ] 12.4 Confirm all optional config fields from section 16 are exposed as CLI flags.
-- [ ] 12.5 Confirm no customer/user-visible logs reveal private keys, short ids, session ids, targets, or payload bytes.
+- [x] 12.1 Perform a line-by-line implementation review against `docs/protocol-design.md`.
+- [x] 12.2 Record every protocol-design requirement as implemented, intentionally pending, or requiring a protocol/OpenSpec amendment.
+- [x] 12.3 Fix any code behavior that diverges from `docs/protocol-design.md` before marking implementation complete.
+- [x] 12.4 Confirm all optional config fields from section 16 are exposed as CLI flags.
+- [x] 12.5 Confirm no customer/user-visible logs reveal private keys, short ids, session ids, targets, or payload bytes.

@@ -1,0 +1,47 @@
+[package]
+name = "umbra-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# 独立 workspace：不被父 workspace 纳管（父已 exclude；fuzz 需 nightly + cargo-fuzz）
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+umbra-crypto = { path = "../crates/umbra-crypto" }
+# 实现对应能力后取消注释以接入被测函数：
+# umbra-tls = { path = "../crates/umbra-tls" }
+# umbra-reality = { path = "../crates/umbra-reality" }
+# umbra-inner = { path = "../crates/umbra-inner" }
+
+[[bin]]
+name = "aead_open"
+path = "fuzz_targets/aead_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clienthello_parse"
+path = "fuzz_targets/clienthello_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session_id_open"
+path = "fuzz_targets/session_id_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mux_frame"
+path = "fuzz_targets/mux_frame.rs"
+test = false
+doc = false
+bench = false

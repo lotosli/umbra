@@ -1,0 +1,28 @@
+schema: spec-driven
+
+context: |
+  项目：Umbra（影）—— 抗审查代理协议（REALITY 式借用真实身份 + 自研极简 TLS 1.3 / Rust 版 uTLS）。
+  规范：docs/protocol-design.md（最终技术形态，组件 A–K）；架构：docs/architecture.md；开发约束：AGENTS.md。
+  技术栈：Rust（edition 2021，工具链固定 1.96.1），Cargo workspace（crates/*），tokio 异步；
+    密码学用 RustCrypto/dalek 系（x25519-dalek/hkdf/sha2/hmac/aes-gcm/chacha20poly1305/ml-kem/ml-dsa）。
+  约定：
+    - SDD：没有已批准的 openspec 变更就不写实现代码。
+    - 依赖一律走根 Cargo.toml 的 [workspace.dependencies] catalog（dep.workspace = true），不在 crate 内写死版本。
+    - 库代码禁止 unwrap/expect/panic/todo/unimplemented；错误用 thiserror + Result；二进制可用 anyhow。
+    - 秘密比较常量时间（subtle）；密钥类型 zeroize；日志不记录秘密/目标地址。
+    - Conventional Commits；PR 关联对应 openspec 变更。
+  测试：cargo-nextest 运行；**行覆盖率硬性 >= 90%**（cargo-llvm-cov）；每个 spec 场景至少一个测试；
+    解析器配 proptest + cargo-fuzz；密码学/TLS 对照 RFC 8446/8448/8439/5869 与 FIPS 203/204 向量。
+  安全/隐蔽：ClientHello/QUIC 指纹须逐字节匹配目标 Chrome（以真实抓包核对）；未认证连接一律转发真 dest，不早断/限速。
+  能力 → crate 映射见 docs/architecture.md。
+
+rules:
+  proposal:
+    - 必须包含 Impact，并在 What Changes 标出 BREAKING（如有）。
+    - 明确 Non-Goals（可放入 design 的 Goals / Non-Goals）。
+  specs:
+    - 需求用 SHALL/MUST；每个 "### Requirement" 至少一个 "#### Scenario"（恰好 4 个 #）。
+    - 每个场景应可直接映射为一个测试用例。
+  tasks:
+    - 必须包含一个“测试与覆盖率 >= 90%”任务组；任务粒度控制在可单次会话完成。
+    - 涉及网络字节解析的能力，必须包含 proptest 与 fuzz 任务。

@@ -1,0 +1,20 @@
+[package]
+name = "umbra-testkit"
+description = "测试工具：进程内回环 harness、可控 dest、密码学/TLS 测试向量（dev 用）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+umbra-proto.workspace = true
+umbra-core.workspace = true
+# 实现时：tokio / rcgen（临时测试证书）/ 向量数据
+
+[dev-dependencies]

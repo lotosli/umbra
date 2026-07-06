@@ -1,0 +1,21 @@
+[package]
+name = "umbra-inner"
+description = "内层传输：自适应填充多路复用 + Vision 真拼接 + 目标寻址 + 爬虫模式（组件 F）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+umbra-proto.workspace = true
+umbra-crypto.workspace = true
+umbra-tls.workspace = true
+# 实现时：tokio / tokio-util / futures / rand（填充）
+
+[dev-dependencies]

@@ -1,0 +1,4 @@
+msrv = "1.96.1"
+# 单一职责阈值，鼓励小函数、便于达成 90% 覆盖率
+cognitive-complexity-threshold = 20
+too-many-arguments-threshold = 8

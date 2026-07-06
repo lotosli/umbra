@@ -1,0 +1,22 @@
+[package]
+name = "umbra"
+description = "Umbra CLI：server | client | keygen（单二进制多子命令）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+default-run = "umbra"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "umbra"
+path = "src/main.rs"
+
+[dependencies]
+umbra-core.workspace = true
+# 实现时：clap / tokio / anyhow / tracing-subscriber

@@ -1,0 +1,22 @@
+[package]
+name = "umbra-tls"
+description = "自研极简 TLS 1.3 栈（Rust 版 uTLS）：ClientHello 构造/密钥调度/记录层/客户端与服务端状态机（组件 A）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+umbra-proto.workspace = true
+umbra-crypto.workspace = true
+umbra-fingerprint.workspace = true
+# 实现时：tls-parser（服务端解析）/ x509-parser / rcgen（证书）/ tokio（IO）
+
+[dev-dependencies]
+# proptest / umbra-testkit（RFC 8448 向量）

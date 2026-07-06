@@ -1,0 +1,12 @@
+//! Shared wire-format types, constants, and errors for Umbra.
+//!
+//! The crate contains pure parsers and serializers for protocol bytes used by
+//! higher layers. Parsers return structured errors and never panic on malformed
+//! network input.
+
+pub mod addr;
+pub mod consts;
+pub mod error;
+pub mod frame;
+
+pub use error::ProtocolError;

@@ -1,0 +1,117 @@
+# Umbra monorepo — Cargo workspace
+# 架构与组件映射见 docs/architecture.md 与 AGENTS.md；协议规范见 docs/protocol-design.md。
+# 本仓库遵循 SDD（OpenSpec）：任何实现前须存在已批准的 openspec 变更。
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/umbra-proto",
+    "crates/umbra-crypto",
+    "crates/umbra-tls",
+    "crates/umbra-fingerprint",
+    "crates/umbra-reality",
+    "crates/umbra-inner",
+    "crates/umbra-transport",
+    "crates/umbra-core",
+    "crates/umbra-testkit",
+    "crates/umbra",
+    "xtask",
+]
+# fuzz 需 nightly + cargo-fuzz，独立于普通构建
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.96.1"
+license = "MIT"
+repository = "https://example.invalid/umbra"
+authors = ["Umbra contributors"]
+
+# ── 依赖目录（catalog）────────────────────────────────────────────────
+# 集中声明版本；各 crate 在实现对应能力时按需 `dep.workspace = true` 引入。
+# 未被任何 crate 引用的条目不会被拉取/编译（脚手架阶段保持零外部依赖，构建极快）。
+[workspace.dependencies]
+# 内部 crate
+umbra-proto = { path = "crates/umbra-proto" }
+umbra-crypto = { path = "crates/umbra-crypto" }
+umbra-tls = { path = "crates/umbra-tls" }
+umbra-fingerprint = { path = "crates/umbra-fingerprint" }
+umbra-reality = { path = "crates/umbra-reality" }
+umbra-inner = { path = "crates/umbra-inner" }
+umbra-transport = { path = "crates/umbra-transport" }
+umbra-core = { path = "crates/umbra-core" }
+umbra-testkit = { path = "crates/umbra-testkit" }
+
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+futures = "0.3"
+
+# 密码学（组件 I / §15）
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ml-kem = "0.2.0"        # ML-KEM-768（FIPS 203），落地前确认版本/codepoint
+kem = "0.3.0-pre.0"    # ml-kem Encapsulate/Decapsulate traits
+ml-dsa = { version = "0.1.1", features = ["zeroize"] } # ML-DSA-65（FIPS 204）
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+chacha20 = "0.9"
+hkdf = "0.12"
+sha2 = "0.10"
+hmac = "0.12"
+md-5 = "0.10"
+subtle = "2.6"
+zeroize = { version = "1", features = ["derive"] }
+rand = "0.8"
+rand_core = "0.6"
+
+# TLS 解析 / 证书
+tls-parser = "0.11"
+x509-parser = "0.16"
+rcgen = "0.13"
+
+# 外层传输（组件 G/H）
+socket2 = "0.5"
+quinn = "0.11"          # 或 quiche（BoringSSL 系，指纹更易定制）
+
+# 配置 / CLI / 日志
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+humantime-serde = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+lru = "0.12"
+base64 = "0.22"
+
+# 测试 / 基准
+proptest = "1"
+criterion = "0.5"
+
+# ── 全局 lint（各 crate 通过 `[lints] workspace = true` 继承）──────────
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+# 文档以中文散文为主，含大量产品/协议名（OpenSpec/TLS/Chrome/REALITY 等），doc_markdown 误报多
+doc_markdown = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.bench]
+lto = "thin"

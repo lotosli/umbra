@@ -1,0 +1,5 @@
+# 仅使用 stable rustfmt 支持的选项，避免 nightly-only 配置导致 `cargo fmt --check` 报错。
+edition = "2021"
+max_width = 100
+newline_style = "Unix"
+use_field_init_shorthand = true

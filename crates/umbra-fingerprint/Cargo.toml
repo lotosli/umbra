@@ -1,0 +1,23 @@
+[package]
+name = "umbra-fingerprint"
+description = "Chrome ClientHello 指纹档案 + JA3/JA4 自检（组件 J）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+umbra-proto.workspace = true
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+md-5.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]

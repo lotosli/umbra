@@ -1,0 +1,33 @@
+[package]
+name = "umbra-crypto"
+description = "Umbra 密码学原语封装：X25519/ML-KEM/ML-DSA/HKDF/HMAC/AEAD/常量时间（组件 I，§15）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+umbra-proto.workspace = true
+x25519-dalek.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+aes-gcm.workspace = true
+chacha20poly1305.workspace = true
+chacha20.workspace = true
+ml-kem.workspace = true
+kem.workspace = true
+ml-dsa.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

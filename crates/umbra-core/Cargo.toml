@@ -1,0 +1,26 @@
+[package]
+name = "umbra-core"
+description = "编排层：配置、服务端分派（组件 C）、SOCKS5 入站、中继、会话粘合"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+umbra-proto.workspace = true
+umbra-crypto.workspace = true
+umbra-tls.workspace = true
+umbra-fingerprint.workspace = true
+umbra-reality.workspace = true
+umbra-inner.workspace = true
+umbra-transport.workspace = true
+# 实现时：tokio / serde / toml / humantime-serde / tracing / anyhow / thiserror
+
+[dev-dependencies]
+# umbra-testkit（回环 e2e）

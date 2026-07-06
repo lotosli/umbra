@@ -1,0 +1,33 @@
+# build artifacts
+/target
+**/*.rs.bk
+*.pdb
+
+# coverage
+/coverage
+*.profraw
+*.profdata
+lcov.info
+
+# fuzzing
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+
+# secrets / runtime (never commit keys)
+*.key
+*.pem
+umbra-*.der
+*.local.toml
+
+# os / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# node (openspec runs via npx; no node_modules expected, but just in case)
+node_modules/
+
+# NOTE: Cargo.lock IS committed (this workspace ships binaries).

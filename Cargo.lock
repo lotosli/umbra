@@ -1020,6 +1020,11 @@ dependencies = [
 name = "umbra-tls"
 version = "0.0.0"
 dependencies = [
+ "hkdf",
+ "proptest",
+ "sha2",
+ "subtle",
+ "thiserror",
  "umbra-crypto",
  "umbra-fingerprint",
  "umbra-proto",

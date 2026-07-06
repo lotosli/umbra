@@ -13,8 +13,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 umbra-crypto = { path = "../crates/umbra-crypto" }
+umbra-tls = { path = "../crates/umbra-tls" }
 # 实现对应能力后取消注释以接入被测函数：
-# umbra-tls = { path = "../crates/umbra-tls" }
 # umbra-reality = { path = "../crates/umbra-reality" }
 # umbra-inner = { path = "../crates/umbra-inner" }
 

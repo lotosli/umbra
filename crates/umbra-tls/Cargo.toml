@@ -16,7 +16,10 @@ workspace = true
 umbra-proto.workspace = true
 umbra-crypto.workspace = true
 umbra-fingerprint.workspace = true
-# 实现时：tls-parser（服务端解析）/ x509-parser / rcgen（证书）/ tokio（IO）
+hkdf.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-# proptest / umbra-testkit（RFC 8448 向量）
+proptest.workspace = true

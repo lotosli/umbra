@@ -21,12 +21,12 @@
 
 ## 4. TLS 1.3 Stack
 
-- [ ] 4.1 Implement ClientHello builder driven by `FingerprintProfile`.
-- [ ] 4.2 Implement safe ClientHello parsing for SNI, session id, classic X25519 key_share, and QUIC carrier data.
-- [ ] 4.3 Implement RFC 8446 key schedule helpers and RFC 8448 vector tests.
-- [ ] 4.4 Implement TLS 1.3 record seal/open for AES-GCM and ChaCha20-Poly1305.
-- [ ] 4.5 Implement minimal client handshake state machine with certificate verification callback.
-- [ ] 4.6 Implement minimal server handshake state machine that accepts prefetched ClientHello bytes and echoes session id.
+- [x] 4.1 Implement ClientHello builder driven by `FingerprintProfile`.
+- [x] 4.2 Implement safe ClientHello parsing for SNI, session id, classic X25519 key_share, and QUIC carrier data.
+- [x] 4.3 Implement RFC 8446 key schedule helpers and RFC 8448 vector tests.
+- [x] 4.4 Implement TLS 1.3 record seal/open for AES-GCM and ChaCha20-Poly1305.
+- [x] 4.5 Implement minimal client handshake state machine with certificate verification callback.
+- [x] 4.6 Implement minimal server handshake state machine that accepts prefetched ClientHello bytes and echoes session id.
 
 ## 5. REALITY Authentication And Certificates
 
@@ -84,7 +84,7 @@
 
 - [ ] 11.1 Add unit and integration tests for every `#### Scenario` in this change.
 - [ ] 11.2 Add proptest coverage for address parsing, mux frames, ClientHello parsing, config validation, and padding strategy parsing.
-- [ ] 11.3 Add fuzz targets for network byte parsers: ClientHello, mux frame, target address, and QUIC auth carrier.
+- [ ] 11.3 Add fuzz targets for network byte parsers: ClientHello, mux frame, target address, and QUIC auth carrier. (ClientHello wired)
 - [ ] 11.4 Add RFC/FIPS/vector tests for TLS key schedule, record protection, PQ wrappers, and certificate binding.
 - [ ] 11.5 Add loopback testkit tests for dispatch fallback, authenticated path, SOCKS-to-inner relay, and CLI config overrides.
 - [ ] 11.6 Run `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo nextest run --workspace`.

@@ -9,7 +9,11 @@ use std::{
 };
 
 use rand::{rngs::OsRng, RngCore};
-use umbra_crypto::{mlkem::mlkem_keygen, secret::Secret, x25519};
+use umbra_crypto::{
+    mlkem::mlkem_keygen,
+    secret::{Secret, SecretBytes},
+    x25519,
+};
 use umbra_fingerprint::{load_profile, FingerprintProfile};
 use umbra_reality::{
     auth::try_seal_session_id,
@@ -22,7 +26,7 @@ use umbra_tls::{
         MlkemShare, EXT_QUIC_TRANSPORT_PARAMETERS,
     },
     handshake::{CertVerify, PeerKind as TlsPeerKind},
-    keyschedule::hkdf_expand_label,
+    keyschedule::hkdf_expand_label_for_suite,
     quic::{QuicTlsClient, QuicTlsServer, QuicTrafficSecrets},
 };
 use umbra_transport::quic::{
@@ -34,7 +38,6 @@ use crate::{config::ClientCfg, CoreError};
 
 const EXT_PADDING: u16 = 0x0015;
 const TLS_HANDSHAKE_FINISHED: u8 = 0x14;
-const TRAFFIC_SECRET_LEN: usize = 32;
 
 pub(crate) fn client_config(cfg: &ClientCfg) -> Result<quinn::ClientConfig, CoreError> {
     let profile = load_profile(&cfg.fingerprint)?;
@@ -488,7 +491,7 @@ fn build_client_session(
     let shared = x25519::agree(&keypair.private, &cfg.public_key)?;
     let mut random = [0_u8; 32];
     OsRng.fill_bytes(&mut random);
-    let mlkem_key_exchange = hybrid_mlkem_key_exchange(keypair.public.as_bytes());
+    let mlkem = hybrid_mlkem_key_exchange(keypair.public.as_bytes());
 
     let mut zero_parameters = parsed_parameters.clone();
     zero_parameters.push(ClientQuicTransportParameter {
@@ -500,7 +503,7 @@ fn build_client_session(
         &keypair,
         cfg.profile.clone(),
         random,
-        mlkem_key_exchange.clone(),
+        MlkemShare::x25519_mlkem768(mlkem.key_exchange.clone()),
         zero_parameters,
     ))?;
     let aad = quic_hello0(&zero_hello, cfg.grease_parameter)?;
@@ -520,7 +523,10 @@ fn build_client_session(
         &keypair,
         cfg.profile.clone(),
         random,
-        mlkem_key_exchange,
+        MlkemShare::x25519_mlkem768_with_decapsulation_key(
+            mlkem.key_exchange,
+            mlkem.decapsulation_key,
+        ),
         parsed_parameters,
     );
     let (client, client_hello) = QuicTlsClient::start(&params)?;
@@ -550,7 +556,7 @@ fn client_hello_params(
     keypair: &x25519::Keypair,
     profile: FingerprintProfile,
     random: [u8; 32],
-    mlkem_key_exchange: Vec<u8>,
+    mlkem: MlkemShare,
     quic_transport_parameters: Vec<ClientQuicTransportParameter>,
 ) -> ClientHelloParams {
     ClientHelloParams {
@@ -558,7 +564,7 @@ fn client_hello_params(
         session_id: Vec::new(),
         x25519_priv: *keypair.private.expose_secret(),
         x25519_pub: *keypair.public.as_bytes(),
-        mlkem: MlkemShare::x25519_mlkem768(mlkem_key_exchange),
+        mlkem,
         profile,
         random,
         quic_transport_parameters,
@@ -665,8 +671,8 @@ fn write_quic_varint(value: u64, out: &mut Vec<u8>) -> Result<(), CoreError> {
 }
 
 fn next_application_secrets(secrets: &QuicTrafficSecrets) -> Result<QuicTrafficSecrets, CoreError> {
-    let client = next_traffic_secret(&secrets.client)?;
-    let server = next_traffic_secret(&secrets.server)?;
+    let client = next_traffic_secret(secrets.cipher_suite, &secrets.client)?;
+    let server = next_traffic_secret(secrets.cipher_suite, &secrets.server)?;
     Ok(QuicTrafficSecrets {
         cipher_suite: secrets.cipher_suite,
         client,
@@ -674,12 +680,9 @@ fn next_application_secrets(secrets: &QuicTrafficSecrets) -> Result<QuicTrafficS
     })
 }
 
-fn next_traffic_secret(
-    secret: &[u8; TRAFFIC_SECRET_LEN],
-) -> Result<[u8; TRAFFIC_SECRET_LEN], CoreError> {
-    let next = hkdf_expand_label(secret, "traffic upd", &[], TRAFFIC_SECRET_LEN)?;
-    next.try_into()
-        .map_err(|_| CoreError::InvalidConfig("QUIC traffic secret length mismatch"))
+fn next_traffic_secret(cipher_suite: u16, secret: &[u8]) -> Result<Vec<u8>, CoreError> {
+    hkdf_expand_label_for_suite(cipher_suite, secret, "traffic upd", &[], secret.len())
+        .map_err(CoreError::from)
 }
 
 fn take_first_handshake_message(
@@ -775,12 +778,20 @@ fn random_connection_id(len: usize) -> quinn_proto::ConnectionId {
     quinn_proto::ConnectionId::new(&bytes)
 }
 
-fn hybrid_mlkem_key_exchange(x25519_public: &[u8; 32]) -> Vec<u8> {
+struct HybridMlkemMaterial {
+    key_exchange: Vec<u8>,
+    decapsulation_key: SecretBytes,
+}
+
+fn hybrid_mlkem_key_exchange(x25519_public: &[u8; 32]) -> HybridMlkemMaterial {
     let mlkem = mlkem_keygen();
     let mut key_exchange = Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
     key_exchange.extend_from_slice(x25519_public);
     key_exchange.extend_from_slice(&mlkem.encapsulation_key);
-    key_exchange
+    HybridMlkemMaterial {
+        key_exchange,
+        decapsulation_key: mlkem.decapsulation_key,
+    }
 }
 
 fn current_unix_time() -> Result<u64, CoreError> {
@@ -801,8 +812,8 @@ fn proto_error(reason: impl Into<String>) -> quinn_proto::TransportError {
 fn empty_keys() -> quinn_proto::crypto::Keys {
     let secrets = QuicTrafficSecrets {
         cipher_suite: umbra_tls::clienthello::TLS_AES_128_GCM_SHA256,
-        client: [0_u8; TRAFFIC_SECRET_LEN],
-        server: [0_u8; TRAFFIC_SECRET_LEN],
+        client: vec![0_u8; 32],
+        server: vec![0_u8; 32],
     };
     derive_quinn_packet_keys(&secrets, quinn_proto::Side::Client)
         .unwrap_or_else(|_| panic_free_empty_keys())
@@ -993,8 +1004,8 @@ mod tests {
     fn test_traffic_secrets() -> QuicTrafficSecrets {
         QuicTrafficSecrets {
             cipher_suite: TLS_AES_128_GCM_SHA256,
-            client: [1_u8; TRAFFIC_SECRET_LEN],
-            server: [2_u8; TRAFFIC_SECRET_LEN],
+            client: vec![1_u8; 32],
+            server: vec![2_u8; 32],
         }
     }
 }

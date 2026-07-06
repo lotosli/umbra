@@ -15,7 +15,7 @@ use umbra_core::{
     prefixed::PrefixedStream,
     CoreError,
 };
-use umbra_crypto::{secret::Secret, x25519};
+use umbra_crypto::{mlkem::mlkem_keygen, secret::Secret, x25519};
 use umbra_fingerprint::{load_profile, FingerprintProfile};
 use umbra_reality::{
     auth::try_seal_session_id,
@@ -383,10 +383,11 @@ fn authenticated_fixture() -> Fixture {
         .into_inner();
 
     let zero_session = [0_u8; 32];
-    let zero_hello = client_hello(&profile, &client_key, zero_session);
+    let mlkem_key_exchange = hybrid_mlkem_key_exchange(client_key.public.as_bytes());
+    let zero_hello = client_hello(&profile, &client_key, zero_session, &mlkem_key_exchange);
     let aad = hello0(&zero_hello).expect("derive HELLO0");
     let session_id = try_seal_session_id(&shared, b"short", &aad, NOW).expect("seal REALITY token");
-    let client_hello = client_hello(&profile, &client_key, session_id);
+    let client_hello = client_hello(&profile, &client_key, session_id, &mlkem_key_exchange);
 
     Fixture {
         client_hello,
@@ -411,18 +412,28 @@ fn client_hello(
     profile: &FingerprintProfile,
     keypair: &x25519::Keypair,
     session_id: [u8; 32],
+    mlkem_key_exchange: &[u8],
 ) -> Vec<u8> {
+    let x25519_pub = *keypair.public.as_bytes();
     build_client_hello(&ClientHelloParams {
         sni: "server.example".to_owned(),
         session_id: session_id.to_vec(),
         x25519_priv: *keypair.private.expose_secret(),
-        x25519_pub: *keypair.public.as_bytes(),
-        mlkem: MlkemShare::x25519_mlkem768(vec![0x42; 32]),
+        x25519_pub,
+        mlkem: MlkemShare::x25519_mlkem768(mlkem_key_exchange.to_vec()),
         profile: profile.clone(),
         random: [0xa5_u8; 32],
         quic_transport_parameters: Vec::new(),
     })
     .expect("build ClientHello")
+}
+
+fn hybrid_mlkem_key_exchange(x25519_public: &[u8; 32]) -> Vec<u8> {
+    let mlkem = mlkem_keygen();
+    let mut key_exchange = Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
+    key_exchange.extend_from_slice(x25519_public);
+    key_exchange.extend_from_slice(&mlkem.encapsulation_key);
+    key_exchange
 }
 
 fn fragmented_records(record: &[u8]) -> Vec<u8> {

@@ -247,7 +247,10 @@ fn scenario_quic_packet_protection_round_trips_supported_cipher_suites() {
         TLS_AES_256_GCM_SHA384,
         TLS_CHACHA20_POLY1305_SHA256,
     ] {
-        let secret = [0x33_u8; 32];
+        let secret = match cipher_suite {
+            TLS_AES_256_GCM_SHA384 => vec![0x33_u8; 48],
+            _ => vec![0x33_u8; 32],
+        };
         let sealer = derive_quic_packet_protection(cipher_suite, &secret).expect("derive sealer");
         let opener = derive_quic_packet_protection(cipher_suite, &secret).expect("derive opener");
         let header = b"\x40\x00\x00\x00\x01";
@@ -283,7 +286,10 @@ fn scenario_quic_packet_protection_round_trips_supported_cipher_suites() {
         let secrets = QuicTrafficSecrets {
             cipher_suite,
             client: secret,
-            server: [0x44_u8; 32],
+            server: match cipher_suite {
+                TLS_AES_256_GCM_SHA384 => vec![0x44_u8; 48],
+                _ => vec![0x44_u8; 32],
+            },
         };
         let client_keys =
             derive_quinn_packet_keys(&secrets, quinn::Side::Client).expect("derive client keys");

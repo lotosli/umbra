@@ -14,7 +14,6 @@ workspace = true
 
 [dependencies]
 umbra-proto.workspace = true
-umbra-crypto.workspace = true
 umbra-tls.workspace = true
 rand.workspace = true
 thiserror.workspace = true

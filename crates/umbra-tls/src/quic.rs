@@ -6,21 +6,31 @@
 //! state machines, but exposes raw handshake bytes and traffic secrets for the
 //! QUIC packet layer.
 
+use ring::rand::{SecureRandom, SystemRandom};
 use subtle::ConstantTimeEq;
-use umbra_crypto::{secret::Secret, x25519};
+use umbra_crypto::{
+    secret::{Secret, SecretBytes},
+    x25519,
+};
 
 use crate::{
     clienthello::ClientHelloParams,
     clienthello::{build_client_hello_handshake, EXT_QUIC_TRANSPORT_PARAMETERS},
     handshake::{
         build_server_hello, certificate_message, certificate_verify_message,
-        encrypted_extensions_message, handshake_message, parse_server_flight,
-        parse_server_hello_handshake, verify_certificate_verify, CertVerify, PeerKind,
-        SIGNATURE_ECDSA_SECP256R1_SHA256,
+        client_negotiated_secret, encrypted_extensions_for_profile, handshake_message,
+        parse_server_flight, parse_server_hello_handshake, selected_alpn_extension,
+        verify_certificate_verify, CertVerify, PeerKind, SIGNATURE_ECDSA_SECP256R1_SHA256,
     },
-    keyschedule::{derive_tls13_secrets, finished_verify_data, transcript_hash, Tls13Secrets},
+    keyschedule::{
+        derive_tls13_secrets_for_suite, finished_verify_data_for_suite, transcript_hash_for_suite,
+        SuiteSecrets,
+    },
     parse::parse_client_hello,
-    server::{parse_client_finished, sign_certificate_verify, DestProfile, ForgedCert},
+    server::{
+        parse_client_finished, server_negotiated_key_share, sign_certificate_verify, DestProfile,
+        ForgedCert,
+    },
     TlsError,
 };
 
@@ -32,9 +42,9 @@ pub struct QuicTrafficSecrets {
     /// Negotiated TLS 1.3 cipher suite.
     pub cipher_suite: u16,
     /// Traffic secret used for client-to-server packets.
-    pub client: [u8; 32],
+    pub client: Vec<u8>,
     /// Traffic secret used for server-to-client packets.
-    pub server: [u8; 32],
+    pub server: Vec<u8>,
 }
 
 /// Output from completing the client side of a QUIC TLS handshake.
@@ -53,8 +63,9 @@ pub struct QuicClientFinished {
 pub struct QuicTlsClient {
     cipher_suite: u16,
     client_private: [u8; 32],
+    mlkem_decapsulation_key: Option<SecretBytes>,
     client_hello: Vec<u8>,
-    shared_secret: Option<[u8; 32]>,
+    shared_secret: Option<SecretBytes>,
     handshake_transcript: Vec<u8>,
     state: QuicClientState,
 }
@@ -75,11 +86,17 @@ impl QuicTlsClient {
             ));
         }
         let client_private = params.x25519_priv;
+        let mlkem_decapsulation_key = params
+            .mlkem
+            .decapsulation_key
+            .as_ref()
+            .map(|secret| SecretBytes::new(secret.expose_secret().to_vec()));
         let client_hello = build_client_hello_handshake(params)?;
         Ok((
             Self {
                 cipher_suite: crate::clienthello::TLS_AES_128_GCM_SHA256,
                 client_private,
+                mlkem_decapsulation_key,
                 client_hello: client_hello.clone(),
                 shared_secret: None,
                 handshake_transcript: Vec::new(),
@@ -100,13 +117,24 @@ impl QuicTlsClient {
         let parsed = parse_server_hello_handshake(server_hello)?;
         self.cipher_suite = parsed.cipher_suite;
         let client_secret = Secret::new(self.client_private);
-        let shared = x25519::agree(&client_secret, &parsed.x25519_key_share)
+        let classic_shared = x25519::agree(&client_secret, &parsed.x25519_key_share)
             .map_err(|_| TlsError::InvalidInput("bad server key_share"))?;
+        let shared = client_negotiated_secret(
+            &classic_shared,
+            parsed.key_share_group,
+            &parsed.key_share,
+            self.mlkem_decapsulation_key.as_ref(),
+        )?;
 
         let mut transcript = self.client_hello.clone();
         transcript.extend_from_slice(&parsed.handshake);
-        let secrets = derive_tls13_secrets(shared.expose_secret(), &transcript, &[])?;
-        self.shared_secret = Some(shared.into_inner());
+        let secrets = derive_tls13_secrets_for_suite(
+            parsed.cipher_suite,
+            shared.expose_secret(),
+            &transcript,
+            &[],
+        )?;
+        self.shared_secret = Some(shared);
         self.handshake_transcript = transcript;
         self.state = QuicClientState::ExpectServerFlight;
         Ok(handshake_secrets(parsed.cipher_suite, &secrets))
@@ -127,6 +155,7 @@ impl QuicTlsClient {
             flight.certificate_verify_scheme,
             &flight.certificate_verify_signature,
             &flight.transcript_before_certificate_verify,
+            self.cipher_suite,
         )?;
         let peer_kind = verify.verify(&flight.certificate, &flight.certificate_chain);
         if matches!(peer_kind, PeerKind::Invalid) {
@@ -134,25 +163,34 @@ impl QuicTlsClient {
         }
         let shared = self
             .shared_secret
+            .as_ref()
             .ok_or(TlsError::InvalidInput("missing QUIC shared secret"))?;
-        let handshake_secrets = derive_tls13_secrets(&shared, &self.handshake_transcript, &[])?;
-        let expected = finished_verify_data(
+        let handshake_secrets = derive_tls13_secrets_for_suite(
+            self.cipher_suite,
+            shared.expose_secret(),
+            &self.handshake_transcript,
+            &[],
+        )?;
+        let expected = finished_verify_data_for_suite(
+            self.cipher_suite,
             &handshake_secrets.server_handshake_traffic_secret,
-            &transcript_hash(&flight.transcript_before_finished),
+            &transcript_hash_for_suite(self.cipher_suite, &flight.transcript_before_finished)?,
         )?;
         if !bool::from(expected.as_slice().ct_eq(flight.finished.as_slice())) {
             return Err(TlsError::AuthenticationFailed);
         }
 
-        let client_verify = finished_verify_data(
+        let client_verify = finished_verify_data_for_suite(
+            self.cipher_suite,
             &handshake_secrets.client_handshake_traffic_secret,
-            &transcript_hash(&flight.transcript_after_finished),
+            &transcript_hash_for_suite(self.cipher_suite, &flight.transcript_after_finished)?,
         )?;
         let finished = handshake_message(HANDSHAKE_FINISHED, &client_verify)?;
         let mut transcript_after_client_finished = flight.transcript_after_finished;
         transcript_after_client_finished.extend_from_slice(&finished);
-        let app_secrets = derive_tls13_secrets(
-            &shared,
+        let app_secrets = derive_tls13_secrets_for_suite(
+            self.cipher_suite,
+            shared.expose_secret(),
             &self.handshake_transcript,
             &transcript_after_client_finished,
         )?;
@@ -185,7 +223,7 @@ pub struct QuicServerAccepted {
 /// QUIC-facing TLS 1.3 server state.
 pub struct QuicTlsServer {
     cipher_suite: u16,
-    shared_secret: [u8; 32],
+    shared_secret: SecretBytes,
     handshake_transcript: Vec<u8>,
     transcript_before_client_finished: Vec<u8>,
     state: QuicServerState,
@@ -229,24 +267,42 @@ impl QuicTlsServer {
             .x25519_key_share
             .ok_or(TlsError::InvalidInput("missing client X25519 key_share"))?;
         let server_keypair = x25519::generate_keypair();
-        let shared = x25519::agree(&server_keypair.private, &client_public)
+        let classic_shared = x25519::agree(&server_keypair.private, &client_public)
             .map_err(|_| TlsError::InvalidInput("bad client key_share"))?;
-        let server_random = [0x5a_u8; 32];
+        let negotiated = server_negotiated_key_share(
+            &client_hello,
+            profile.key_share_group,
+            server_keypair.public.as_bytes(),
+            &classic_shared,
+        )?;
+        let mut server_random = [0_u8; 32];
+        SystemRandom::new()
+            .fill(&mut server_random)
+            .map_err(|_| TlsError::InvalidInput("server random generation failed"))?;
         let server_hello_record = build_server_hello(
             &[],
             profile.cipher_suite,
             &server_random,
-            server_keypair.public.as_bytes(),
+            negotiated.group,
+            &negotiated.key_exchange,
         )?;
         let server_hello = crate::handshake::first_record_payload(&server_hello_record)?;
         let mut handshake_transcript = client_hello_raw.to_vec();
         handshake_transcript.extend_from_slice(&server_hello);
-        let hs_secrets = derive_tls13_secrets(shared.expose_secret(), &handshake_transcript, &[])?;
+        let hs_secrets = derive_tls13_secrets_for_suite(
+            profile.cipher_suite,
+            negotiated.shared_secret.expose_secret(),
+            &handshake_transcript,
+            &[],
+        )?;
 
         let encrypted_extensions = if transport_parameters.is_empty() {
-            encrypted_extensions_message()?
+            encrypted_extensions_for_profile(
+                profile.alpn.as_deref(),
+                &profile.encrypted_extensions,
+            )?
         } else {
-            encrypted_extensions_with_quic_transport_parameters(transport_parameters)?
+            encrypted_extensions_with_quic_transport_parameters(profile, transport_parameters)?
         };
         let certificate = certificate_message(&leaf_der, &chain_der)?;
         let mut transcript_before_certificate_verify = handshake_transcript.clone();
@@ -254,7 +310,10 @@ impl QuicTlsServer {
         transcript_before_certificate_verify.extend_from_slice(&certificate);
         let certificate_verify_signature = sign_certificate_verify(
             &certificate_verify_key_der,
-            &transcript_hash(&transcript_before_certificate_verify),
+            &transcript_hash_for_suite(
+                profile.cipher_suite,
+                &transcript_before_certificate_verify,
+            )?,
         )?;
         let certificate_verify = certificate_verify_message(
             SIGNATURE_ECDSA_SECP256R1_SHA256,
@@ -262,9 +321,10 @@ impl QuicTlsServer {
         )?;
         let mut transcript_before_server_finished = transcript_before_certificate_verify;
         transcript_before_server_finished.extend_from_slice(&certificate_verify);
-        let verify_data = finished_verify_data(
+        let verify_data = finished_verify_data_for_suite(
+            profile.cipher_suite,
             &hs_secrets.server_handshake_traffic_secret,
-            &transcript_hash(&transcript_before_server_finished),
+            &transcript_hash_for_suite(profile.cipher_suite, &transcript_before_server_finished)?,
         )?;
         let server_finished = handshake_message(HANDSHAKE_FINISHED, &verify_data)?;
 
@@ -279,7 +339,7 @@ impl QuicTlsServer {
         Ok(QuicServerAccepted {
             server: QuicTlsServer {
                 cipher_suite: profile.cipher_suite,
-                shared_secret: shared.into_inner(),
+                shared_secret: negotiated.shared_secret,
                 handshake_transcript,
                 transcript_before_client_finished,
                 state: QuicServerState::ExpectClientFinished,
@@ -304,19 +364,25 @@ impl QuicTlsServer {
             ));
         }
         let verify_data = parse_client_finished(client_finished)?;
-        let handshake_secrets =
-            derive_tls13_secrets(&self.shared_secret, &self.handshake_transcript, &[])?;
-        let expected = finished_verify_data(
+        let handshake_secrets = derive_tls13_secrets_for_suite(
+            self.cipher_suite,
+            self.shared_secret.expose_secret(),
+            &self.handshake_transcript,
+            &[],
+        )?;
+        let expected = finished_verify_data_for_suite(
+            self.cipher_suite,
             &handshake_secrets.client_handshake_traffic_secret,
-            &transcript_hash(&self.transcript_before_client_finished),
+            &transcript_hash_for_suite(self.cipher_suite, &self.transcript_before_client_finished)?,
         )?;
         if !bool::from(expected.as_slice().ct_eq(verify_data.as_slice())) {
             return Err(TlsError::AuthenticationFailed);
         }
         let mut transcript_after_client_finished = self.transcript_before_client_finished.clone();
         transcript_after_client_finished.extend_from_slice(client_finished);
-        let app_secrets = derive_tls13_secrets(
-            &self.shared_secret,
+        let app_secrets = derive_tls13_secrets_for_suite(
+            self.cipher_suite,
+            self.shared_secret.expose_secret(),
             &self.handshake_transcript,
             &transcript_after_client_finished,
         )?;
@@ -325,34 +391,67 @@ impl QuicTlsServer {
     }
 }
 
-fn handshake_secrets(cipher_suite: u16, secrets: &Tls13Secrets) -> QuicTrafficSecrets {
+fn handshake_secrets(cipher_suite: u16, secrets: &SuiteSecrets) -> QuicTrafficSecrets {
     QuicTrafficSecrets {
         cipher_suite,
-        client: secrets.client_handshake_traffic_secret,
-        server: secrets.server_handshake_traffic_secret,
+        client: secrets.client_handshake_traffic_secret.clone(),
+        server: secrets.server_handshake_traffic_secret.clone(),
     }
 }
 
-fn application_secrets(cipher_suite: u16, secrets: &Tls13Secrets) -> QuicTrafficSecrets {
+fn application_secrets(cipher_suite: u16, secrets: &SuiteSecrets) -> QuicTrafficSecrets {
     QuicTrafficSecrets {
         cipher_suite,
-        client: secrets.client_application_traffic_secret,
-        server: secrets.server_application_traffic_secret,
+        client: secrets.client_application_traffic_secret.clone(),
+        server: secrets.server_application_traffic_secret.clone(),
     }
 }
 
 fn encrypted_extensions_with_quic_transport_parameters(
+    profile: &DestProfile,
     transport_parameters: &[u8],
 ) -> Result<Vec<u8>, TlsError> {
     let mut extensions = Vec::new();
-    extensions.extend_from_slice(&EXT_QUIC_TRANSPORT_PARAMETERS.to_be_bytes());
-    push_u16_len(transport_parameters.len(), &mut extensions)?;
-    extensions.extend_from_slice(transport_parameters);
+    let mut wrote_alpn = false;
+    for ext in &profile.encrypted_extensions {
+        if *ext == EXT_QUIC_TRANSPORT_PARAMETERS {
+            push_extension(*ext, transport_parameters, &mut extensions)?;
+        } else if *ext == 0x0010 {
+            if let Some(alpn) = &profile.alpn {
+                push_extension(*ext, &selected_alpn_extension(alpn)?, &mut extensions)?;
+                wrote_alpn = true;
+            }
+        } else {
+            push_extension(*ext, &[], &mut extensions)?;
+        }
+    }
+    if !profile
+        .encrypted_extensions
+        .contains(&EXT_QUIC_TRANSPORT_PARAMETERS)
+    {
+        push_extension(
+            EXT_QUIC_TRANSPORT_PARAMETERS,
+            transport_parameters,
+            &mut extensions,
+        )?;
+    }
+    if !wrote_alpn {
+        if let Some(alpn) = &profile.alpn {
+            push_extension(0x0010, &selected_alpn_extension(alpn)?, &mut extensions)?;
+        }
+    }
 
     let mut body = Vec::new();
     push_u16_len(extensions.len(), &mut body)?;
     body.extend_from_slice(&extensions);
     handshake_message(HANDSHAKE_ENCRYPTED_EXTENSIONS, &body)
+}
+
+fn push_extension(ext: u16, data: &[u8], out: &mut Vec<u8>) -> Result<(), TlsError> {
+    out.extend_from_slice(&ext.to_be_bytes());
+    push_u16_len(data.len(), out)?;
+    out.extend_from_slice(data);
+    Ok(())
 }
 
 fn encrypted_extensions_quic_transport_parameters(

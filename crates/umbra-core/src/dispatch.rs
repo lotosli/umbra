@@ -216,9 +216,7 @@ where
         if header[0] != TLS_RECORD_HANDSHAKE {
             useless_records += 1;
             if useless_records > limits.max_useless_records {
-                return Err(CoreError::InvalidClientHello(
-                    "unexpected TLS record before ClientHello",
-                ));
+                return Ok(raw);
             }
             continue;
         }
@@ -228,7 +226,7 @@ where
             continue;
         }
         if handshake[0] != TLS_HANDSHAKE_CLIENT_HELLO {
-            return Err(CoreError::InvalidClientHello("not a ClientHello"));
+            return Ok(raw);
         }
         let declared = read_u24(&handshake[1..4])?;
         let needed = 4_usize

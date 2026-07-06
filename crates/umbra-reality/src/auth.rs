@@ -175,6 +175,9 @@ fn parse_plaintext(input: &[u8]) -> Result<AuthOk, RealityError> {
     if version != VERSION {
         return Err(RealityError::InvalidVersion(version));
     }
+    if input[14..16] != [0, 0] {
+        return Err(RealityError::AuthenticationFailed);
+    }
     let timestamp = u32::from_be_bytes(
         input[2..6]
             .try_into()
@@ -211,5 +214,27 @@ fn validate_short_id(short_id: ShortId, allowed: &[Vec<u8>]) -> Result<(), Reali
         Ok(())
     } else {
         Err(RealityError::ShortIdRejected)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_plaintext, plaintext, ShortId};
+    use crate::RealityError;
+
+    #[test]
+    fn plaintext_parser_rejects_nonzero_reserved_bytes() {
+        let short_id = ShortId::from_slice(b"sid").expect("short id");
+        let mut token = plaintext(7, 100, short_id);
+
+        let parsed = parse_plaintext(&token).expect("reserved zeros parse");
+        assert_eq!(parsed.flags, 7);
+        assert_eq!(parsed.timestamp, 100);
+
+        token[14] = 1;
+        assert_eq!(
+            parse_plaintext(&token).expect_err("reserved byte must fail"),
+            RealityError::AuthenticationFailed
+        );
     }
 }

@@ -23,7 +23,7 @@ rustfmt.toml clippy.toml deny.toml .editorconfig
 .cargo/config.toml    `cargo xtask` 别名
 .config/nextest.toml  测试运行器
 .github/workflows/ci.yml   CI 闸门
-.github/prompts/opsx-*.prompt.md   OpenSpec 斜杠命令（Copilot）
+.github/prompts/opsx-*.md   OpenSpec 斜杠命令（Copilot）
 .github/skills/       OpenSpec 工作流 skill + 本项目 skill（见 §10）
 openspec/             SDD 引擎：config.yaml（项目上下文）+ changes/ + specs/
 docs/                 protocol-design.md（规范）· architecture.md（架构）

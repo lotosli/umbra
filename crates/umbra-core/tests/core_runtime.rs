@@ -31,7 +31,7 @@ use umbra_core::{
     socks::{accept_connect, negotiate_no_auth},
     CoreError,
 };
-use umbra_crypto::{mldsa::mldsa_keygen_from_seed, secret::Secret, x25519};
+use umbra_crypto::{mldsa::mldsa_keygen_from_seed, mlkem::mlkem_keygen, secret::Secret, x25519};
 use umbra_fingerprint::load_profile;
 use umbra_inner::mux::{MuxEvent, MuxSession};
 use umbra_proto::addr::TargetAddr;
@@ -847,8 +847,7 @@ async fn scenario_runtime_shutdown_returns_without_accepting() {
     .await
     .expect("runtime binds");
 
-    runtime
-        .run_until_shutdown(async {})
+    Box::pin(runtime.run_until_shutdown(async {}))
         .await
         .expect("server shutdown completes");
 
@@ -922,10 +921,15 @@ async fn scenario_tcp_outer_sends_profile_shaped_clienthello() {
             .write_all(&authenticated.server_flight)
             .await
             .expect("write server flight");
-        let client_finished = umbra_core::tls_io::read_tls_record(&mut stream)
-            .await
-            .expect("read client Finished")
-            .expect("client Finished record");
+        let client_finished = loop {
+            let record = umbra_core::tls_io::read_tls_record(&mut stream)
+                .await
+                .expect("read client Finished")
+                .expect("client Finished record");
+            if record.as_slice() != umbra_tls::handshake::Tls13Client::dummy_change_cipher_spec() {
+                break record;
+            }
+        };
         authenticated
             .tls_server
             .drive(&client_finished)
@@ -1472,12 +1476,13 @@ fn quic_initial_for_dispatch(
             .insert(insert_at, EXT_QUIC_TRANSPORT_PARAMETERS);
     }
     let grease = profile.quic.grease_parameter;
+    let mlkem_key_exchange = hybrid_mlkem_key_exchange(client_key.public.as_bytes());
     let zero_handshake = build_client_hello_handshake(&ClientHelloParams {
         sni: "www.microsoft.com".to_owned(),
         session_id: Vec::new(),
         x25519_priv: *client_key.private.expose_secret(),
         x25519_pub: *client_key.public.as_bytes(),
-        mlkem: MlkemShare::x25519_mlkem768(vec![0x42; 32]),
+        mlkem: MlkemShare::x25519_mlkem768(mlkem_key_exchange.clone()),
         profile: profile.clone(),
         random: [0x33; 32],
         quic_transport_parameters: vec![ClientQuicTransportParameter {
@@ -1498,7 +1503,7 @@ fn quic_initial_for_dispatch(
         session_id: Vec::new(),
         x25519_priv: *client_key.private.expose_secret(),
         x25519_pub: *client_key.public.as_bytes(),
-        mlkem: MlkemShare::x25519_mlkem768(vec![0x42; 32]),
+        mlkem: MlkemShare::x25519_mlkem768(mlkem_key_exchange),
         profile,
         random: [0x33; 32],
         quic_transport_parameters: vec![ClientQuicTransportParameter {
@@ -1519,6 +1524,14 @@ fn quic_initial_for_dispatch(
     )
     .expect("QUIC Initial builds");
     (datagram, token, handshake)
+}
+
+fn hybrid_mlkem_key_exchange(x25519_public: &[u8; 32]) -> Vec<u8> {
+    let mlkem = mlkem_keygen();
+    let mut key_exchange = Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
+    key_exchange.extend_from_slice(x25519_public);
+    key_exchange.extend_from_slice(&mlkem.encapsulation_key);
+    key_exchange
 }
 
 fn socks_connect_domain(domain: &str, port: u16, command: u8) -> Vec<u8> {

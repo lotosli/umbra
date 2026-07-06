@@ -17,15 +17,15 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream, UdpSocket},
 };
-use umbra_crypto::{mlkem::mlkem_keygen, x25519};
+use umbra_crypto::{mlkem::mlkem_keygen, secret::SecretBytes, x25519};
 use umbra_fingerprint::load_profile;
 use umbra_inner::{
     mux::{MuxEvent, MuxSession, MuxStream},
     padding::PadScheme,
     spider::spider,
-    vision::send_solo_preface,
+    vision::{read_solo_preface, send_solo_preface, vision_relay},
 };
-use umbra_proto::addr::TargetAddr;
+use umbra_proto::{addr::TargetAddr, consts::MUX_VERSION, frame::MuxCommand};
 use umbra_reality::{
     auth::try_seal_session_id,
     cert::{classify_peer_certificate, PeerKind as RealityPeerKind},
@@ -55,6 +55,7 @@ use crate::{
         write_fallback_prefix, DispatchContext, DispatchDecision, DispatchOutcome, FallbackReason,
         HelloReadLimits, QuicDispatchDecision,
     },
+    prefixed::PrefixedStream,
     probe::ProbeResistancePolicy,
     quic_crypto,
     socks::{
@@ -71,6 +72,7 @@ const QUIC_PREFETCH_MAX_DATAGRAMS: usize = 16;
 const QUIC_PREFETCH_MAX_CRYPTO_BYTES: usize = 64 * 1024;
 const TLS_HANDSHAKE_CLIENT_HELLO: u8 = 0x01;
 const EXT_PADDING: u16 = 0x0015;
+const MUX_OPENING_PREFIX_LEN: usize = 7;
 
 /// Bound server runtime with listeners, replay cache, and active destination profile.
 pub struct ServerRuntime {
@@ -661,7 +663,7 @@ async fn open_tcp_outer(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream, Core
     let shared = x25519::agree(&keypair.private, cfg.public_key.as_bytes())?;
     let mut random = [0_u8; 32];
     OsRng.fill_bytes(&mut random);
-    let mlkem_key_exchange = hybrid_mlkem_key_exchange(keypair.public.as_bytes());
+    let mlkem = hybrid_mlkem_key_exchange(keypair.public.as_bytes());
 
     let zero_hello = build_tcp_client_hello(tcp_hello_config(
         cfg,
@@ -669,7 +671,7 @@ async fn open_tcp_outer(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream, Core
         [0_u8; 32],
         profile.clone(),
         random,
-        mlkem_key_exchange.clone(),
+        mlkem.key_exchange.clone(),
     ))?;
     let aad = hello0(&zero_hello)?;
     let session_id = try_seal_session_id(
@@ -678,17 +680,14 @@ async fn open_tcp_outer(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream, Core
         &aad,
         current_unix_time()?,
     )?;
-    let tls_params = tls_client_hello_params(
-        cfg,
-        &keypair,
-        session_id,
-        profile,
-        random,
-        mlkem_key_exchange,
-    );
+    let tls_params = tls_client_hello_params(cfg, &keypair, session_id, profile, random, mlkem);
     let (mut tls_client, client_hello) = Tls13Client::start(tls_params)?;
     let (mut stream, _report) =
         tcp_connect_and_send(&cfg.server, &client_hello, &cfg.tcp_evasion).await?;
+    stream
+        .write_all(&Tls13Client::dummy_change_cipher_spec())
+        .await?;
+    stream.flush().await?;
     let mut server_flight = read_required_tls_record(&mut stream).await?;
     server_flight.extend_from_slice(&read_required_tls_record(&mut stream).await?);
     let verifier = RealityCertVerifier {
@@ -739,14 +738,17 @@ fn tls_client_hello_params(
     session_id: [u8; 32],
     profile: umbra_fingerprint::FingerprintProfile,
     random: [u8; 32],
-    mlkem_key_exchange: Vec<u8>,
+    mlkem: HybridMlkemMaterial,
 ) -> ClientHelloParams {
     ClientHelloParams {
         sni: cfg.server_name.clone(),
         session_id: session_id.to_vec(),
         x25519_priv: *keypair.private.expose_secret(),
         x25519_pub: *keypair.public.as_bytes(),
-        mlkem: MlkemShare::x25519_mlkem768(mlkem_key_exchange),
+        mlkem: MlkemShare::x25519_mlkem768_with_decapsulation_key(
+            mlkem.key_exchange,
+            mlkem.decapsulation_key,
+        ),
         profile,
         random,
         quic_transport_parameters: Vec::new(),
@@ -775,7 +777,7 @@ fn build_quic_client_initial_with_material(
         now_unix,
     } = material;
     let (profile, grease_parameter) = quic_client_profile(profile)?;
-    let mlkem_key_exchange = hybrid_mlkem_key_exchange(keypair.public.as_bytes());
+    let mlkem = hybrid_mlkem_key_exchange(keypair.public.as_bytes());
     let shared = x25519::agree(&keypair.private, cfg.public_key.as_bytes())?;
     let zero_hello = build_client_hello_handshake(&quic_client_hello_params(
         cfg,
@@ -783,7 +785,7 @@ fn build_quic_client_initial_with_material(
         [0_u8; 32],
         profile.clone(),
         random,
-        mlkem_key_exchange.clone(),
+        MlkemShare::x25519_mlkem768(mlkem.key_exchange.clone()),
         grease_parameter,
     ))?;
     let aad = quic_hello0(&zero_hello, grease_parameter)?;
@@ -794,7 +796,10 @@ fn build_quic_client_initial_with_material(
         auth_token,
         profile,
         random,
-        mlkem_key_exchange,
+        MlkemShare::x25519_mlkem768_with_decapsulation_key(
+            mlkem.key_exchange,
+            mlkem.decapsulation_key,
+        ),
         grease_parameter,
     ))?;
     let datagram = build_quic_initial_crypto_packet(&client_hello, &dcid, &scid, &[])?;
@@ -813,7 +818,7 @@ fn quic_client_hello_params(
     auth_token: [u8; 32],
     profile: umbra_fingerprint::FingerprintProfile,
     random: [u8; 32],
-    mlkem_key_exchange: Vec<u8>,
+    mlkem: MlkemShare,
     grease_parameter: u64,
 ) -> ClientHelloParams {
     ClientHelloParams {
@@ -821,7 +826,7 @@ fn quic_client_hello_params(
         session_id: Vec::new(),
         x25519_priv: *keypair.private.expose_secret(),
         x25519_pub: *keypair.public.as_bytes(),
-        mlkem: MlkemShare::x25519_mlkem768(mlkem_key_exchange),
+        mlkem,
         profile,
         random,
         quic_transport_parameters: vec![ClientQuicTransportParameter {
@@ -865,12 +870,20 @@ fn validate_quic_cid_len(len: usize) -> Result<usize, CoreError> {
     Ok(len)
 }
 
-fn hybrid_mlkem_key_exchange(x25519_public: &[u8; 32]) -> Vec<u8> {
+struct HybridMlkemMaterial {
+    key_exchange: Vec<u8>,
+    decapsulation_key: SecretBytes,
+}
+
+fn hybrid_mlkem_key_exchange(x25519_public: &[u8; 32]) -> HybridMlkemMaterial {
     let mlkem = mlkem_keygen();
     let mut key_exchange = Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
     key_exchange.extend_from_slice(x25519_public);
     key_exchange.extend_from_slice(&mlkem.encapsulation_key);
-    key_exchange
+    HybridMlkemMaterial {
+        key_exchange,
+        decapsulation_key: mlkem.decapsulation_key,
+    }
 }
 
 fn current_unix_time() -> Result<u64, CoreError> {
@@ -937,7 +950,7 @@ where
             timing.wait_started_at(started_at, profile).await;
             conn.write_all(&authenticated.server_flight).await?;
             conn.flush().await?;
-            let client_finished = read_required_tls_record(&mut conn).await?;
+            let client_finished = read_required_non_ccs_tls_record(&mut conn).await?;
             authenticated.tls_server.drive(&client_finished)?;
             let tls_io = spawn_tls_app_io(conn, TlsAppEndpoint::Server(authenticated.tls_server));
             let server_flight_len = authenticated.server_flight.len();
@@ -1471,7 +1484,7 @@ fn add_quic_byte_count(total: u64, increment: usize) -> Result<u64, CoreError> {
 }
 
 async fn relay_one_server_inner_stream<D, Connect, ConnectFuture>(
-    tls_io: tokio::io::DuplexStream,
+    mut tls_io: tokio::io::DuplexStream,
     connect_target: Connect,
     padding_scheme: &PadScheme,
 ) -> Result<(), CoreError>
@@ -1480,10 +1493,62 @@ where
     Connect: FnOnce(String) -> ConnectFuture,
     ConnectFuture: Future<Output = Result<D, std::io::Error>>,
 {
-    let mut mux = MuxSession::server(tls_io, padding_scheme)?;
-    let (stream, target) = mux.accept().await?;
-    let mut target_io = connect_target(target_to_host_port(&target)).await?;
-    Box::pin(relay_mux_server_stream(&mut target_io, mux, stream)).await
+    let (mode, prefix) = read_inner_opening_mode(&mut tls_io).await?;
+    let tls_io = PrefixedStream::new(prefix, tls_io);
+    match mode {
+        ServerInnerMode::Mux => {
+            let mut mux = MuxSession::server(tls_io, padding_scheme)?;
+            let (stream, target) = mux.accept().await?;
+            let mut target_io = connect_target(target_to_host_port(&target)).await?;
+            Box::pin(relay_mux_server_stream(&mut target_io, mux, stream)).await
+        }
+        ServerInnerMode::VisionSolo => {
+            let mut solo = tls_io;
+            let target = read_solo_preface(&mut solo).await?;
+            let target_io = connect_target(target_to_host_port(&target)).await?;
+            vision_relay(solo, target_io).await?;
+            Ok(())
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ServerInnerMode {
+    Mux,
+    VisionSolo,
+}
+
+async fn read_inner_opening_mode<IO>(io: &mut IO) -> Result<(ServerInnerMode, Vec<u8>), CoreError>
+where
+    IO: AsyncRead + Unpin,
+{
+    let mut first = [0_u8; 1];
+    io.read_exact(&mut first).await?;
+    let mut prefix = vec![first[0]];
+    if first[0] != MUX_VERSION {
+        return Ok((ServerInnerMode::VisionSolo, prefix));
+    }
+
+    let mut rest = [0_u8; MUX_OPENING_PREFIX_LEN - 1];
+    io.read_exact(&mut rest).await?;
+    prefix.extend_from_slice(&rest);
+    if looks_like_mux_opening_prefix(&prefix) {
+        Ok((ServerInnerMode::Mux, prefix))
+    } else {
+        Ok((ServerInnerMode::VisionSolo, prefix))
+    }
+}
+
+fn looks_like_mux_opening_prefix(prefix: &[u8]) -> bool {
+    if prefix.len() != MUX_OPENING_PREFIX_LEN || prefix[0] != MUX_VERSION {
+        return false;
+    }
+    let stream_id = u32::from_be_bytes([prefix[2], prefix[3], prefix[4], prefix[5]]);
+    match MuxCommand::try_from(prefix[1]) {
+        Ok(MuxCommand::Syn) => stream_id == 1 && prefix[6] <= 1,
+        Ok(MuxCommand::Padding) => stream_id == 0,
+        Ok(_) | Err(_) => false,
+    }
 }
 
 async fn relay_mux_client_stream<S, IO>(
@@ -1587,6 +1652,19 @@ where
         .ok_or(CoreError::InvalidClientHello("unexpected TLS EOF"))
 }
 
+async fn read_required_non_ccs_tls_record<R>(reader: &mut R) -> Result<Vec<u8>, CoreError>
+where
+    R: AsyncRead + Unpin,
+{
+    loop {
+        let record = read_required_tls_record(reader).await?;
+        if record.as_slice() == Tls13Client::dummy_change_cipher_spec() {
+            continue;
+        }
+        return Ok(record);
+    }
+}
+
 fn target_to_host_port(target: &TargetAddr) -> String {
     match target {
         TargetAddr::Ipv4(addr, port) => format!("{addr}:{port}"),
@@ -1632,7 +1710,10 @@ where
 mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    use tokio::io::AsyncWriteExt;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        time::{timeout, Duration},
+    };
 
     use super::*;
 
@@ -1676,6 +1757,58 @@ mod tests {
         send_window_update_best_effort(&mut mux, 1, 1)
             .await
             .expect("broken pipe during WINDOW_UPDATE is ignored");
+    }
+
+    #[tokio::test]
+    async fn scenario_server_inner_stream_accepts_vision_solo_preface() {
+        let (mut client, server) = tokio::io::duplex(4096);
+        let (target_io, mut target_peer) = tokio::io::duplex(4096);
+        let target = TargetAddr::domain("solo.example", 443).expect("target");
+        let server_task = tokio::spawn(async move {
+            relay_one_server_inner_stream(
+                server,
+                |dest| async move {
+                    assert_eq!(dest, "solo.example:443");
+                    Ok::<_, std::io::Error>(target_io)
+                },
+                &PadScheme::none(),
+            )
+            .await
+        });
+
+        send_solo_preface(&mut client, &target)
+            .await
+            .expect("send solo preface");
+        client.write_all(b"ping").await.expect("write request");
+        client.shutdown().await.expect("close client write half");
+
+        let mut observed = [0_u8; 4];
+        target_peer
+            .read_exact(&mut observed)
+            .await
+            .expect("target receives request");
+        assert_eq!(&observed, b"ping");
+        target_peer
+            .write_all(b"pong")
+            .await
+            .expect("write response");
+        target_peer
+            .shutdown()
+            .await
+            .expect("close target write half");
+
+        let mut response = [0_u8; 4];
+        client
+            .read_exact(&mut response)
+            .await
+            .expect("client receives response");
+        assert_eq!(&response, b"pong");
+
+        timeout(Duration::from_secs(1), server_task)
+            .await
+            .expect("server task completes")
+            .expect("server task joins")
+            .expect("server relay succeeds");
     }
 
     #[tokio::test]

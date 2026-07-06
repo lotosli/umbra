@@ -1,5 +1,6 @@
 //! Chrome-shaped ClientHello construction.
 
+use umbra_crypto::secret::SecretBytes;
 use umbra_fingerprint::{
     grease::is_grease,
     profile::{FingerprintError, FingerprintProfile},
@@ -42,12 +43,13 @@ const EXT_APPLICATION_SETTINGS: u16 = 0x4469;
 const EXT_PADDING: u16 = 0x0015;
 
 /// Hybrid key-share bytes offered alongside the classic X25519 share.
-#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct MlkemShare {
     /// Named group for the hybrid share, normally X25519MLKEM768.
     pub group: u16,
     /// Encoded hybrid key exchange bytes.
     pub key_exchange: Vec<u8>,
+    /// Client ML-KEM decapsulation key, retained only by live handshake state.
+    pub decapsulation_key: Option<SecretBytes>,
 }
 
 impl MlkemShare {
@@ -57,7 +59,34 @@ impl MlkemShare {
         Self {
             group: GROUP_X25519_MLKEM768,
             key_exchange,
+            decapsulation_key: None,
         }
+    }
+
+    /// Construct a hybrid share with the matching client decapsulation key.
+    #[must_use]
+    pub fn x25519_mlkem768_with_decapsulation_key(
+        key_exchange: Vec<u8>,
+        decapsulation_key: SecretBytes,
+    ) -> Self {
+        Self {
+            group: GROUP_X25519_MLKEM768,
+            key_exchange,
+            decapsulation_key: Some(decapsulation_key),
+        }
+    }
+}
+
+impl core::fmt::Debug for MlkemShare {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MlkemShare")
+            .field("group", &self.group)
+            .field("key_exchange_len", &self.key_exchange.len())
+            .field(
+                "decapsulation_key",
+                &self.decapsulation_key.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
     }
 }
 

@@ -9,12 +9,7 @@ fn main() {
         "coverage" => coverage(),
         "ci" => ci(),
         "deny" => run("cargo", &["deny", "check"]),
-        "fingerprint-check" => {
-            eprintln!(
-                "fingerprint-check: 见组件 J 与 skill `umbra-fingerprint-check`（实现后接入）"
-            );
-            0
-        }
+        "fingerprint-check" => fingerprint_check(),
         "fuzz" => {
             eprintln!("fuzz: 使用 `cargo +nightly fuzz run <target>`（见 fuzz/ 与 AGENTS.md）");
             0
@@ -37,6 +32,8 @@ fn coverage() -> i32 {
             "nextest",
             "--workspace",
             "--all-features",
+            "--run-ignored",
+            "all",
             "--ignore-filename-regex",
             "(^|/)(xtask|fuzz)/|crates/umbra/src/main\\.rs",
             "--fail-under-lines",
@@ -45,7 +42,7 @@ fn coverage() -> i32 {
     )
 }
 
-/// 本地复现 CI 闸门：fmt → clippy → deny → coverage(≥90%)。
+/// 本地复现 CI 闸门：fmt → clippy → deny → fingerprint-check → coverage(≥90%)。
 fn ci() -> i32 {
     let steps: &[(&str, &[&str])] = &[
         ("cargo", &["fmt", "--all", "--check"]),
@@ -61,6 +58,7 @@ fn ci() -> i32 {
             ],
         ),
         ("cargo", &["deny", "check"]),
+        ("cargo", &["xtask", "fingerprint-check"]),
     ];
     for (cmd, args) in steps {
         let code = run(cmd, args);
@@ -69,6 +67,40 @@ fn ci() -> i32 {
         }
     }
     coverage()
+}
+
+/// Fingerprint profile self-checks for component J.
+fn fingerprint_check() -> i32 {
+    let steps: &[(&str, &[&str])] = &[
+        (
+            "cargo",
+            &[
+                "test",
+                "-p",
+                "umbra-fingerprint",
+                "--test",
+                "fingerprint_profiles",
+            ],
+        ),
+        (
+            "cargo",
+            &[
+                "test",
+                "-p",
+                "umbra-tls",
+                "--test",
+                "tls13_stack",
+                "scenario_extension_order_follows_profile",
+            ],
+        ),
+    ];
+    for (cmd, args) in steps {
+        let code = run(cmd, args);
+        if code != 0 {
+            return code;
+        }
+    }
+    0
 }
 
 fn run(cmd: &str, args: &[&str]) -> i32 {

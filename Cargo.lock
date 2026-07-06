@@ -1982,7 +1982,6 @@ dependencies = [
  "rand 0.8.6",
  "thiserror 2.0.18",
  "tokio",
- "umbra-crypto",
  "umbra-proto",
  "umbra-tls",
 ]
@@ -2029,6 +2028,7 @@ name = "umbra-tls"
 version = "0.0.0"
 dependencies = [
  "hkdf",
+ "hmac",
  "proptest",
  "rcgen",
  "ring",

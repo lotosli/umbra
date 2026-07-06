@@ -1,7 +1,7 @@
 //! Integration tests for component A: TLS 1.3 uTLS stack.
 
 use proptest::prelude::*;
-use umbra_crypto::x25519;
+use umbra_crypto::{mlkem::mlkem_keygen, x25519};
 use umbra_fingerprint::{load_profile, FingerprintProfile};
 use umbra_tls::{
     clienthello::{
@@ -11,8 +11,10 @@ use umbra_tls::{
     },
     handshake::{CertVerify, PeerKind, Tls13Client},
     keyschedule::{
-        derive_secret, derive_secret_with_hash, derive_traffic_keys, empty_hash, finished_key,
-        hkdf_extract, transcript_hash,
+        derive_secret, derive_secret_with_hash, derive_tls13_secrets,
+        derive_tls13_secrets_for_suite, derive_traffic_keys, empty_hash, finished_key,
+        finished_verify_data, finished_verify_data_for_suite, hkdf_extract, transcript_hash,
+        transcript_hash_for_suite,
     },
     parse::parse_client_hello,
     quic::{QuicTlsClient, QuicTlsServer},
@@ -278,6 +280,79 @@ fn scenario_rfc8448_key_schedule_vector() {
         derive_traffic_keys(0x9999, &server_hs).expect_err("unsupported suite must fail"),
         TlsError::UnsupportedCipherSuite(0x9999)
     );
+}
+
+#[test]
+fn scenario_sha256_legacy_key_schedule_matches_suite_aware_schedule() {
+    let ecdhe = [0x42_u8; 32];
+    let handshake_transcript = b"client hello || server hello";
+    let application_transcript = b"server flight || client finished";
+
+    let legacy = derive_tls13_secrets(&ecdhe, handshake_transcript, application_transcript)
+        .expect("legacy SHA-256 schedule");
+    let suite = derive_tls13_secrets_for_suite(
+        TLS_AES_128_GCM_SHA256,
+        &ecdhe,
+        handshake_transcript,
+        application_transcript,
+    )
+    .expect("suite-aware SHA-256 schedule");
+
+    assert_eq!(suite.early_secret, legacy.early_secret);
+    assert_eq!(suite.handshake_secret, legacy.handshake_secret);
+    assert_eq!(
+        suite.client_handshake_traffic_secret,
+        legacy.client_handshake_traffic_secret
+    );
+    assert_eq!(
+        suite.server_handshake_traffic_secret,
+        legacy.server_handshake_traffic_secret
+    );
+    assert_eq!(suite.master_secret, legacy.master_secret);
+    assert_eq!(
+        suite.client_application_traffic_secret,
+        legacy.client_application_traffic_secret
+    );
+    assert_eq!(
+        suite.server_application_traffic_secret,
+        legacy.server_application_traffic_secret
+    );
+    assert_eq!(suite.exporter_master_secret, legacy.exporter_master_secret);
+    assert_eq!(
+        suite.resumption_master_secret,
+        legacy.resumption_master_secret
+    );
+
+    let legacy_finished = finished_verify_data(
+        &legacy.server_handshake_traffic_secret,
+        &transcript_hash(application_transcript),
+    )
+    .expect("legacy Finished verify data");
+    let suite_finished = finished_verify_data_for_suite(
+        TLS_AES_128_GCM_SHA256,
+        &suite.server_handshake_traffic_secret,
+        &transcript_hash_for_suite(TLS_AES_128_GCM_SHA256, application_transcript)
+            .expect("suite transcript hash"),
+    )
+    .expect("suite Finished verify data");
+    assert_eq!(suite_finished, legacy_finished);
+
+    let sha384 = derive_tls13_secrets_for_suite(
+        TLS_AES_256_GCM_SHA384,
+        &ecdhe,
+        handshake_transcript,
+        application_transcript,
+    )
+    .expect("SHA-384 schedule");
+    let sha384_finished = finished_verify_data_for_suite(
+        TLS_AES_256_GCM_SHA384,
+        &sha384.server_handshake_traffic_secret,
+        &transcript_hash_for_suite(TLS_AES_256_GCM_SHA384, application_transcript)
+            .expect("SHA-384 transcript hash"),
+    )
+    .expect("SHA-384 Finished verify data");
+    assert_eq!(sha384.server_handshake_traffic_secret.len(), 48);
+    assert_eq!(sha384_finished.len(), 48);
 }
 
 #[test]
@@ -657,16 +732,25 @@ fn client_hello_params() -> ClientHelloParams {
 fn params_with_profile(profile: FingerprintProfile) -> ClientHelloParams {
     let keypair = x25519::generate_keypair();
     let x25519::Keypair { private, public } = keypair;
+    let x25519_pub = public.into_bytes();
     ClientHelloParams {
         sni: "server.example".to_owned(),
         session_id: vec![0xa5; 32],
         x25519_priv: private.into_inner(),
-        x25519_pub: public.into_bytes(),
-        mlkem: MlkemShare::x25519_mlkem768(vec![0x42; 32]),
+        x25519_pub,
+        mlkem: hybrid_mlkem_share(&x25519_pub),
         profile,
         random: [0x11; 32],
         quic_transport_parameters: Vec::new(),
     }
+}
+
+fn hybrid_mlkem_share(x25519_public: &[u8; 32]) -> MlkemShare {
+    let mlkem = mlkem_keygen();
+    let mut key_exchange = Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
+    key_exchange.extend_from_slice(x25519_public);
+    key_exchange.extend_from_slice(&mlkem.encapsulation_key);
+    MlkemShare::x25519_mlkem768_with_decapsulation_key(key_exchange, mlkem.decapsulation_key)
 }
 
 fn forged_cert() -> ForgedCert {

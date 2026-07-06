@@ -21,7 +21,7 @@ use umbra_proto::{
 };
 use umbra_tls::{
     clienthello::{TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256},
-    keyschedule::hkdf_expand_label,
+    keyschedule::hkdf_expand_label_for_suite,
     parse::parse_client_hello,
     quic::QuicTrafficSecrets,
 };
@@ -265,12 +265,15 @@ pub fn recover_quic_auth_token_from_initial(
 /// Derive QUIC packet and header protection from one TLS traffic secret.
 pub fn derive_quic_packet_protection(
     cipher_suite: u16,
-    traffic_secret: &[u8; 32],
+    traffic_secret: &[u8],
 ) -> Result<QuicPacketProtection, TransportError> {
     let key_len = quic_key_len(cipher_suite)?;
-    let packet_key = hkdf_expand_label(traffic_secret, "quic key", &[], key_len)?;
-    let header_key = hkdf_expand_label(traffic_secret, "quic hp", &[], key_len)?;
-    let iv = hkdf_expand_label(traffic_secret, "quic iv", &[], QUIC_IV_LEN)?;
+    let packet_key =
+        hkdf_expand_label_for_suite(cipher_suite, traffic_secret, "quic key", &[], key_len)?;
+    let header_key =
+        hkdf_expand_label_for_suite(cipher_suite, traffic_secret, "quic hp", &[], key_len)?;
+    let iv =
+        hkdf_expand_label_for_suite(cipher_suite, traffic_secret, "quic iv", &[], QUIC_IV_LEN)?;
     let iv: [u8; QUIC_IV_LEN] = iv
         .try_into()
         .map_err(|_| TransportError::InvalidQuicSurface("QUIC IV has wrong length"))?;
@@ -1569,8 +1572,8 @@ mod tests {
         let secret = [0x42_u8; 32];
         let secrets = QuicTrafficSecrets {
             cipher_suite: TLS_AES_128_GCM_SHA256,
-            client: secret,
-            server: [0x24_u8; 32],
+            client: secret.to_vec(),
+            server: [0x24_u8; 32].to_vec(),
         };
 
         assert!(derive_quic_packet_protection_pair(&secrets).is_ok());
@@ -1587,7 +1590,11 @@ mod tests {
             TLS_AES_256_GCM_SHA384,
             TLS_CHACHA20_POLY1305_SHA256,
         ] {
-            let protection = derive_quic_packet_protection(cipher_suite, &secret)
+            let traffic_secret = match cipher_suite {
+                TLS_AES_256_GCM_SHA384 => vec![0x42_u8; 48],
+                _ => secret.to_vec(),
+            };
+            let protection = derive_quic_packet_protection(cipher_suite, &traffic_secret)
                 .expect("packet protection derives");
             assert_eq!(protection.tag_len(), QUIC_PACKET_TAG_LEN);
 

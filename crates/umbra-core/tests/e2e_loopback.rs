@@ -25,6 +25,7 @@ const NOW: u64 = 1_765_000_000;
 
 /// Scenario: authenticated inner mux can carry target data in both directions.
 #[tokio::test]
+#[ignore = "architecture marks e2e loopback as ignored; CI runs ignored tests explicitly"]
 async fn e2e_authenticated_mux_roundtrip() {
     let (client_io, server_io) = io::duplex(8192);
     let target = TargetAddr::domain("target.example", 443).expect("target address");
@@ -88,6 +89,7 @@ async fn e2e_authenticated_mux_roundtrip() {
 
 /// Scenario: unauthenticated or malformed handshakes are forwarded to dest.
 #[tokio::test]
+#[ignore = "architecture marks e2e loopback as ignored; CI runs ignored tests explicitly"]
 async fn e2e_unauthenticated_falls_back_to_dest() {
     let server_key = x25519::generate_keypair();
     let cfg = ServerCfg {

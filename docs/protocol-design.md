@@ -204,7 +204,7 @@ impl Tls13Server {
 1. `shared = X25519(C_priv, S_pub)`（32B）。
 2. `auth_key = HKDF-SHA256(shared, salt="umbra-reality-v1", info="key")[..16]`（AES-128 密钥）；
    `nonce = HKDF-SHA256(shared, salt="umbra-reality-v1", info="nonce")[..12]`。
-3. 明文 `P`（16B）= `ver(1)=0x01 || flags(1) || ts(u32 BE,4) || short_id(8)`。
+3. 明文 `P`（16B）= `ver(1)=0x01 || flags(1) || ts(u32 BE,4) || short_id(8) || reserved(2)=0`。
 4. `ct||tag = AES-128-GCM-Seal(auth_key, nonce, P, aad = HELLO0)`，其中 **`HELLO0` = 整条 ClientHello
    握手消息、但把 `legacy_session_id` 的 32B 全部置零**（绑定全握手，防跨 hello 挪用）。
 5. `session_id (32B) = ct(16) || tag(16)`；写回 ClientHello 的 `legacy_session_id`（在序列化+算 transcript 前）。
@@ -215,7 +215,7 @@ impl Tls13Server {
 3. `shared = X25519(S_priv, C_pub)`；派生 `auth_key,nonce`。
 4. `P = AES-128-GCM-Open(auth_key, nonce, ct=session_id[..16], tag=session_id[16..], aad=HELLO0)`；
    GCM 校验失败 → 转发。
-5. 校验 `ver`、`|now-ts|≤max_time_diff`、`short_id∈` 集合、`C_pub`（或 session_id）**不在**重放缓存
+5. 校验 `ver`、`reserved==0`、`|now-ts|≤max_time_diff`、`short_id∈` 集合、`C_pub`（或 session_id）**不在**重放缓存
    （LRU，TTL=`max_time_diff+60s`），随后插入。
 6. 通过 → 认证成功，`shared` 传给组件 E。
 
@@ -345,7 +345,7 @@ pub async fn spider(tls:TlsIo, spider_path:&str) -> io::Result<()>; // RealSite 
 
 ## 组件 G：QUIC / HTTP-3 外层传输
 
-**目的**：UDP 传输更抗 RST 注入、无队头阻塞、支持 0-RTT；对外表现为 HTTP/3 到 dest。
+**目的**：UDP 传输更抗 RST 注入、无队头阻塞、支持 0-RTT；对外呈现 Chrome 风格 QUIC/HTTP-3，认证成功后用 QUIC stream 承载目标流。
 
 - **握手复用组件 A 的 TLS 1.3 逻辑**：QUIC 用 TLS 1.3 作为握手（ClientHello 在 Initial 包的 CRYPTO 帧中，
   Initial 密钥由 DCID + 固定 salt 派生 → ClientHello 对 GFW 可见，与 TCP 路径同）。
@@ -623,7 +623,7 @@ tracing="0.1"  tracing-subscriber={version="0.3",features=["env-filter"]}  lru="
 | shared | `X25519(C_priv,S_pub)`（服务端 `X25519(S_priv,C_pub)`）|
 | auth_key | `HKDF-SHA256(shared,"umbra-reality-v1","key")[..16]`（AES-128）|
 | nonce | `HKDF-SHA256(shared,"umbra-reality-v1","nonce")[..12]` |
-| P (16B) | `ver(1) \|\| flags(1) \|\| ts(u32 BE,4) \|\| short_id(8)` |
+| P (16B) | `ver(1) \|\| flags(1) \|\| ts(u32 BE,4) \|\| short_id(8) \|\| reserved(2)=0` |
 | AAD | 整条 ClientHello，`legacy_session_id` 32B 置零（记作 HELLO0）|
 | session_id (32B) | `ct(16) \|\| tag(16) = AES-128-GCM-Seal(auth_key,nonce,P,HELLO0)` |
 

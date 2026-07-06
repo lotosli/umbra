@@ -114,10 +114,12 @@ impl DestProfile {
                 .split_once(':')
                 .map_or_else(|| self.dest.clone(), |(host, _)| host.to_owned()),
             cipher_suite: self.cipher,
+            key_share_group: self.group,
             alpn: self
                 .alpn
                 .first()
                 .and_then(|value| String::from_utf8(value.clone()).ok()),
+            encrypted_extensions: self.ee_exts.clone(),
             rtt_millis: u64::try_from(self.rtt.as_millis()).unwrap_or(u64::MAX),
         }
     }

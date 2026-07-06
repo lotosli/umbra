@@ -38,7 +38,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - run: cargo nextest run --workspace --profile ci
+      - run: cargo nextest run --workspace --profile ci --run-ignored all
+      - run: cargo xtask fingerprint-check
 
   coverage:
     name: coverage (>=90% lines)
@@ -58,6 +59,7 @@ jobs:
       - name: llvm-cov (fail under 90% lines)
         run: >
           cargo llvm-cov nextest --workspace --all-features
+          --run-ignored all
           --ignore-filename-regex '(^|/)(xtask|fuzz)/|crates/umbra/src/main\.rs'
           --fail-under-lines 90
           --lcov --output-path lcov.info

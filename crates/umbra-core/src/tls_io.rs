@@ -156,7 +156,7 @@ fn tls_to_io(err: TlsError) -> io::Error {
 #[cfg(test)]
 mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use umbra_crypto::x25519;
+    use umbra_crypto::{mlkem::mlkem_keygen, x25519};
     use umbra_fingerprint::load_profile;
     use umbra_tls::{
         clienthello::{ClientHelloParams, MlkemShare},
@@ -247,16 +247,26 @@ mod tests {
     fn client_hello_params() -> ClientHelloParams {
         let profile = load_profile("chrome-latest").expect("profile loads");
         let keypair = x25519::generate_keypair();
+        let x25519_pub = *keypair.public.as_bytes();
         ClientHelloParams {
             sni: "server.example".to_owned(),
             session_id: vec![0x44; 32],
             x25519_priv: *keypair.private.expose_secret(),
-            x25519_pub: *keypair.public.as_bytes(),
-            mlkem: MlkemShare::x25519_mlkem768(vec![0x42; 32]),
+            x25519_pub,
+            mlkem: hybrid_mlkem_share(&x25519_pub),
             profile,
             random: [0x22; 32],
             quic_transport_parameters: Vec::new(),
         }
+    }
+
+    fn hybrid_mlkem_share(x25519_public: &[u8; 32]) -> MlkemShare {
+        let mlkem = mlkem_keygen();
+        let mut key_exchange =
+            Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
+        key_exchange.extend_from_slice(x25519_public);
+        key_exchange.extend_from_slice(&mlkem.encapsulation_key);
+        MlkemShare::x25519_mlkem768_with_decapsulation_key(key_exchange, mlkem.decapsulation_key)
     }
 
     fn forged_cert() -> ForgedCert {

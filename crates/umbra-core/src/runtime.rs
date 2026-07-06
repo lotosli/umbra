@@ -11,7 +11,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream, UdpSocket},
 };
-use umbra_crypto::x25519;
+use umbra_crypto::{mlkem::mlkem_keygen, x25519};
 use umbra_fingerprint::load_profile;
 use umbra_inner::{mux::MuxSession, padding::PadScheme, spider::spider, vision::send_solo_preface};
 use umbra_proto::addr::TargetAddr;
@@ -34,7 +34,6 @@ use crate::{
 };
 
 const DEFAULT_REPLAY_CAPACITY: usize = 65_536;
-const PLACEHOLDER_MLKEM_KEY_EXCHANGE_LEN: usize = 32;
 
 /// Bound server runtime with listeners, replay cache, and active destination profile.
 pub struct ServerRuntime {
@@ -404,15 +403,24 @@ fn tcp_hello_config(
     profile: umbra_fingerprint::FingerprintProfile,
     random: [u8; 32],
 ) -> TcpClientHelloConfig {
+    let mlkem_key_exchange = hybrid_mlkem_key_exchange(keypair.public.as_bytes());
     TcpClientHelloConfig {
         sni: cfg.server_name.clone(),
         session_id,
         x25519_priv: *keypair.private.expose_secret(),
         x25519_pub: *keypair.public.as_bytes(),
-        mlkem_key_exchange: vec![0x42; PLACEHOLDER_MLKEM_KEY_EXCHANGE_LEN],
+        mlkem_key_exchange,
         profile,
         random,
     }
+}
+
+fn hybrid_mlkem_key_exchange(x25519_public: &[u8; 32]) -> Vec<u8> {
+    let mlkem = mlkem_keygen();
+    let mut key_exchange = Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
+    key_exchange.extend_from_slice(x25519_public);
+    key_exchange.extend_from_slice(&mlkem.encapsulation_key);
+    key_exchange
 }
 
 fn current_unix_time() -> Result<u64, CoreError> {

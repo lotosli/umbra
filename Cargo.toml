@@ -33,15 +33,15 @@ authors = ["Umbra contributors"]
 # 未被任何 crate 引用的条目不会被拉取/编译（脚手架阶段保持零外部依赖，构建极快）。
 [workspace.dependencies]
 # 内部 crate
-umbra-proto = { path = "crates/umbra-proto" }
-umbra-crypto = { path = "crates/umbra-crypto" }
-umbra-tls = { path = "crates/umbra-tls" }
-umbra-fingerprint = { path = "crates/umbra-fingerprint" }
-umbra-reality = { path = "crates/umbra-reality" }
-umbra-inner = { path = "crates/umbra-inner" }
-umbra-transport = { path = "crates/umbra-transport" }
-umbra-core = { path = "crates/umbra-core" }
-umbra-testkit = { path = "crates/umbra-testkit" }
+umbra-proto = { path = "crates/umbra-proto", version = "0.0.0" }
+umbra-crypto = { path = "crates/umbra-crypto", version = "0.0.0" }
+umbra-tls = { path = "crates/umbra-tls", version = "0.0.0" }
+umbra-fingerprint = { path = "crates/umbra-fingerprint", version = "0.0.0" }
+umbra-reality = { path = "crates/umbra-reality", version = "0.0.0" }
+umbra-inner = { path = "crates/umbra-inner", version = "0.0.0" }
+umbra-transport = { path = "crates/umbra-transport", version = "0.0.0" }
+umbra-core = { path = "crates/umbra-core", version = "0.0.0" }
+umbra-testkit = { path = "crates/umbra-testkit", version = "0.0.0" }
 
 # 异步运行时
 tokio = { version = "1", features = ["full"] }

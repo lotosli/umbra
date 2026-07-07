@@ -1,3 +1,5 @@
 [alias]
 # 开发/CI 辅助任务入口：`cargo xtask <task>`
 xtask = "run --quiet --package xtask --"
+# 多端 release 二进制生成入口：`cargo dist [--target <triple>]`
+dist = "run --quiet --package xtask -- dist"

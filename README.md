@@ -26,6 +26,9 @@ cargo install cargo-nextest cargo-llvm-cov
 cargo nextest run --workspace
 cargo xtask coverage      # 强制行覆盖率 >= 90%
 
+# Release artifact
+cargo xtask dist          # 输出到 target/dist/；Windows artifact 走 dist workflow / Windows runner
+
 # SDD（OpenSpec，经 npx 运行，无需全局安装）
 npx @fission-ai/openspec@latest list
 #   或在支持的编辑器中使用斜杠命令：/opsx:propose "<capability>"

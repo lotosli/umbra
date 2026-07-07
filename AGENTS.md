@@ -68,13 +68,17 @@ cargo fmt --all                 # 格式化（--check 用于校验）
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace   # 测试（需 cargo-nextest）
 cargo xtask coverage            # 行覆盖率 >=90% 闸门（需 cargo-llvm-cov）
-cargo xtask ci                  # 本地复现 CI：fmt+clippy+deny+coverage
+cargo xtask ci                  # 本地复现 CI：fmt+clippy+deny+fingerprint-check+coverage
+cargo xtask dist                # 多端 release 二进制到 target/dist（macOS 本地可产 mac/Linux；Windows 用 dist workflow）
+cargo dist                      # `cargo xtask dist` 的短 alias
 cargo deny check                # 许可证/公告/来源（需 cargo-deny）
 cargo +nightly fuzz run <target>  # 模糊测试（见 fuzz/）
 ```
-首次装工具：`cargo install cargo-nextest cargo-llvm-cov cargo-deny`；fuzz 需 `cargo install cargo-fuzz` + nightly。
+首次装工具：`cargo install cargo-nextest cargo-llvm-cov cargo-deny`；macOS 本地交叉生成 Linux release 需 `zig`；
+fuzz 需 `cargo install cargo-fuzz` + nightly。
 
 CI（`.github/workflows/ci.yml`）闸门：**fmt · clippy(-D warnings) · nextest · 覆盖率≥90% · cargo-deny · openspec validate**。全绿方可合并。
+手动发布构建：`.github/workflows/dist.yml` 通过 macOS / Ubuntu / Windows runner 生成对应 release artifact。
 
 ---
 

@@ -16,6 +16,7 @@ use rand::{rngs::OsRng, RngCore};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream, UdpSocket},
+    task::JoinSet,
 };
 use umbra_crypto::{mlkem::mlkem_keygen, secret::SecretBytes, x25519};
 use umbra_fingerprint::load_profile;
@@ -23,7 +24,7 @@ use umbra_inner::{
     mux::{MuxEvent, MuxSession, MuxStream},
     padding::PadScheme,
     spider::spider,
-    vision::{read_solo_preface, send_solo_preface, vision_relay},
+    vision::{read_solo_preface, send_solo_preface},
 };
 use umbra_proto::{addr::TargetAddr, consts::MUX_VERSION, frame::MuxCommand};
 use umbra_reality::{
@@ -67,6 +68,8 @@ use crate::{
 };
 
 const DEFAULT_REPLAY_CAPACITY: usize = 65_536;
+const DEFAULT_OUTER_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_SESSION_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
 const DEFAULT_QUIC_FALLBACK_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const QUIC_PREFETCH_MAX_DATAGRAMS: usize = 16;
 const QUIC_PREFETCH_MAX_CRYPTO_BYTES: usize = 64 * 1024;
@@ -78,9 +81,9 @@ const MUX_OPENING_PREFIX_LEN: usize = 7;
 pub struct ServerRuntime {
     tcp_listener: TcpListener,
     udp_socket: Option<QuicServerSocket>,
-    dispatch_cfg: crate::dispatch::ServerCfg,
-    profile: DestProfile,
-    replay: ReplayCache,
+    dispatch_cfg: Arc<crate::dispatch::ServerCfg>,
+    profile: Arc<DestProfile>,
+    replay: Arc<ReplayCache>,
     probe_policy: ProbeResistancePolicy,
     padding_scheme: PadScheme,
     tcp_evasion: TcpEvasionPolicy,
@@ -125,7 +128,10 @@ impl ServerRuntime {
             }
             None => None,
         };
-        let replay = ReplayCache::new(DEFAULT_REPLAY_CAPACITY, max_time_diff.as_secs())?;
+        let replay = Arc::new(ReplayCache::new(
+            DEFAULT_REPLAY_CAPACITY,
+            max_time_diff.as_secs(),
+        )?);
         let hello_limits = HelloReadLimits {
             max_useless_records: probe_policy.useless_records.max_useless_records,
             ..HelloReadLimits::default()
@@ -143,8 +149,8 @@ impl ServerRuntime {
         Ok(Self {
             tcp_listener,
             udp_socket,
-            dispatch_cfg,
-            profile,
+            dispatch_cfg: Arc::new(dispatch_cfg),
+            profile: Arc::new(profile),
             replay,
             probe_policy,
             padding_scheme,
@@ -208,9 +214,9 @@ impl ServerRuntime {
         let (stream, peer) = self.tcp_listener.accept().await?;
         let outcome = dispatch_runtime_with_connector(
             stream,
-            &self.dispatch_cfg,
-            &self.profile,
-            &self.replay,
+            self.dispatch_cfg.as_ref(),
+            self.profile.as_ref(),
+            self.replay.as_ref(),
             current_unix_time()?,
             connect_dest,
             self.probe_policy.timing,
@@ -232,20 +238,20 @@ impl ServerRuntime {
         let mut buf = vec![0_u8; 65_535];
         let (read, peer) = socket.dispatch.recv_from(&mut buf).await?;
         let datagram = buf[..read].to_vec();
-        let outcome = dispatch_quic_runtime(
+        let outcome = Box::pin(dispatch_quic_runtime(
             datagram,
             QuicRuntimeDispatch {
                 client_socket: &socket.dispatch,
                 endpoint_socket: socket.endpoint.try_clone()?,
                 client_peer: peer,
-                cfg: &self.dispatch_cfg,
-                profile: &self.profile,
-                replay: &self.replay,
+                cfg: self.dispatch_cfg.as_ref(),
+                profile: self.profile.as_ref(),
+                replay: self.replay.as_ref(),
                 now_unix: current_unix_time()?,
                 timing: self.probe_policy.timing,
                 idle_timeout,
             },
-        )
+        ))
         .await?;
         Ok(AcceptedQuicSession { peer, outcome })
     }
@@ -256,11 +262,37 @@ impl ServerRuntime {
         S: Future<Output = ()>,
     {
         tokio::pin!(shutdown);
+        let mut tcp_sessions = JoinSet::new();
         loop {
             tokio::select! {
-                () = &mut shutdown => return Ok(()),
-                accepted = self.accept_one_with_connector(TcpStream::connect) => {
-                    let _ = accepted;
+                () = &mut shutdown => {
+                    abort_all(&mut tcp_sessions).await;
+                    return Ok(());
+                }
+                joined = tcp_sessions.join_next(), if !tcp_sessions.is_empty() => {
+                    report_session_result("server TCP", joined);
+                }
+                accepted = self.tcp_listener.accept() => {
+                    let (stream, peer) = accepted?;
+                    let cfg = Arc::clone(&self.dispatch_cfg);
+                    let profile = Arc::clone(&self.profile);
+                    let replay = Arc::clone(&self.replay);
+                    let timing = self.probe_policy.timing;
+                    let padding_scheme = self.padding_scheme.clone();
+                    tcp_sessions.spawn(async move {
+                        let outcome = Box::pin(dispatch_runtime_with_connector(
+                            stream,
+                            cfg.as_ref(),
+                            profile.as_ref(),
+                            replay.as_ref(),
+                            current_unix_time()?,
+                            TcpStream::connect,
+                            timing,
+                            &padding_scheme,
+                        ))
+                        .await?;
+                        Ok::<_, CoreError>(AcceptedServerSession { peer, outcome })
+                    });
                 }
                 accepted = self.accept_one_quic_with_idle_timeout(DEFAULT_QUIC_FALLBACK_IDLE_TIMEOUT), if self.udp_socket.is_some() => {
                     let _ = accepted;
@@ -312,14 +344,17 @@ pub enum QuicRuntimeOutcome {
 /// Client-side runtime bound to a SOCKS5 listener.
 pub struct ClientRuntime {
     listener: TcpListener,
-    cfg: ClientCfg,
+    cfg: Arc<ClientCfg>,
 }
 
 impl ClientRuntime {
     /// Bind the configured SOCKS5 listener.
     pub async fn bind(cfg: ClientCfg) -> Result<Self, CoreError> {
         let listener = TcpListener::bind(cfg.socks_listen).await?;
-        Ok(Self { listener, cfg })
+        Ok(Self {
+            listener,
+            cfg: Arc::new(cfg),
+        })
     }
 
     /// Return the local SOCKS5 listener address.
@@ -338,7 +373,7 @@ impl ClientRuntime {
         OpenFuture: Future<Output = Result<Outer, CoreError>>,
     {
         let (mut socks, _) = self.listener.accept().await?;
-        client_session_with_outer(&self.cfg, &mut socks, open_outer).await
+        client_session_with_outer(self.cfg.as_ref(), &mut socks, open_outer).await
     }
 
     /// Run the SOCKS listener until shutdown resolves.
@@ -347,11 +382,22 @@ impl ClientRuntime {
         S: Future<Output = ()>,
     {
         tokio::pin!(shutdown);
+        let mut sessions = JoinSet::new();
         loop {
             tokio::select! {
-                () = &mut shutdown => return Ok(()),
-                accepted = self.accept_one_from_config() => {
-                    let _ = accepted;
+                () = &mut shutdown => {
+                    abort_all(&mut sessions).await;
+                    return Ok(());
+                }
+                joined = sessions.join_next(), if !sessions.is_empty() => {
+                    report_session_result("client SOCKS", joined);
+                }
+                accepted = self.listener.accept() => {
+                    let (mut socks, _peer) = accepted?;
+                    let cfg = Arc::clone(&self.cfg);
+                    sessions.spawn(async move {
+                        Box::pin(client_session_from_config(cfg.as_ref(), &mut socks)).await
+                    });
                 }
             }
         }
@@ -360,7 +406,23 @@ impl ClientRuntime {
     /// Accept one SOCKS request and open the configured outer transport.
     pub async fn accept_one_from_config(&self) -> Result<ClientSessionOutcome, CoreError> {
         let (mut socks, _) = self.listener.accept().await?;
-        Box::pin(client_session_from_config(&self.cfg, &mut socks)).await
+        Box::pin(client_session_from_config(self.cfg.as_ref(), &mut socks)).await
+    }
+}
+
+async fn abort_all<T: 'static>(tasks: &mut JoinSet<T>) {
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+}
+
+fn report_session_result<T>(
+    context: &str,
+    joined: Option<Result<Result<T, CoreError>, tokio::task::JoinError>>,
+) {
+    match joined {
+        Some(Ok(Ok(_))) | None => {}
+        Some(Ok(Err(error))) => eprintln!("umbra {context} session error: {error}"),
+        Some(Err(error)) => eprintln!("umbra {context} task error: {error}"),
     }
 }
 
@@ -485,7 +547,7 @@ where
             Box::pin(client_stream_over_outer(cfg, socks, &target, mode, outer)).await?;
         }
         TransportKind::Quic => {
-            client_quic_stream_session(cfg, socks, &target).await?;
+            Box::pin(client_quic_stream_session(cfg, socks, &target)).await?;
         }
     }
     Ok(ClientSessionOutcome {
@@ -511,13 +573,18 @@ where
             let mut mux = MuxSession::client(outer, &cfg.padding_scheme)?;
             let stream = mux.open(target).await?;
             write_success_reply(socks).await?;
-            relay_mux_client_stream(socks, mux, stream).await?;
+            relay_mux_client_stream(socks, mux, stream, DEFAULT_SESSION_IDLE_TIMEOUT).await?;
         }
         ClientInnerMode::VisionSolo => {
             let mut outer = outer;
             send_solo_preface(&mut outer, target).await?;
             write_success_reply(socks).await?;
-            tokio::io::copy_bidirectional(socks, &mut outer).await?;
+            Box::pin(relay_bidirectional_until_idle(
+                socks,
+                &mut outer,
+                DEFAULT_SESSION_IDLE_TIMEOUT,
+            ))
+            .await?;
         }
         ClientInnerMode::QuicStream => {
             return Err(CoreError::InvalidConfig(
@@ -581,12 +648,24 @@ where
     write_success_reply(socks).await?;
     let (mut socks_read, mut socks_write) = tokio::io::split(socks);
     let client_to_server = async {
-        tokio::io::copy(&mut socks_read, &mut send).await?;
-        send.shutdown().await
+        Box::pin(copy_until_idle(
+            &mut socks_read,
+            &mut send,
+            DEFAULT_SESSION_IDLE_TIMEOUT,
+        ))
+        .await?;
+        send.shutdown().await?;
+        Ok::<(), CoreError>(())
     };
     let server_to_client = async {
-        tokio::io::copy(&mut recv, &mut socks_write).await?;
-        socks_write.shutdown().await
+        Box::pin(copy_until_idle(
+            &mut recv,
+            &mut socks_write,
+            DEFAULT_SESSION_IDLE_TIMEOUT,
+        ))
+        .await?;
+        socks_write.shutdown().await?;
+        Ok::<(), CoreError>(())
     };
     let _ = tokio::try_join!(client_to_server, server_to_client)?;
     connection.close(0_u32.into(), b"");
@@ -658,6 +737,12 @@ where
 }
 
 async fn open_tcp_outer(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream, CoreError> {
+    tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, open_tcp_outer_inner(cfg))
+        .await
+        .map_err(|_| CoreError::IdleTimeout("outer TCP connection setup"))?
+}
+
+async fn open_tcp_outer_inner(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream, CoreError> {
     let profile = load_profile(&cfg.fingerprint)?;
     let keypair = x25519::generate_keypair();
     let shared = x25519::agree(&keypair.private, cfg.public_key.as_bytes())?;
@@ -954,7 +1039,13 @@ where
             authenticated.tls_server.drive(&client_finished)?;
             let tls_io = spawn_tls_app_io(conn, TlsAppEndpoint::Server(authenticated.tls_server));
             let server_flight_len = authenticated.server_flight.len();
-            relay_one_server_inner_stream(tls_io, connect_dest_or_target, padding_scheme).await?;
+            relay_one_server_inner_stream(
+                tls_io,
+                connect_dest_or_target,
+                padding_scheme,
+                DEFAULT_SESSION_IDLE_TIMEOUT,
+            )
+            .await?;
             Ok(DispatchOutcome::Authenticated {
                 sni: authenticated.sni,
                 server_flight_len,
@@ -963,8 +1054,12 @@ where
         DispatchDecision::Fallback { reason, chello_raw } => {
             let mut dest = connect_dest_or_target(cfg.dest.clone()).await?;
             write_fallback_prefix(&mut dest, &chello_raw).await?;
-            let (client_to_dest, dest_to_client) =
-                tokio::io::copy_bidirectional(&mut conn, &mut dest).await?;
+            let (client_to_dest, dest_to_client) = Box::pin(relay_bidirectional_until_idle(
+                &mut conn,
+                &mut dest,
+                DEFAULT_SESSION_IDLE_TIMEOUT,
+            ))
+            .await?;
             Ok(DispatchOutcome::Forwarded {
                 reason,
                 client_to_dest,
@@ -1053,7 +1148,7 @@ async fn dispatch_quic_runtime(
             ctx.timing.wait_started_at(started_at, ctx.profile).await;
             let client_hello_len = authenticated.client_hello.len();
             let sni = authenticated.sni.clone();
-            run_authenticated_quic_stream(
+            Box::pin(run_authenticated_quic_stream(
                 ctx.endpoint_socket,
                 ctx.client_peer,
                 prefetched.datagrams,
@@ -1067,7 +1162,7 @@ async fn dispatch_quic_runtime(
                     profile: ctx.profile.clone(),
                     mldsa_seed: *ctx.cfg.mldsa_seed.expose_secret(),
                 },
-            )
+            ))
             .await?;
             Ok(QuicRuntimeOutcome::Authenticated {
                 sni,
@@ -1323,7 +1418,7 @@ async fn run_authenticated_quic_stream(
     let (send, mut recv) = connection.accept_bi().await.map_err(quic_error)?;
     let target = read_target_stream(&mut recv).await?;
     let target_io = TcpStream::connect(target_to_host_port(&target)).await?;
-    relay_quic_server_stream(target_io, send, recv).await?;
+    Box::pin(relay_quic_server_stream(target_io, send, recv)).await?;
     let _ = tokio::time::timeout(drain_timeout, connection.closed()).await;
     endpoint.close(0_u32.into(), b"");
     Ok(())
@@ -1336,15 +1431,130 @@ async fn relay_quic_server_stream(
 ) -> Result<(), CoreError> {
     let (mut target_read, mut target_write) = tokio::io::split(target);
     let client_to_target = async {
-        tokio::io::copy(&mut recv, &mut target_write).await?;
-        target_write.shutdown().await
+        Box::pin(copy_until_idle(
+            &mut recv,
+            &mut target_write,
+            DEFAULT_SESSION_IDLE_TIMEOUT,
+        ))
+        .await?;
+        target_write.shutdown().await?;
+        Ok::<(), CoreError>(())
     };
     let target_to_client = async {
-        tokio::io::copy(&mut target_read, &mut send).await?;
-        send.shutdown().await
+        Box::pin(copy_until_idle(
+            &mut target_read,
+            &mut send,
+            DEFAULT_SESSION_IDLE_TIMEOUT,
+        ))
+        .await?;
+        send.shutdown().await?;
+        Ok::<(), CoreError>(())
     };
     let _ = tokio::try_join!(client_to_target, target_to_client)?;
     Ok(())
+}
+
+async fn relay_bidirectional_until_idle<A, B>(
+    left: &mut A,
+    right: &mut B,
+    idle_timeout: Duration,
+) -> Result<(u64, u64), CoreError>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut left_open = true;
+    let mut right_open = true;
+    let mut left_to_right = 0_u64;
+    let mut right_to_left = 0_u64;
+    let mut left_buf = vec![0_u8; 16 * 1024];
+    let mut right_buf = vec![0_u8; 16 * 1024];
+
+    while left_open || right_open {
+        let idle = tokio::time::sleep(idle_timeout);
+        tokio::pin!(idle);
+        tokio::select! {
+            () = &mut idle => return Err(CoreError::IdleTimeout("bidirectional relay")),
+            read = left.read(&mut left_buf), if left_open => {
+                let read = read?;
+                if read == 0 {
+                    left_open = false;
+                    timeout_write_shutdown(right, idle_timeout).await?;
+                } else {
+                    timeout_write_all(right, &left_buf[..read], idle_timeout).await?;
+                    left_to_right = add_io_byte_count(left_to_right, read)?;
+                }
+            }
+            read = right.read(&mut right_buf), if right_open => {
+                let read = read?;
+                if read == 0 {
+                    right_open = false;
+                    timeout_write_shutdown(left, idle_timeout).await?;
+                } else {
+                    timeout_write_all(left, &right_buf[..read], idle_timeout).await?;
+                    right_to_left = add_io_byte_count(right_to_left, read)?;
+                }
+            }
+        }
+    }
+
+    Ok((left_to_right, right_to_left))
+}
+
+async fn copy_until_idle<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    idle_timeout: Duration,
+) -> Result<u64, CoreError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut copied = 0_u64;
+    let mut buf = vec![0_u8; 16 * 1024];
+    loop {
+        let read = tokio::time::timeout(idle_timeout, reader.read(&mut buf))
+            .await
+            .map_err(|_| CoreError::IdleTimeout("copy read"))??;
+        if read == 0 {
+            return Ok(copied);
+        }
+        timeout_write_all(writer, &buf[..read], idle_timeout).await?;
+        copied = add_io_byte_count(copied, read)?;
+    }
+}
+
+async fn timeout_write_all<W>(
+    writer: &mut W,
+    buf: &[u8],
+    idle_timeout: Duration,
+) -> Result<(), CoreError>
+where
+    W: AsyncWrite + Unpin,
+{
+    tokio::time::timeout(idle_timeout, writer.write_all(buf))
+        .await
+        .map_err(|_| CoreError::IdleTimeout("relay write"))??;
+    Ok(())
+}
+
+async fn timeout_write_shutdown<W>(writer: &mut W, idle_timeout: Duration) -> Result<(), CoreError>
+where
+    W: AsyncWrite + Unpin,
+{
+    tokio::time::timeout(idle_timeout, writer.shutdown())
+        .await
+        .map_err(|_| CoreError::IdleTimeout("relay shutdown"))??;
+    Ok(())
+}
+
+fn add_io_byte_count(total: u64, increment: usize) -> Result<u64, CoreError> {
+    total
+        .checked_add(
+            u64::try_from(increment)
+                .map_err(|_| CoreError::InvalidConfig("relay byte count is too large"))?,
+        )
+        .ok_or(CoreError::InvalidConfig("relay byte count overflows"))
 }
 
 #[derive(Debug)]
@@ -1487,6 +1697,7 @@ async fn relay_one_server_inner_stream<D, Connect, ConnectFuture>(
     mut tls_io: tokio::io::DuplexStream,
     connect_target: Connect,
     padding_scheme: &PadScheme,
+    idle_timeout: Duration,
 ) -> Result<(), CoreError>
 where
     D: AsyncRead + AsyncWrite + Unpin,
@@ -1500,13 +1711,26 @@ where
             let mut mux = MuxSession::server(tls_io, padding_scheme)?;
             let (stream, target) = mux.accept().await?;
             let mut target_io = connect_target(target_to_host_port(&target)).await?;
-            Box::pin(relay_mux_server_stream(&mut target_io, mux, stream)).await
+            Box::pin(relay_mux_server_stream(
+                &mut target_io,
+                mux,
+                stream,
+                idle_timeout,
+            ))
+            .await
         }
         ServerInnerMode::VisionSolo => {
             let mut solo = tls_io;
             let target = read_solo_preface(&mut solo).await?;
             let target_io = connect_target(target_to_host_port(&target)).await?;
-            vision_relay(solo, target_io).await?;
+            let mut solo = solo;
+            let mut target_io = target_io;
+            Box::pin(relay_bidirectional_until_idle(
+                &mut solo,
+                &mut target_io,
+                idle_timeout,
+            ))
+            .await?;
             Ok(())
         }
     }
@@ -1555,6 +1779,7 @@ async fn relay_mux_client_stream<S, IO>(
     socks: &mut S,
     mut mux: MuxSession<IO>,
     mut stream: MuxStream,
+    idle_timeout: Duration,
 ) -> Result<(), CoreError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1562,9 +1787,12 @@ where
 {
     let mut socks_open = true;
     let mut peer_open = true;
-    let mut buf = [0_u8; 16 * 1024];
+    let mut buf = vec![0_u8; 16 * 1024];
     while socks_open || peer_open {
+        let idle = tokio::time::sleep(idle_timeout);
+        tokio::pin!(idle);
         tokio::select! {
+            () = &mut idle => return Err(CoreError::IdleTimeout("client mux stream")),
             read = socks.read(&mut buf), if socks_open => {
                 let read = read?;
                 if read == 0 {
@@ -1601,6 +1829,7 @@ async fn relay_mux_server_stream<T, IO>(
     target: &mut T,
     mut mux: MuxSession<IO>,
     mut stream: MuxStream,
+    idle_timeout: Duration,
 ) -> Result<(), CoreError>
 where
     T: AsyncRead + AsyncWrite + Unpin,
@@ -1608,9 +1837,12 @@ where
 {
     let mut target_open = true;
     let mut peer_open = true;
-    let mut buf = [0_u8; 16 * 1024];
+    let mut buf = vec![0_u8; 16 * 1024];
     while target_open || peer_open {
+        let idle = tokio::time::sleep(idle_timeout);
+        tokio::pin!(idle);
         tokio::select! {
+            () = &mut idle => return Err(CoreError::IdleTimeout("server mux stream")),
             read = target.read(&mut buf), if target_open => {
                 let read = read?;
                 if read == 0 {
@@ -1760,6 +1992,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scenario_relay_bidirectional_reclaims_idle_connections() {
+        let (mut left, _left_peer) = tokio::io::duplex(64);
+        let (mut right, _right_peer) = tokio::io::duplex(64);
+
+        let err = relay_bidirectional_until_idle(&mut left, &mut right, Duration::from_millis(10))
+            .await
+            .expect_err("idle relay times out");
+        assert!(matches!(err, CoreError::IdleTimeout("bidirectional relay")));
+    }
+
+    #[tokio::test]
+    async fn scenario_relay_bidirectional_timeout_is_idle_not_total_duration() {
+        let (mut left, mut left_peer) = tokio::io::duplex(64);
+        let (mut right, mut right_peer) = tokio::io::duplex(64);
+
+        let relay = tokio::spawn(async move {
+            relay_bidirectional_until_idle(&mut left, &mut right, Duration::from_millis(80)).await
+        });
+        left_peer
+            .write_all(b"one")
+            .await
+            .expect("write first chunk");
+        let mut observed = [0_u8; 3];
+        right_peer
+            .read_exact(&mut observed)
+            .await
+            .expect("read first chunk");
+        assert_eq!(&observed, b"one");
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        left_peer
+            .write_all(b"two")
+            .await
+            .expect("write second chunk before idle timeout");
+        right_peer
+            .read_exact(&mut observed)
+            .await
+            .expect("read second chunk");
+        assert_eq!(&observed, b"two");
+        drop(left_peer);
+        drop(right_peer);
+
+        let (left_to_right, right_to_left) = timeout(Duration::from_secs(1), relay)
+            .await
+            .expect("relay finishes")
+            .expect("join relay")
+            .expect("relay succeeds");
+        assert_eq!(left_to_right, 6);
+        assert_eq!(right_to_left, 0);
+    }
+
+    #[tokio::test]
     async fn scenario_server_inner_stream_accepts_vision_solo_preface() {
         let (mut client, server) = tokio::io::duplex(4096);
         let (target_io, mut target_peer) = tokio::io::duplex(4096);
@@ -1772,6 +2055,7 @@ mod tests {
                     Ok::<_, std::io::Error>(target_io)
                 },
                 &PadScheme::none(),
+                DEFAULT_SESSION_IDLE_TIMEOUT,
             )
             .await
         });

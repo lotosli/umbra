@@ -18,6 +18,9 @@ pub enum CoreError {
     /// Runtime configuration is invalid.
     #[error("invalid runtime configuration: {0}")]
     InvalidConfig(&'static str),
+    /// A connection made no progress within the configured timeout.
+    #[error("idle timeout: {0}")]
+    IdleTimeout(&'static str),
     /// Runtime configuration could not be parsed.
     #[error("configuration parse failed: {0}")]
     ConfigParse(String),

@@ -1455,6 +1455,70 @@ tcp_evasion = "off"
     )
 }
 
+#[tokio::test]
+async fn scenario_client_runtime_accepts_concurrent_socks_sessions() {
+    let outer_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind outer listener");
+    let outer_addr = outer_listener.local_addr().expect("outer addr");
+    let cfg = ClientCfg::from_toml_str_with_overrides(
+        &client_toml(),
+        ClientConfigOverrides {
+            server: Some(outer_addr.to_string()),
+            ..ClientConfigOverrides::default()
+        },
+    )
+    .expect("client config loads");
+    let runtime = ClientRuntime::bind(cfg)
+        .await
+        .expect("client runtime binds");
+    let socks_addr = runtime.local_addr().expect("socks addr");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let runtime_task = tokio::spawn(async move {
+        Box::pin(runtime.run_until_shutdown(async {
+            let _ = shutdown_rx.await;
+        }))
+        .await
+    });
+
+    let first_socks = open_socks_connect(socks_addr, "first.example").await;
+    let (first_outer, _) = timeout(Duration::from_secs(1), outer_listener.accept())
+        .await
+        .expect("first outer connection is not blocked")
+        .expect("accept first outer");
+
+    let second_socks = open_socks_connect(socks_addr, "second.example").await;
+    let (second_outer, _) = timeout(Duration::from_secs(1), outer_listener.accept())
+        .await
+        .expect("second outer connection is accepted concurrently")
+        .expect("accept second outer");
+
+    drop(first_socks);
+    drop(second_socks);
+    drop(first_outer);
+    drop(second_outer);
+    shutdown_tx.send(()).expect("send shutdown");
+    timeout(Duration::from_secs(1), runtime_task)
+        .await
+        .expect("runtime shuts down")
+        .expect("join runtime")
+        .expect("runtime returns ok");
+}
+
+async fn open_socks_connect(
+    socks_addr: std::net::SocketAddr,
+    domain: &str,
+) -> tokio::net::TcpStream {
+    let mut socks = tokio::net::TcpStream::connect(socks_addr)
+        .await
+        .expect("connect socks runtime");
+    socks
+        .write_all(&socks_connect_domain(domain, 443, 0x01))
+        .await
+        .expect("write socks connect");
+    socks
+}
+
 fn client_toml() -> String {
     format!(
         r#"

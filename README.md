@@ -8,7 +8,7 @@
 
 Umbra is a Rust implementation of a censorship-resistant privacy transport whose outer connection is designed to look like, and behave like, a real TLS 1.3 or QUIC connection to a real destination site.
 
-The project combines protocol camouflage, pre-response authentication, browser-grade fingerprint discipline, post-quantum-aware primitives, and strict engineering gates. The result is not a generic proxy scaffold; it is an opinionated monorepo for building a high-assurance client/server transport with a measurable security and release process.
+Umbra combines protocol camouflage, pre-response authentication, browser-grade fingerprint discipline, post-quantum-aware primitives, and strict engineering gates in a client/server transport monorepo.
 
 > Umbra is intended for privacy protection and access to the open internet where lawful. Do not use it for illegal activity.
 
@@ -25,7 +25,7 @@ The project combines protocol camouflage, pre-response authentication, browser-g
 
 ## Status
 
-Umbra is under active implementation. The repository now contains the real crate structure, CLI entry point, protocol modules, test harness, CI gates, and tag-based release automation. It is no longer just a workspace scaffold.
+The repository contains the crate structure, CLI entry point, protocol modules, test harness, CI gates, and tag-based release automation.
 
 The protocol target is documented in [`docs/protocol-design.md`](docs/protocol-design.md), and the crate architecture is mapped in [`docs/architecture.md`](docs/architecture.md). Implementation work follows OpenSpec; see [`AGENTS.md`](AGENTS.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 

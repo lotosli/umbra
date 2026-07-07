@@ -8,7 +8,7 @@
 
 Umbra 是一个 Rust 实现的抗审查隐私传输。它的外层连接不是伪装成随机噪声，而是设计成一条真实的、通往真实目标站点的 TLS 1.3 或 QUIC 连接。
 
-这个仓库已经不是“脚手架”。它把协议伪装、响应前认证、浏览器级指纹保真、抗量子感知密码学原语和严格工程闸门组织成一个可持续演进的 monorepo，用于构建高可信的 client/server 隐私传输。
+Umbra 把协议伪装、响应前认证、浏览器级指纹保真、抗量子感知密码学原语和严格工程闸门组织在一个 client/server 隐私传输 monorepo 中。
 
 > 用途：隐私保护与访问开放互联网。请仅在所在司法辖区法律允许范围内使用，不得用于非法目的。
 
@@ -25,7 +25,7 @@ Umbra 是一个 Rust 实现的抗审查隐私传输。它的外层连接不是�
 
 ## 当前状态
 
-Umbra 正在活跃实现中。仓库已经包含实际 crate 结构、CLI 入口、协议模块、测试 harness、CI 闸门和基于 tag 的自动发布流程。
+仓库包含 crate 结构、CLI 入口、协议模块、测试 harness、CI 闸门和基于 tag 的自动发布流程。
 
 最终协议形态见 [`docs/protocol-design.md`](docs/protocol-design.md)，crate 架构见 [`docs/architecture.md`](docs/architecture.md)。实现遵循 OpenSpec，规则见 [`AGENTS.md`](AGENTS.md)。
 

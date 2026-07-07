@@ -2,8 +2,6 @@ name: Dist
 
 on:
   push:
-    branches:
-      - "**"
     tags:
       - "v*"
   workflow_dispatch:

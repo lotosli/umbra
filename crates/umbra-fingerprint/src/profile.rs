@@ -5,6 +5,17 @@ use std::{fs, path::PathBuf};
 use serde::Deserialize;
 use thiserror::Error;
 
+const BUILTIN_PROFILES: &[(&str, &str)] = &[
+    (
+        "chrome-latest",
+        include_str!("../../../fingerprints/chrome-latest.toml"),
+    ),
+    (
+        "chrome-150-macos",
+        include_str!("../../../fingerprints/chrome-150-macos.toml"),
+    ),
+];
+
 /// Errors returned while loading or validating fingerprint profiles.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -36,6 +47,8 @@ pub struct FingerprintProfile {
     pub extension_order: Vec<u16>,
     /// Extension indexes where GREASE is expected.
     pub grease_extension_slots: Vec<usize>,
+    /// Supported TLS versions in wire order, including GREASE values.
+    pub supported_versions: Vec<u16>,
     /// Supported group order, including hybrid and GREASE groups.
     pub supported_groups: Vec<u16>,
     /// Signature algorithm order.
@@ -71,11 +84,26 @@ pub struct QuicFingerprint {
     pub h3_settings: Vec<u64>,
 }
 
-/// Load a named fingerprint profile from the repository `fingerprints/` directory.
+/// Load a named fingerprint profile.
+///
+/// Built-in profiles are embedded into release binaries from the repository
+/// `fingerprints/` directory at compile time. Non-built-in names fall back to a
+/// filesystem lookup in the same repository directory for local experiments.
 pub fn load_profile(name: &str) -> Result<FingerprintProfile, FingerprintError> {
+    if let Some((_, text)) = BUILTIN_PROFILES
+        .iter()
+        .find(|(profile_name, _)| *profile_name == name)
+    {
+        return parse_profile(text);
+    }
+
     let path = profile_path(name);
     let text = fs::read_to_string(&path).map_err(|_| FingerprintError::NotFound(name.into()))?;
-    let profile: FingerprintProfile = toml::from_str(&text)?;
+    parse_profile(&text)
+}
+
+fn parse_profile(text: &str) -> Result<FingerprintProfile, FingerprintError> {
+    let profile: FingerprintProfile = toml::from_str(text)?;
     validate_profile(&profile)?;
     Ok(profile)
 }
@@ -96,6 +124,11 @@ fn validate_profile(profile: &FingerprintProfile) -> Result<(), FingerprintError
     }
     if profile.extension_order.is_empty() {
         return Err(FingerprintError::InvalidProfile("extensions are empty"));
+    }
+    if profile.supported_versions.is_empty() {
+        return Err(FingerprintError::InvalidProfile(
+            "supported versions are empty",
+        ));
     }
     if profile.supported_groups.is_empty() {
         return Err(FingerprintError::InvalidProfile(

@@ -24,7 +24,6 @@ pub const EXT_QUIC_TRANSPORT_PARAMETERS: u16 = 0x0039;
 const HANDSHAKE_CLIENT_HELLO: u8 = 0x01;
 const RECORD_HANDSHAKE: u8 = 0x16;
 const LEGACY_VERSION: u16 = 0x0303;
-const TLS13_VERSION: u16 = 0x0304;
 const EXT_SERVER_NAME: u16 = 0x0000;
 const EXT_EXTENDED_MASTER_SECRET: u16 = 0x0017;
 const EXT_RENEGOTIATION_INFO: u16 = 0xff01;
@@ -40,6 +39,7 @@ const EXT_PSK_KEY_EXCHANGE_MODES: u16 = 0x002d;
 const EXT_SUPPORTED_VERSIONS: u16 = 0x002b;
 const EXT_COMPRESS_CERTIFICATE: u16 = 0x001b;
 const EXT_APPLICATION_SETTINGS: u16 = 0x4469;
+const EXT_APPLICATION_SETTINGS_CHROME_150: u16 = 0x44cd;
 const EXT_PADDING: u16 = 0x0015;
 
 /// Hybrid key-share bytes offered alongside the classic X25519 share.
@@ -304,7 +304,9 @@ fn extension_data(ext: u16, params: &ClientHelloParams) -> Result<Vec<u8>, TlsEr
         EXT_PSK_KEY_EXCHANGE_MODES => Ok(vec![1, 1]),
         EXT_SUPPORTED_VERSIONS => supported_versions(&params.profile),
         EXT_COMPRESS_CERTIFICATE => vector_u16(&[2]),
-        EXT_APPLICATION_SETTINGS => alpn_wire(&params.profile.alps),
+        EXT_APPLICATION_SETTINGS | EXT_APPLICATION_SETTINGS_CHROME_150 => {
+            alpn_wire(&params.profile.alps)
+        }
         EXT_QUIC_TRANSPORT_PARAMETERS => quic_transport_parameters(params),
         _ => Ok(Vec::new()),
     }
@@ -370,15 +372,9 @@ fn key_share(params: &ClientHelloParams) -> Result<Vec<u8>, TlsError> {
 
 fn supported_versions(profile: &FingerprintProfile) -> Result<Vec<u8>, TlsError> {
     let mut versions = Vec::new();
-    if let Some(grease) = profile
-        .supported_groups
-        .iter()
-        .copied()
-        .find(|value| is_grease(*value))
-    {
-        versions.extend_from_slice(&grease.to_be_bytes());
+    for version in &profile.supported_versions {
+        versions.extend_from_slice(&version.to_be_bytes());
     }
-    versions.extend_from_slice(&TLS13_VERSION.to_be_bytes());
     let mut out = Vec::new();
     let len = u8::try_from(versions.len()).map_err(|_| TlsError::LengthOutOfRange)?;
     out.push(len);

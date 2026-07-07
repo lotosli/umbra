@@ -1,5 +1,6 @@
-# Tracks chrome-150-macos. See chrome-150-macos.capture.md for capture evidence.
-name = "chrome-latest"
+# Captured from local Google Chrome 150.0.7871.47 on macOS, 2026-07-08.
+# See chrome-150-macos.capture.md for capture evidence and current limitations.
+name = "chrome-150-macos"
 chrome_version = "Google Chrome 150.0.7871.47 macOS local capture 2026-07-08"
 ciphers = [43690, 4865, 4866, 4867, 49195, 49199, 49196, 49200, 52393, 52392, 49171, 49172, 156, 157, 47, 53]
 extension_order = [19018, 0, 51, 27, 5, 17613, 11, 10, 35, 65037, 18, 43, 65281, 23, 13, 45, 16, 64250]

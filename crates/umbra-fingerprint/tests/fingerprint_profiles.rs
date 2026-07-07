@@ -12,13 +12,65 @@ fn scenario_known_profile_loads() {
     let profile = load_profile("chrome-latest").expect("profile should load");
 
     assert_eq!(profile.name, "chrome-latest");
+    assert_eq!(
+        profile.chrome_version,
+        "Google Chrome 150.0.7871.47 macOS local capture 2026-07-08"
+    );
     assert!(!profile.ciphers.is_empty());
     assert!(!profile.extension_order.is_empty());
     assert!(!profile.grease_extension_slots.is_empty());
+    assert_eq!(profile.supported_versions, [10794, 772, 771]);
     assert!(!profile.supported_groups.is_empty());
     assert!(!profile.signature_algorithms.is_empty());
     assert_eq!(profile.alpn, ["h2", "http/1.1"]);
-    assert_eq!(profile.padding_target, 512);
+    assert_eq!(profile.padding_target, 1757);
+}
+
+#[test]
+fn scenario_versioned_local_chrome_profile_loads() {
+    let profile = load_profile("chrome-150-macos").expect("profile should load");
+
+    assert_eq!(profile.name, "chrome-150-macos");
+    assert_eq!(
+        profile.chrome_version,
+        "Google Chrome 150.0.7871.47 macOS local capture 2026-07-08"
+    );
+    assert_eq!(
+        profile.ciphers,
+        [
+            43690, 4865, 4866, 4867, 49195, 49199, 49196, 49200, 52393, 52392, 49171, 49172, 156,
+            157, 47, 53
+        ]
+    );
+    assert_eq!(profile.grease_extension_slots, [0, 17]);
+    assert_eq!(profile.supported_versions, [10794, 772, 771]);
+    assert_eq!(profile.supported_groups, [43690, 4588, 29, 23, 24]);
+    assert_eq!(profile.alpn, ["h2", "http/1.1"]);
+    assert_eq!(profile.alps, ["h2"]);
+    assert_eq!(profile.padding_target, 1757);
+}
+
+#[test]
+fn scenario_latest_profile_tracks_versioned_capture() {
+    let latest = load_profile("chrome-latest").expect("latest profile should load");
+    let versioned = load_profile("chrome-150-macos").expect("versioned profile should load");
+
+    assert_eq!(latest.chrome_version, versioned.chrome_version);
+    assert_eq!(latest.ciphers, versioned.ciphers);
+    assert_eq!(latest.extension_order, versioned.extension_order);
+    assert_eq!(
+        latest.grease_extension_slots,
+        versioned.grease_extension_slots
+    );
+    assert_eq!(latest.supported_versions, versioned.supported_versions);
+    assert_eq!(latest.supported_groups, versioned.supported_groups);
+    assert_eq!(latest.signature_algorithms, versioned.signature_algorithms);
+    assert_eq!(latest.alpn, versioned.alpn);
+    assert_eq!(latest.alps, versioned.alps);
+    assert_eq!(latest.padding_target, versioned.padding_target);
+    assert_eq!(latest.expected_ja3, versioned.expected_ja3);
+    assert_eq!(latest.expected_ja4, versioned.expected_ja4);
+    assert_eq!(latest.quic, versioned.quic);
 }
 
 #[test]
@@ -31,7 +83,7 @@ fn scenario_unknown_profile_is_rejected() {
 
 #[test]
 fn scenario_generated_hello_matches_profile_identifiers() {
-    let profile = load_profile("chrome-latest").expect("profile should load");
+    let profile = load_profile("chrome-150-macos").expect("profile should load");
     let fixture = build_profile_fixture(&profile).expect("fixture should build");
     let parsed = parse_client_hello(&fixture).expect("fixture should parse");
     let (ja3, ja4) = ja3_ja4(&fixture).expect("fixture should fingerprint");

@@ -1,8 +1,9 @@
 //! Chrome fingerprint profiles and ClientHello self-check helpers.
 //!
-//! Profiles live under the repository-level `fingerprints/` directory. The TLS
-//! stack consumes these data files instead of hard-coding Chrome extension and
-//! QUIC transport-parameter tables.
+//! Profiles live under the repository-level `fingerprints/` directory and are
+//! embedded into release binaries for built-in names. The TLS stack consumes
+//! these data files instead of hard-coding Chrome extension and QUIC
+//! transport-parameter tables.
 
 pub mod grease;
 pub mod ja3;

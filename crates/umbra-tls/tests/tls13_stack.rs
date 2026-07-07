@@ -53,14 +53,20 @@ fn scenario_extension_order_follows_profile() {
 }
 
 #[test]
+fn scenario_supported_versions_follow_profile() {
+    let params = client_hello_params();
+    let record = build_client_hello(&params).expect("ClientHello should build");
+
+    assert_eq!(
+        supported_versions_from_record(&record),
+        params.profile.supported_versions
+    );
+}
+
+#[test]
 fn scenario_quic_carrier_and_large_varints_are_parsed() {
     let mut params = client_hello_params();
-    let padding_pos = params
-        .profile
-        .extension_order
-        .iter()
-        .position(|ext| *ext == 0x0015)
-        .expect("profile has padding");
+    let padding_pos = quic_extension_insert_pos(&params.profile);
     params
         .profile
         .extension_order
@@ -104,12 +110,7 @@ fn scenario_quic_transport_parameter_values_are_serialized() {
     let mut params = client_hello_params();
     params.session_id = Vec::new();
     params.profile.alpn = vec!["h3".to_owned()];
-    let padding_pos = params
-        .profile
-        .extension_order
-        .iter()
-        .position(|ext| *ext == 0x0015)
-        .expect("profile has padding");
+    let padding_pos = quic_extension_insert_pos(&params.profile);
     params
         .profile
         .extension_order
@@ -727,6 +728,58 @@ impl CertVerify for RealSiteVerifier {
 fn client_hello_params() -> ClientHelloParams {
     let profile = load_profile("chrome-latest").expect("profile should load");
     params_with_profile(profile)
+}
+
+fn quic_extension_insert_pos(profile: &FingerprintProfile) -> usize {
+    profile
+        .extension_order
+        .iter()
+        .position(|ext| *ext == 0x0015)
+        .unwrap_or(profile.extension_order.len())
+}
+
+fn supported_versions_from_record(record: &[u8]) -> Vec<u16> {
+    let data = extension_data_from_record(record, 0x002b);
+    let Some((&len, versions)) = data.split_first() else {
+        return Vec::new();
+    };
+    assert_eq!(usize::from(len), versions.len());
+    versions
+        .chunks_exact(2)
+        .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+        .collect()
+}
+
+fn extension_data_from_record(record: &[u8], target: u16) -> Vec<u8> {
+    assert_eq!(record.first().copied(), Some(0x16));
+    let record_len = usize::from(u16::from_be_bytes([record[3], record[4]]));
+    let handshake = &record[5..5 + record_len];
+    assert_eq!(handshake.first().copied(), Some(0x01));
+    let handshake_len = (usize::from(handshake[1]) << 16)
+        | (usize::from(handshake[2]) << 8)
+        | usize::from(handshake[3]);
+    let body = &handshake[4..4 + handshake_len];
+    let mut offset = 2 + 32;
+    let session_len = usize::from(body[offset]);
+    offset += 1 + session_len;
+    let cipher_len = usize::from(u16::from_be_bytes([body[offset], body[offset + 1]]));
+    offset += 2 + cipher_len;
+    let compression_len = usize::from(body[offset]);
+    offset += 1 + compression_len;
+    let extensions_len = usize::from(u16::from_be_bytes([body[offset], body[offset + 1]]));
+    offset += 2;
+    let extensions_end = offset + extensions_len;
+    while offset < extensions_end {
+        let ext = u16::from_be_bytes([body[offset], body[offset + 1]]);
+        let len = usize::from(u16::from_be_bytes([body[offset + 2], body[offset + 3]]));
+        offset += 4;
+        let data = &body[offset..offset + len];
+        if ext == target {
+            return data.to_vec();
+        }
+        offset += len;
+    }
+    Vec::new()
 }
 
 fn params_with_profile(profile: FingerprintProfile) -> ClientHelloParams {

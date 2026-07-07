@@ -10,6 +10,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use proptest::prelude::*;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
+    sync::oneshot,
     time::timeout,
 };
 use umbra_core::{
@@ -858,6 +859,43 @@ async fn scenario_runtime_shutdown_returns_without_accepting() {
     Box::pin(client.run_until_shutdown(async {}))
         .await
         .expect("client shutdown completes");
+}
+
+#[tokio::test]
+async fn scenario_server_runtime_survives_early_client_disconnect() {
+    let cfg = ServerCfg::from_toml_str(&server_toml()).expect("server config loads");
+    let runtime = ServerRuntime::bind_with_profile(
+        cfg,
+        sample_dest_profile(),
+        ProbeResistancePolicy::default(),
+    )
+    .await
+    .expect("runtime binds");
+    let addr = runtime.local_addr().expect("runtime addr");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        Box::pin(runtime.run_until_shutdown(async {
+            let _ = shutdown_rx.await;
+        }))
+        .await
+    });
+
+    let client = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("connect runtime");
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !task.is_finished(),
+        "server must keep accepting after early EOF"
+    );
+
+    shutdown_tx.send(()).expect("send shutdown");
+    timeout(Duration::from_secs(1), task)
+        .await
+        .expect("server shuts down")
+        .expect("join server task")
+        .expect("server loop returns ok");
 }
 
 #[tokio::test]

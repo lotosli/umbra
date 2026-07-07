@@ -260,10 +260,10 @@ impl ServerRuntime {
             tokio::select! {
                 () = &mut shutdown => return Ok(()),
                 accepted = self.accept_one_with_connector(TcpStream::connect) => {
-                    accepted?;
+                    let _ = accepted;
                 }
                 accepted = self.accept_one_quic_with_idle_timeout(DEFAULT_QUIC_FALLBACK_IDLE_TIMEOUT), if self.udp_socket.is_some() => {
-                    accepted?;
+                    let _ = accepted;
                 }
             }
         }
@@ -351,7 +351,7 @@ impl ClientRuntime {
             tokio::select! {
                 () = &mut shutdown => return Ok(()),
                 accepted = self.accept_one_from_config() => {
-                    accepted?;
+                    let _ = accepted;
                 }
             }
         }

@@ -1,4 +1,4 @@
-# cargo-deny 配置：许可证 / 安全公告 / 依赖来源 / 重复版本
+# cargo-deny policy: licenses, advisories, dependency sources, and duplicate versions.
 [advisories]
 version = 2
 ignore = []
@@ -14,9 +14,7 @@ allow = [
     "ISC",
     "CDLA-Permissive-2.0",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "Zlib",
-    "MPL-2.0",
 ]
 confidence-threshold = 0.9
 
@@ -25,6 +23,22 @@ multiple-versions = "warn"
 wildcards = "warn"
 allow = []
 deny = []
+# These duplicate versions come from currently incompatible upstream dependency
+# generations. Keep this list exact so new duplicate versions are still reported.
+skip = [
+    { name = "chacha20", version = "=0.10.1" },
+    { name = "cpufeatures", version = "=0.3.0" },
+    { name = "crypto-common", version = "=0.2.2" },
+    { name = "digest", version = "=0.11.3" },
+    { name = "getrandom", version = "=0.4.3" },
+    { name = "hybrid-array", version = "=0.4.13" },
+    { name = "keccak", version = "=0.2.0" },
+    { name = "rand", version = "=0.10.2" },
+    { name = "rand_core", version = "=0.10.1" },
+    { name = "thiserror", version = "=1.0.69" },
+    { name = "thiserror-impl", version = "=1.0.69" },
+    { name = "windows-sys", version = "=0.52.0" },
+]
 
 [sources]
 unknown-registry = "deny"

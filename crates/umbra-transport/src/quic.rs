@@ -18,6 +18,7 @@ use umbra_fingerprint::FingerprintProfile;
 use umbra_proto::{
     addr::TargetAddr,
     consts::{ATYP_DOMAIN, ATYP_IPV4, ATYP_IPV6},
+    udp::UdpEnvelope,
 };
 use umbra_tls::{
     clienthello::{TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256},
@@ -45,6 +46,8 @@ const QUIC_INITIAL_PACKET_NUMBER: u64 = 1;
 const QUIC_INITIAL_PACKET_NUMBER_LEN: usize = 4;
 const QUIC_PACKET_TAG_LEN: usize = 16;
 const QUIC_IV_LEN: usize = 12;
+/// First byte on an authenticated QUIC bidirectional stream that opens UDP association mode.
+pub const QUIC_UDP_ASSOCIATE_MARKER: u8 = 0xff;
 const RETRY_INTEGRITY_KEY_DRAFT: [u8; 16] = [
     0xcc, 0xce, 0x18, 0x7e, 0xd0, 0x9a, 0x09, 0xd0, 0x57, 0x28, 0x15, 0x5a, 0x6c, 0xb9, 0x6b, 0xe1,
 ];
@@ -624,6 +627,47 @@ where
         }
     }
     TargetAddr::decode(&encoded).map_err(TransportError::from)
+}
+
+/// Write the QUIC UDP association stream marker.
+pub async fn write_udp_association_marker<W>(writer: &mut W) -> Result<(), TransportError>
+where
+    W: AsyncWrite + Unpin,
+{
+    writer.write_all(&[QUIC_UDP_ASSOCIATE_MARKER]).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+/// Write one length-delimited UDP envelope on a QUIC association stream.
+pub async fn write_udp_envelope_stream<W>(
+    writer: &mut W,
+    target: &TargetAddr,
+    payload: &[u8],
+) -> Result<(), TransportError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let envelope = UdpEnvelope::new(target.clone(), payload.to_vec())?.encode()?;
+    let len = u16::try_from(envelope.len())
+        .map_err(|_| TransportError::Protocol(umbra_proto::ProtocolError::LengthViolation))?;
+    writer.write_all(&len.to_be_bytes()).await?;
+    writer.write_all(&envelope).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+/// Read one length-delimited UDP envelope from a QUIC association stream.
+pub async fn read_udp_envelope_stream<R>(reader: &mut R) -> Result<UdpEnvelope, TransportError>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut len = [0_u8; 2];
+    reader.read_exact(&mut len).await?;
+    let len = usize::from(u16::from_be_bytes(len));
+    let mut bytes = vec![0_u8; len];
+    reader.read_exact(&mut bytes).await?;
+    UdpEnvelope::decode(&bytes).map_err(TransportError::from)
 }
 
 async fn read_exact_to<R>(

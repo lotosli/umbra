@@ -8,5 +8,6 @@ pub mod addr;
 pub mod consts;
 pub mod error;
 pub mod frame;
+pub mod udp;
 
 pub use error::ProtocolError;

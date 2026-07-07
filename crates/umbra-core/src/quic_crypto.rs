@@ -51,6 +51,7 @@ pub(crate) fn client_config(cfg: &ClientCfg) -> Result<quinn::ClientConfig, Core
     };
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
     config.initial_dst_cid_provider(Arc::new(move || random_connection_id(cid_len)));
+    config.transport_config(quic_transport_config());
     Ok(config)
 }
 
@@ -64,7 +65,10 @@ pub(crate) struct AuthenticatedServerCrypto {
 }
 
 pub(crate) fn server_config(authenticated: AuthenticatedServerCrypto) -> quinn::ServerConfig {
-    quinn::ServerConfig::with_crypto(Arc::new(UmbraQuicServerConfig { authenticated }))
+    let mut config =
+        quinn::ServerConfig::with_crypto(Arc::new(UmbraQuicServerConfig { authenticated }));
+    config.transport_config(quic_transport_config());
+    config
 }
 
 struct UmbraQuicClientConfig {
@@ -601,6 +605,13 @@ fn quic_profile(
     Ok((profile, grease_parameter, cid_len))
 }
 
+fn quic_transport_config() -> Arc<quinn::TransportConfig> {
+    let mut transport = quinn::TransportConfig::default();
+    transport.datagram_receive_buffer_size(None);
+    transport.datagram_send_buffer_size(0);
+    Arc::new(transport)
+}
+
 fn encode_transport_parameters(
     params: &quinn_proto::transport_parameters::TransportParameters,
 ) -> Vec<u8> {
@@ -925,6 +936,15 @@ mod tests {
         assert!(read_quic_varint(&[], &mut empty_offset).is_err());
         let mut truncated_offset = 0;
         assert!(read_quic_varint(&[0x40], &mut truncated_offset).is_err());
+    }
+
+    #[test]
+    fn scenario_quic_udp_carrier_preserves_fingerprint_by_disabling_datagrams() {
+        let config = quic_transport_config();
+        let config_debug = format!("{config:?}");
+
+        assert!(config_debug.contains("datagram_receive_buffer_size: None"));
+        assert!(config_debug.contains("datagram_send_buffer_size: 0"));
     }
 
     #[test]

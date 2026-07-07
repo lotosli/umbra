@@ -25,6 +25,8 @@ pub enum MuxCommand {
     Padding = 0x07,
     /// Keepalive or RTT probe.
     Ping = 0x08,
+    /// Carry one UDP datagram envelope. Uses reserved stream id zero.
+    UdpDatagram = 0x09,
 }
 
 impl TryFrom<u8> for MuxCommand {
@@ -40,6 +42,7 @@ impl TryFrom<u8> for MuxCommand {
             0x06 => Ok(Self::Rst),
             0x07 => Ok(Self::Padding),
             0x08 => Ok(Self::Ping),
+            0x09 => Ok(Self::UdpDatagram),
             other => Err(ProtocolError::UnsupportedCommand(other)),
         }
     }

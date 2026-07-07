@@ -3,7 +3,7 @@
 use std::{
     fs,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -29,7 +29,10 @@ use umbra_core::{
         open_outer_from_config, run_realsite_spider, ClientConnectPlan, ClientInnerMode,
         ClientRuntime, QuicRuntimeOutcome, ServerRuntime,
     },
-    socks::{accept_connect, negotiate_no_auth},
+    socks::{
+        accept_connect, decode_udp_packet, encode_udp_packet, encode_udp_response_packets,
+        negotiate_no_auth, read_request, SocksRequest, SocksUdpPacket, SocksUdpReassembler,
+    },
     CoreError,
 };
 use umbra_crypto::{mldsa::mldsa_keygen_from_seed, mlkem::mlkem_keygen, secret::Secret, x25519};
@@ -380,16 +383,46 @@ async fn scenario_domain_connect_creates_target_address() {
 }
 
 #[tokio::test]
-async fn scenario_udp_associate_is_rejected() {
+async fn scenario_udp_associate_request_is_parsed() {
     let (mut client, mut server) = io::duplex(128);
     client
         .write_all(&socks_connect_domain("example.com", 443, 0x03))
         .await
         .expect("write associate");
 
+    negotiate_no_auth(&mut server)
+        .await
+        .expect("no-auth selected");
+    let request = read_request(&mut server)
+        .await
+        .expect("UDP associate parses");
+
+    let SocksRequest::UdpAssociate(associate) = request else {
+        panic!("expected UDP associate");
+    };
+    assert_eq!(
+        associate.client_addr,
+        TargetAddr::domain("example.com", 443).expect("valid domain")
+    );
+    let mut method_reply = [0_u8; 2];
+    client
+        .read_exact(&mut method_reply)
+        .await
+        .expect("read method reply");
+    assert_eq!(method_reply, [0x05, 0x00]);
+}
+
+#[tokio::test]
+async fn scenario_bind_command_is_rejected() {
+    let (mut client, mut server) = io::duplex(128);
+    client
+        .write_all(&socks_connect_domain("example.com", 443, 0x02))
+        .await
+        .expect("write bind");
+
     let err = accept_connect(&mut server)
         .await
-        .expect_err("UDP associate rejected");
+        .expect_err("BIND rejected");
 
     assert!(matches!(err, CoreError::Socks("unsupported SOCKS command")));
     let mut replies = [0_u8; 12];
@@ -426,6 +459,251 @@ async fn scenario_socks_ipv4_and_ipv6_connect_requests_parse() {
         ipv6.target,
         TargetAddr::Ipv6(std::net::Ipv6Addr::LOCALHOST, 443)
     );
+}
+
+#[test]
+fn scenario_socks_udp_domain_packet_round_trips() {
+    let target = TargetAddr::domain("dns.example", 53).expect("target");
+    let packet = SocksUdpPacket {
+        frag: 0,
+        target: target.clone(),
+        payload: b"query".to_vec(),
+    };
+    let encoded = encode_udp_packet(&packet).expect("packet encodes");
+    let decoded = decode_udp_packet(&encoded).expect("packet decodes");
+
+    assert_eq!(decoded.frag, 0);
+    assert_eq!(decoded.target, target);
+    assert_eq!(decoded.payload, b"query");
+}
+
+#[test]
+fn scenario_socks_udp_fragmented_request_is_reassembled() {
+    let target = TargetAddr::domain("frag.example", 53).expect("target");
+    let mut reassembler = SocksUdpReassembler::default();
+    let now = Instant::now();
+
+    assert!(reassembler
+        .process(
+            SocksUdpPacket {
+                frag: 1,
+                target: target.clone(),
+                payload: b"abc".to_vec(),
+            },
+            now,
+        )
+        .expect("first fragment")
+        .is_none());
+    assert!(reassembler
+        .process(
+            SocksUdpPacket {
+                frag: 2,
+                target: target.clone(),
+                payload: b"def".to_vec(),
+            },
+            now,
+        )
+        .expect("second fragment")
+        .is_none());
+    let complete = reassembler
+        .process(
+            SocksUdpPacket {
+                frag: 0x83,
+                target: target.clone(),
+                payload: b"ghi".to_vec(),
+            },
+            now,
+        )
+        .expect("last fragment")
+        .expect("sequence completes");
+
+    assert_eq!(complete.target, target);
+    assert_eq!(complete.payload, b"abcdefghi");
+}
+
+#[test]
+fn scenario_socks_udp_fragment_timer_and_lower_fragment_reset_queue() {
+    let target = TargetAddr::domain("reset.example", 53).expect("target");
+    let mut reassembler = SocksUdpReassembler::new(4, 1024, Duration::from_secs(5));
+    let now = Instant::now();
+
+    assert!(reassembler
+        .process(
+            SocksUdpPacket {
+                frag: 1,
+                target: target.clone(),
+                payload: b"old".to_vec(),
+            },
+            now,
+        )
+        .expect("old fragment")
+        .is_none());
+    assert!(reassembler
+        .process(
+            SocksUdpPacket {
+                frag: 0x82,
+                target: target.clone(),
+                payload: b"ignored".to_vec(),
+            },
+            now + Duration::from_secs(6),
+        )
+        .expect("expired final fragment")
+        .is_none());
+    assert!(reassembler
+        .process(
+            SocksUdpPacket {
+                frag: 2,
+                target: target.clone(),
+                payload: b"gap".to_vec(),
+            },
+            now + Duration::from_secs(7),
+        )
+        .expect("gap fragment")
+        .is_none());
+    assert!(reassembler
+        .process(
+            SocksUdpPacket {
+                frag: 1,
+                target,
+                payload: b"reset".to_vec(),
+            },
+            now + Duration::from_secs(8),
+        )
+        .expect("lower fragment resets")
+        .is_none());
+}
+
+#[test]
+fn scenario_socks_udp_fragment_state_is_bounded() {
+    let target = TargetAddr::domain("bounded.example", 53).expect("target");
+    let other_target = TargetAddr::domain("overflow.example", 53).expect("target");
+    let mut reassembler = SocksUdpReassembler::new(1, 3, Duration::from_secs(5));
+    let now = Instant::now();
+
+    assert!(reassembler
+        .process(
+            SocksUdpPacket {
+                frag: 1,
+                target: target.clone(),
+                payload: b"abc".to_vec(),
+            },
+            now,
+        )
+        .expect("first queue fragment")
+        .is_none());
+    assert!(reassembler
+        .process(
+            SocksUdpPacket {
+                frag: 1,
+                target: other_target,
+                payload: b"new".to_vec(),
+            },
+            now,
+        )
+        .expect("queue limit drops additional target")
+        .is_none());
+    assert!(reassembler
+        .process(
+            SocksUdpPacket {
+                frag: 2,
+                target: target.clone(),
+                payload: b"d".to_vec(),
+            },
+            now,
+        )
+        .expect("byte limit drops partial queue")
+        .is_none());
+    assert!(reassembler
+        .process(
+            SocksUdpPacket {
+                frag: 0x82,
+                target,
+                payload: Vec::new(),
+            },
+            now,
+        )
+        .expect("dropped queue is not completed")
+        .is_none());
+}
+
+#[test]
+fn scenario_socks_udp_large_reply_is_fragmented() {
+    let target = TargetAddr::domain("reply.example", 53).expect("target");
+    let packets = encode_udp_response_packets(&target, b"abcdefgh", 3).expect("response fragments");
+    let decoded: Vec<_> = packets
+        .iter()
+        .map(|packet| decode_udp_packet(packet).expect("fragment decodes"))
+        .collect();
+    let payload = decoded
+        .iter()
+        .flat_map(|packet| packet.payload.iter().copied())
+        .collect::<Vec<_>>();
+
+    assert_eq!(decoded.len(), 3);
+    assert_eq!(decoded[0].frag, 1);
+    assert_eq!(decoded[1].frag, 2);
+    assert_eq!(decoded[2].frag, 0x83);
+    assert_eq!(payload, b"abcdefgh");
+}
+
+proptest! {
+    #[test]
+    fn prop_socks_udp_packet_round_trip(
+        label in "[a-z0-9][a-z0-9-]{0,20}",
+        port in any::<u16>(),
+        frag in any::<u8>(),
+        payload in proptest::collection::vec(any::<u8>(), 0..1024),
+    ) {
+        let packet = SocksUdpPacket {
+            frag,
+            target: TargetAddr::domain(format!("{label}.example"), port)?,
+            payload,
+        };
+        let encoded = encode_udp_packet(&packet)?;
+        let decoded = decode_udp_packet(&encoded)?;
+
+        prop_assert_eq!(decoded, packet);
+    }
+
+    #[test]
+    fn prop_socks_udp_fragment_sequence_reassembles(
+        label in "[a-z0-9][a-z0-9-]{0,20}",
+        port in any::<u16>(),
+        chunks in proptest::collection::vec(
+            proptest::collection::vec(any::<u8>(), 0..32),
+            1..16,
+        ),
+    ) {
+        let target = TargetAddr::domain(format!("{label}.example"), port)?;
+        let mut reassembler = SocksUdpReassembler::new(4, 4096, Duration::from_secs(5));
+        let now = Instant::now();
+        let mut expected = Vec::new();
+
+        for (index, chunk) in chunks.iter().enumerate() {
+            expected.extend_from_slice(chunk);
+            let position = u8::try_from(index + 1).expect("bounded fragment position");
+            let frag = if index + 1 == chunks.len() {
+                0x80 | position
+            } else {
+                position
+            };
+            let result = reassembler.process(
+                SocksUdpPacket {
+                    frag,
+                    target: target.clone(),
+                    payload: chunk.clone(),
+                },
+                now,
+            )?;
+            if index + 1 == chunks.len() {
+                let complete = result.expect("final fragment completes");
+                prop_assert_eq!(complete.target, target.clone());
+                prop_assert_eq!(complete.payload, expected.clone());
+            } else {
+                prop_assert!(result.is_none());
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -636,6 +914,147 @@ async fn scenario_socks_request_opens_selected_tcp_mux_stream() {
         server_task.await.expect("server task"),
         TargetAddr::domain("target.example", 8443).expect("valid target")
     );
+}
+
+#[tokio::test]
+async fn scenario_socks_udp_associate_relays_over_tcp_mux_datagram() {
+    let cfg = ClientCfg::from_toml_str(&client_toml()).expect("client config loads");
+    let (mut socks_client, mut socks_server) = io::duplex(4096);
+    let (outer_client, outer_server) = io::duplex(4096);
+    let server_task = tokio::spawn(async move {
+        let mut mux = MuxSession::server(outer_server, &umbra_inner::padding::PadScheme::none())
+            .expect("server mux");
+        let target = TargetAddr::domain("udp.example", 5353).expect("valid target");
+        mux.send_udp_datagram(&target, b"early")
+            .await
+            .expect("server sends early UDP reply");
+        let event = mux.receive_next().await.expect("server receives UDP");
+        let MuxEvent::UdpDatagram { target, payload } = event else {
+            panic!("expected UDP datagram");
+        };
+        assert_eq!(
+            target,
+            TargetAddr::domain("udp.example", 5353).expect("valid target")
+        );
+        assert_eq!(payload, b"question");
+        mux.send_udp_datagram(&target, b"answer")
+            .await
+            .expect("server sends UDP reply");
+    });
+
+    socks_client
+        .write_all(&socks_connect_domain("0.0.0.0", 0, 0x03))
+        .await
+        .expect("write UDP associate");
+    let session_task = tokio::spawn(async move {
+        Box::pin(client_session_with_outer(
+            &cfg,
+            &mut socks_server,
+            |_plan| async move { Ok::<_, CoreError>(outer_client) },
+        ))
+        .await
+    });
+
+    let mut replies = [0_u8; 12];
+    socks_client
+        .read_exact(&mut replies)
+        .await
+        .expect("read UDP associate replies");
+    assert_eq!(&replies[..2], &[0x05, 0x00]);
+    assert_eq!(&replies[2..6], &[0x05, 0x00, 0x00, 0x01]);
+    let bound = std::net::SocketAddr::from((
+        std::net::Ipv4Addr::new(replies[6], replies[7], replies[8], replies[9]),
+        u16::from_be_bytes([replies[10], replies[11]]),
+    ));
+    assert_ne!(bound.port(), 0);
+
+    let udp_client = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind local UDP client");
+    let attacker = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind second UDP peer");
+    attacker
+        .send_to(&[0, 0, 0, 0xff], bound)
+        .await
+        .expect("send malformed UDP packet");
+    let request = encode_udp_packet(&SocksUdpPacket {
+        frag: 0,
+        target: TargetAddr::domain("udp.example", 5353).expect("valid target"),
+        payload: b"question".to_vec(),
+    })
+    .expect("UDP packet encodes");
+    udp_client
+        .send_to(&request, bound)
+        .await
+        .expect("send UDP packet");
+    attacker
+        .send_to(&request, bound)
+        .await
+        .expect("send ignored UDP packet from second peer");
+    let mut response = vec![0_u8; 256];
+    let read = udp_client
+        .recv(&mut response)
+        .await
+        .expect("receive UDP response");
+    let response = decode_udp_packet(&response[..read]).expect("response decodes");
+    assert_eq!(
+        response.target,
+        TargetAddr::domain("udp.example", 5353).expect("valid target")
+    );
+    assert_eq!(response.payload, b"answer");
+
+    socks_client.shutdown().await.expect("close UDP control");
+    let session = timeout(Duration::from_secs(1), session_task)
+        .await
+        .expect("UDP session completes")
+        .expect("session task")
+        .expect("UDP session succeeds");
+    assert_eq!(session.transport, TransportKind::Tcp);
+    assert_eq!(session.mode, ClientInnerMode::Mux);
+    server_task.await.expect("server task");
+}
+
+#[tokio::test]
+async fn scenario_udp_associate_rejects_generic_quic_outer() {
+    let cfg = ClientCfg::from_toml_str_with_overrides(
+        &client_toml(),
+        ClientConfigOverrides {
+            transport: Some("quic".to_owned()),
+            ..ClientConfigOverrides::default()
+        },
+    )
+    .expect("client config loads");
+    let (mut socks_client, mut socks_server) = io::duplex(256);
+    let (outer_client, _outer_server) = io::duplex(64);
+    socks_client
+        .write_all(&socks_connect_domain("0.0.0.0", 0, 0x03))
+        .await
+        .expect("write UDP associate");
+    let session_task = tokio::spawn(async move {
+        Box::pin(client_session_with_outer(
+            &cfg,
+            &mut socks_server,
+            |_plan| async move { Ok::<_, CoreError>(outer_client) },
+        ))
+        .await
+    });
+
+    let mut method_reply = [0_u8; 2];
+    socks_client
+        .read_exact(&mut method_reply)
+        .await
+        .expect("read method reply");
+    assert_eq!(method_reply, [0x05, 0x00]);
+
+    let err = session_task
+        .await
+        .expect("session task")
+        .expect_err("generic QUIC UDP association rejected");
+    assert!(matches!(
+        err,
+        CoreError::InvalidConfig("QUIC UDP association requires configured QUIC runtime")
+    ));
 }
 
 #[tokio::test]
@@ -1055,6 +1474,192 @@ async fn scenario_quic_network_runtime_relays_direct_stream() {
     target_task.await.expect("target task");
 }
 
+#[tokio::test]
+async fn scenario_tcp_network_runtime_relays_udp_association() {
+    let server_key = x25519::generate_keypair();
+    let mldsa_seed = [0x72_u8; 32];
+    let mldsa = mldsa_keygen_from_seed(&mldsa_seed);
+    let runtime = ServerRuntime::bind_with_profile(
+        quic_runtime_server_cfg(&server_key, &mldsa_seed),
+        sample_dest_profile(),
+        ProbeResistancePolicy::default(),
+    )
+    .await
+    .expect("server runtime binds");
+    let server_addr = runtime.local_addr().expect("tcp addr");
+    let target = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind UDP target");
+    let target_addr = target.local_addr().expect("target addr");
+    let target_task = tokio::spawn(async move {
+        let mut buf = [0_u8; 64];
+        let (read, peer) = target.recv_from(&mut buf).await.expect("target receives");
+        assert_eq!(&buf[..read], b"question");
+        target
+            .send_to(b"answer", peer)
+            .await
+            .expect("target replies");
+    });
+    let server_task = tokio::spawn(async move {
+        runtime
+            .accept_one_with_connector(tokio::net::TcpStream::connect)
+            .await
+    });
+    let cfg = tcp_runtime_client_cfg(server_addr, &server_key.public, &mldsa.verifying_key);
+    let (mut socks_client, mut socks_server) = io::duplex(4096);
+    let client_task =
+        tokio::spawn(async move { client_session_from_config(&cfg, &mut socks_server).await });
+
+    socks_client
+        .write_all(&socks_connect_domain("0.0.0.0", 0, 0x03))
+        .await
+        .expect("write UDP associate");
+    let mut replies = [0_u8; 12];
+    socks_client
+        .read_exact(&mut replies)
+        .await
+        .expect("read UDP associate replies");
+    let bound = std::net::SocketAddr::from((
+        std::net::Ipv4Addr::new(replies[6], replies[7], replies[8], replies[9]),
+        u16::from_be_bytes([replies[10], replies[11]]),
+    ));
+    let udp_client = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind UDP client");
+    let request = encode_udp_packet(&SocksUdpPacket {
+        frag: 0,
+        target: TargetAddr::domain("127.0.0.1", target_addr.port()).expect("target"),
+        payload: b"question".to_vec(),
+    })
+    .expect("UDP packet encodes");
+    udp_client
+        .send_to(&request, bound)
+        .await
+        .expect("send UDP request");
+    let mut response = vec![0_u8; 256];
+    let read = udp_client
+        .recv(&mut response)
+        .await
+        .expect("receive UDP response");
+    let response = decode_udp_packet(&response[..read]).expect("response decodes");
+    assert_eq!(response.payload, b"answer");
+
+    socks_client.shutdown().await.expect("close control");
+    let client_outcome = timeout(Duration::from_secs(5), client_task)
+        .await
+        .expect("client completes")
+        .expect("client task")
+        .expect("client session succeeds");
+    assert_eq!(client_outcome.transport, TransportKind::Tcp);
+    assert_eq!(client_outcome.mode, ClientInnerMode::Mux);
+    let server_outcome = timeout(Duration::from_secs(5), server_task)
+        .await
+        .expect("server completes")
+        .expect("server task")
+        .expect("server accepts");
+    assert!(matches!(
+        server_outcome.outcome,
+        umbra_core::dispatch::DispatchOutcome::Authenticated { .. }
+    ));
+    target_task.await.expect("target task");
+}
+
+#[tokio::test]
+async fn scenario_quic_network_runtime_relays_udp_association() {
+    let server_key = x25519::generate_keypair();
+    let mldsa_seed = [0x71_u8; 32];
+    let mldsa = mldsa_keygen_from_seed(&mldsa_seed);
+    let runtime = ServerRuntime::bind_with_profile(
+        quic_runtime_server_cfg(&server_key, &mldsa_seed),
+        sample_dest_profile(),
+        ProbeResistancePolicy::default(),
+    )
+    .await
+    .expect("server runtime binds");
+    let quic_addr = runtime
+        .udp_local_addr()
+        .expect("udp local addr")
+        .expect("udp listener");
+    let target = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind UDP target");
+    let target_addr = target.local_addr().expect("target addr");
+    let target_task = tokio::spawn(async move {
+        let mut buf = [0_u8; 64];
+        let (read, peer) = target.recv_from(&mut buf).await.expect("target receives");
+        assert_eq!(&buf[..read], b"question");
+        target
+            .send_to(b"answer", peer)
+            .await
+            .expect("target replies");
+    });
+    let server_task = tokio::spawn(async move {
+        runtime
+            .accept_one_quic_with_idle_timeout(Duration::from_secs(2))
+            .await
+    });
+    let cfg = quic_runtime_client_cfg(quic_addr, &server_key.public, &mldsa.verifying_key);
+    let (mut socks_client, mut socks_server) = io::duplex(4096);
+    let client_task =
+        tokio::spawn(async move { client_session_from_config(&cfg, &mut socks_server).await });
+
+    socks_client
+        .write_all(&socks_connect_domain("0.0.0.0", 0, 0x03))
+        .await
+        .expect("write UDP associate");
+    let mut replies = [0_u8; 12];
+    socks_client
+        .read_exact(&mut replies)
+        .await
+        .expect("read UDP associate replies");
+    assert_eq!(&replies[..2], &[0x05, 0x00]);
+    assert_eq!(&replies[2..6], &[0x05, 0x00, 0x00, 0x01]);
+    let bound = std::net::SocketAddr::from((
+        std::net::Ipv4Addr::new(replies[6], replies[7], replies[8], replies[9]),
+        u16::from_be_bytes([replies[10], replies[11]]),
+    ));
+
+    let udp_client = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind UDP client");
+    let request = encode_udp_packet(&SocksUdpPacket {
+        frag: 0,
+        target: TargetAddr::domain("127.0.0.1", target_addr.port()).expect("target"),
+        payload: b"question".to_vec(),
+    })
+    .expect("UDP packet encodes");
+    udp_client
+        .send_to(&request, bound)
+        .await
+        .expect("send UDP request");
+    let mut response = vec![0_u8; 256];
+    let read = udp_client
+        .recv(&mut response)
+        .await
+        .expect("receive UDP response");
+    let response = decode_udp_packet(&response[..read]).expect("response decodes");
+    assert_eq!(response.payload, b"answer");
+
+    socks_client.shutdown().await.expect("close control");
+    let client_outcome = timeout(Duration::from_secs(5), client_task)
+        .await
+        .expect("client completes")
+        .expect("client task")
+        .expect("client session succeeds");
+    assert_eq!(client_outcome.transport, TransportKind::Quic);
+    assert_eq!(client_outcome.mode, ClientInnerMode::QuicStream);
+    let server_outcome = timeout(Duration::from_secs(5), server_task)
+        .await
+        .expect("server completes")
+        .expect("server task")
+        .expect("server accepts");
+    assert!(matches!(
+        server_outcome.outcome,
+        QuicRuntimeOutcome::Authenticated { .. }
+    ));
+    target_task.await.expect("target task");
+}
+
 #[test]
 fn scenario_quic_initial_dispatch_authenticates_and_rejects_bad_auth() {
     let server_key = x25519::generate_keypair();
@@ -1405,6 +2010,24 @@ fn quic_runtime_client_cfg(
         ClientConfigOverrides {
             server: Some(quic_addr.to_string()),
             transport: Some("quic".to_owned()),
+            public_key: Some(b64_bytes(server_public.as_bytes())),
+            mldsa_verify: Some(b64_bytes(mldsa_verify)),
+            ..ClientConfigOverrides::default()
+        },
+    )
+    .expect("client config loads")
+}
+
+fn tcp_runtime_client_cfg(
+    server_addr: std::net::SocketAddr,
+    server_public: &x25519::PublicKeyBytes,
+    mldsa_verify: &[u8],
+) -> ClientCfg {
+    ClientCfg::from_toml_str_with_overrides(
+        &client_toml(),
+        ClientConfigOverrides {
+            server: Some(server_addr.to_string()),
+            transport: Some("tcp".to_owned()),
             public_key: Some(b64_bytes(server_public.as_bytes())),
             mldsa_verify: Some(b64_bytes(mldsa_verify)),
             ..ClientConfigOverrides::default()

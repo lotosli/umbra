@@ -8,7 +8,7 @@ use crate::{
 };
 
 /// Target address carried by Umbra inner transports.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub enum TargetAddr {
     /// IPv4 target and TCP port.
     Ipv4(Ipv4Addr, u16),

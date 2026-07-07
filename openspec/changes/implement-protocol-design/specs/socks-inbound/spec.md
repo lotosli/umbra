@@ -17,6 +17,6 @@ The client SHALL parse CONNECT requests for IPv4, domain, and IPv6 targets and c
 ### Requirement: Unsupported SOCKS commands
 The client SHALL reject unsupported SOCKS commands without opening an Umbra stream.
 
-#### Scenario: UDP associate is rejected
-- **WHEN** a SOCKS5 UDP ASSOCIATE request is received
+#### Scenario: BIND is rejected
+- **WHEN** a SOCKS5 BIND request is received
 - **THEN** the listener returns an unsupported-command reply

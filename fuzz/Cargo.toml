@@ -13,6 +13,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 umbra-crypto = { path = "../crates/umbra-crypto" }
+umbra-core = { path = "../crates/umbra-core" }
 umbra-fingerprint = { path = "../crates/umbra-fingerprint" }
 umbra-inner = { path = "../crates/umbra-inner" }
 umbra-proto = { path = "../crates/umbra-proto" }
@@ -58,6 +59,20 @@ bench = false
 [[bin]]
 name = "quic_auth_carrier"
 path = "fuzz_targets/quic_auth_carrier.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "udp_envelope"
+path = "fuzz_targets/udp_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "socks_udp"
+path = "fuzz_targets/socks_udp.rs"
 test = false
 doc = false
 bench = false

@@ -6,6 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use umbra_proto::{
     addr::TargetAddr,
     frame::{MuxCommand, MuxFrame, MAX_FRAME_PAYLOAD_LEN},
+    udp::UdpEnvelope,
 };
 
 use crate::{
@@ -115,6 +116,13 @@ pub enum MuxEvent {
         /// Ping payload.
         payload: Vec<u8>,
     },
+    /// Peer sent a UDP datagram envelope.
+    UdpDatagram {
+        /// UDP target or reply source address.
+        target: TargetAddr,
+        /// UDP payload bytes.
+        payload: Vec<u8>,
+    },
 }
 
 /// Mux session over an authenticated TLS I/O object.
@@ -194,18 +202,27 @@ where
     pub async fn accept(&mut self) -> Result<(MuxStream, TargetAddr), InnerError> {
         loop {
             if let MuxEvent::Syn { stream_id, target } = self.receive_next().await? {
-                let stream = MuxStream {
-                    stream_id,
-                    send_window: self.settings.initial_window,
-                    reset: false,
-                    finished: false,
-                };
-                self.streams.insert(stream_id, stream.clone());
-                self.send_control_frame(MuxFrame::new(MuxCommand::SynAck, stream_id, Vec::new())?)
-                    .await?;
-                return Ok((stream, target));
+                return self.accept_syn(stream_id, target).await;
             }
         }
+    }
+
+    /// Accept a SYN event that has already been read and reply with SYN_ACK.
+    pub async fn accept_syn(
+        &mut self,
+        stream_id: u32,
+        target: TargetAddr,
+    ) -> Result<(MuxStream, TargetAddr), InnerError> {
+        let stream = MuxStream {
+            stream_id,
+            send_window: self.settings.initial_window,
+            reset: false,
+            finished: false,
+        };
+        self.streams.insert(stream_id, stream.clone());
+        self.send_control_frame(MuxFrame::new(MuxCommand::SynAck, stream_id, Vec::new())?)
+            .await?;
+        Ok((stream, target))
     }
 
     /// Send DATA, waiting for WINDOW_UPDATE when the stream window is exhausted.
@@ -271,6 +288,21 @@ where
         }
         self.send_control_frame(MuxFrame::new(MuxCommand::Rst, stream_id, Vec::new())?)
             .await
+    }
+
+    /// Send one UDP datagram envelope on the reserved mux datagram channel.
+    pub async fn send_udp_datagram(
+        &mut self,
+        target: &TargetAddr,
+        payload: &[u8],
+    ) -> Result<(), InnerError> {
+        let envelope = UdpEnvelope::new(target.clone(), payload.to_vec())?;
+        self.send_business_frame(MuxFrame::new(
+            MuxCommand::UdpDatagram,
+            0,
+            envelope.encode()?,
+        )?)
+        .await
     }
 
     /// Receive the next non-padding mux event.
@@ -375,6 +407,16 @@ where
                 stream_id: frame.stream_id,
                 payload: frame.payload,
             })),
+            MuxCommand::UdpDatagram => {
+                if frame.stream_id != 0 {
+                    return Err(InnerError::from(umbra_proto::ProtocolError::InvalidAddress));
+                }
+                let envelope = UdpEnvelope::decode(&frame.payload)?;
+                Ok(Some(MuxEvent::UdpDatagram {
+                    target: envelope.target,
+                    payload: envelope.payload,
+                }))
+            }
         }
     }
 

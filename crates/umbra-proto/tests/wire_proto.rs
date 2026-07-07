@@ -6,6 +6,7 @@ use proptest::prelude::*;
 use umbra_proto::{
     addr::TargetAddr,
     frame::{MuxCommand, MuxFrame, MAX_FRAME_PAYLOAD_LEN},
+    udp::UdpEnvelope,
     ProtocolError,
 };
 
@@ -111,6 +112,29 @@ fn scenario_malformed_input_maps_to_stable_error() {
     );
 }
 
+#[test]
+fn scenario_udp_envelope_round_trip() {
+    let target = TargetAddr::Ipv6(Ipv6Addr::LOCALHOST, 5353);
+    let envelope = UdpEnvelope::new(target.clone(), b"dns-payload".to_vec())
+        .expect("UDP envelope should be valid");
+    let encoded = envelope.encode().expect("UDP envelope encodes");
+    let decoded = UdpEnvelope::decode(&encoded).expect("UDP envelope decodes");
+
+    assert_eq!(decoded.target, target);
+    assert_eq!(decoded.payload, b"dns-payload");
+}
+
+#[test]
+fn scenario_oversized_udp_envelope_is_rejected() {
+    let target = TargetAddr::domain("example.com", 53).expect("target");
+    let payload = vec![0_u8; MAX_FRAME_PAYLOAD_LEN];
+
+    assert_eq!(
+        UdpEnvelope::new(target, payload),
+        Err(ProtocolError::LengthViolation)
+    );
+}
+
 proptest! {
     #[test]
     fn prop_domain_address_round_trip(label in "[a-z0-9][a-z0-9-]{0,20}", port in any::<u16>()) {
@@ -123,12 +147,26 @@ proptest! {
     }
 
     #[test]
-    fn prop_frame_round_trip(command in 1_u8..=8, stream_id in any::<u32>(), payload in proptest::collection::vec(any::<u8>(), 0..1024)) {
+    fn prop_frame_round_trip(command in 1_u8..=9, stream_id in any::<u32>(), payload in proptest::collection::vec(any::<u8>(), 0..1024)) {
         let command = MuxCommand::try_from(command)?;
         let frame = MuxFrame::new(command, stream_id, payload)?;
         let encoded = frame.encode()?;
         let decoded = MuxFrame::decode(&encoded, MAX_FRAME_PAYLOAD_LEN)?;
 
         prop_assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn prop_udp_envelope_round_trip(
+        label in "[a-z0-9][a-z0-9-]{0,20}",
+        port in any::<u16>(),
+        payload in proptest::collection::vec(any::<u8>(), 0..1024),
+    ) {
+        let target = TargetAddr::domain(format!("{label}.example"), port)?;
+        let envelope = UdpEnvelope::new(target, payload)?;
+        let encoded = envelope.encode()?;
+        let decoded = UdpEnvelope::decode(&encoded)?;
+
+        prop_assert_eq!(decoded, envelope);
     }
 }

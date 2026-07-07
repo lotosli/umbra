@@ -1,22 +1,23 @@
 //! Server and client runtime orchestration.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     fmt,
     future::Future,
     io::{self, IoSliceMut},
-    net::{SocketAddr, UdpSocket as StdUdpSocket},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket as StdUdpSocket},
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use rand::{rngs::OsRng, RngCore};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream, UdpSocket},
-    task::JoinSet,
+    sync::mpsc,
+    task::{JoinHandle, JoinSet},
 };
 use umbra_crypto::{mlkem::mlkem_keygen, secret::SecretBytes, x25519};
 use umbra_fingerprint::load_profile;
@@ -44,7 +45,9 @@ use umbra_transport::{
     evasion::TcpEvasionPolicy,
     quic::{
         build_quic_initial_crypto_packet, decrypt_quic_initial_crypto_frames,
-        parse_quic_initial_header, read_target_stream, write_target_stream, QuicCryptoFrame,
+        parse_quic_initial_header, read_target_stream, read_udp_envelope_stream,
+        write_target_stream, write_udp_association_marker, write_udp_envelope_stream,
+        QuicCryptoFrame, QUIC_UDP_ASSOCIATE_MARKER,
     },
     tcp::{build_tcp_client_hello, tcp_connect_and_send, TcpClientHelloConfig},
 };
@@ -60,8 +63,9 @@ use crate::{
     probe::ProbeResistancePolicy,
     quic_crypto,
     socks::{
-        negotiate_no_auth, read_connect_request, write_success_reply,
-        write_unsupported_command_reply, SocksConnect,
+        decode_udp_packet, encode_udp_response_packets, negotiate_no_auth, read_request,
+        write_bound_success_reply, write_success_reply, write_unsupported_command_reply,
+        SocksConnect, SocksRequest, SocksUdpReassembler, DEFAULT_RESPONSE_FRAGMENT_PAYLOAD,
     },
     tls_io::{read_tls_record, spawn_tls_app_io, TlsAppEndpoint},
     CoreError,
@@ -76,6 +80,9 @@ const QUIC_PREFETCH_MAX_CRYPTO_BYTES: usize = 64 * 1024;
 const TLS_HANDSHAKE_CLIENT_HELLO: u8 = 0x01;
 const EXT_PADDING: u16 = 0x0015;
 const MUX_OPENING_PREFIX_LEN: usize = 7;
+const UDP_RELAY_BUF_LEN: usize = 65_535;
+const MAX_UDP_TARGETS_PER_ASSOCIATION: usize = 256;
+const UDP_RELAY_CHANNEL_CAPACITY: usize = 256;
 
 /// Bound server runtime with listeners, replay cache, and active destination profile.
 pub struct ServerRuntime {
@@ -491,13 +498,38 @@ where
     OpenFuture: Future<Output = Result<Outer, CoreError>>,
 {
     negotiate_no_auth(socks).await?;
-    let SocksConnect { target } = match read_connect_request(socks).await {
+    let request = match read_request(socks).await {
         Ok(request) => request,
         Err(CoreError::Socks("unsupported SOCKS command")) => {
             write_unsupported_command_reply(socks).await?;
             return Err(CoreError::Socks("unsupported SOCKS command"));
         }
         Err(err) => return Err(err),
+    };
+    let SocksRequest::Connect(SocksConnect { target }) = request else {
+        let SocksRequest::UdpAssociate(associate) = request else {
+            return Err(CoreError::Socks("unsupported SOCKS command"));
+        };
+        if cfg.transport == TransportKind::Quic {
+            return Err(CoreError::InvalidConfig(
+                "QUIC UDP association requires configured QUIC runtime",
+            ));
+        }
+        let mode = ClientInnerMode::Mux;
+        let plan = ClientConnectPlan {
+            target: associate.client_addr.clone(),
+            server: cfg.server.clone(),
+            transport: cfg.transport,
+            mode,
+            server_name: cfg.server_name.clone(),
+        };
+        let outer = open_outer(plan).await?;
+        client_udp_association_over_tcp_outer(cfg, socks, outer).await?;
+        return Ok(ClientSessionOutcome {
+            target: associate.client_addr,
+            transport: cfg.transport,
+            mode,
+        });
     };
     let mode = selected_client_inner_mode(cfg);
     let plan = ClientConnectPlan {
@@ -525,13 +557,36 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     negotiate_no_auth(socks).await?;
-    let SocksConnect { target } = match read_connect_request(socks).await {
+    let request = match read_request(socks).await {
         Ok(request) => request,
         Err(CoreError::Socks("unsupported SOCKS command")) => {
             write_unsupported_command_reply(socks).await?;
             return Err(CoreError::Socks("unsupported SOCKS command"));
         }
         Err(err) => return Err(err),
+    };
+    let SocksRequest::Connect(SocksConnect { target }) = request else {
+        let SocksRequest::UdpAssociate(associate) = request else {
+            return Err(CoreError::Socks("unsupported SOCKS command"));
+        };
+        let mode = match cfg.transport {
+            TransportKind::Tcp => ClientInnerMode::Mux,
+            TransportKind::Quic => ClientInnerMode::QuicStream,
+        };
+        match cfg.transport {
+            TransportKind::Tcp => {
+                let outer = open_tcp_outer(cfg).await?;
+                client_udp_association_over_tcp_outer(cfg, socks, outer).await?;
+            }
+            TransportKind::Quic => {
+                client_quic_udp_association(cfg, socks).await?;
+            }
+        }
+        return Ok(ClientSessionOutcome {
+            target: associate.client_addr,
+            transport: cfg.transport,
+            mode,
+        });
     };
     let mode = selected_client_inner_mode(cfg);
     match cfg.transport {
@@ -593,6 +648,75 @@ where
         }
     }
     Ok(())
+}
+
+async fn client_udp_association_over_tcp_outer<S, Outer>(
+    cfg: &ClientCfg,
+    control: &mut S,
+    outer: Outer,
+) -> Result<(), CoreError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    Outer: AsyncRead + AsyncWrite + Unpin,
+{
+    let udp = bind_socks_udp_relay(cfg).await?;
+    let bound = udp.local_addr()?;
+    write_bound_success_reply(control, bound).await?;
+    let mut mux = MuxSession::client(outer, &cfg.padding_scheme)?;
+    let mut reassembler = SocksUdpReassembler::default();
+    let mut client_peer = None;
+    let mut control_buf = [0_u8; 1];
+    let mut udp_buf = vec![0_u8; UDP_RELAY_BUF_LEN];
+
+    loop {
+        let idle = tokio::time::sleep(DEFAULT_SESSION_IDLE_TIMEOUT);
+        tokio::pin!(idle);
+        tokio::select! {
+            () = &mut idle => return Err(CoreError::IdleTimeout("client UDP association")),
+            read = control.read(&mut control_buf) => {
+                if read? == 0 {
+                    return Ok(());
+                }
+            }
+            received = udp.recv_from(&mut udp_buf) => {
+                let (read, peer) = received?;
+                if let Some(expected) = client_peer {
+                    if expected != peer {
+                        continue;
+                    }
+                }
+                let Ok(packet) = decode_udp_packet(&udp_buf[..read]) else {
+                    continue;
+                };
+                if client_peer.is_none() {
+                    client_peer = Some(peer);
+                }
+                if let Some(payload) = reassembler.process(packet, Instant::now())? {
+                    mux.send_udp_datagram(&payload.target, &payload.payload).await?;
+                }
+            }
+            event = mux.receive_next() => {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(umbra_inner::InnerError::Io(err))
+                        if is_association_closed_io(&err) => return Ok(()),
+                    Err(err) => return Err(err.into()),
+                };
+                if let MuxEvent::UdpDatagram { target, payload } = event {
+                    let Some(peer) = client_peer else {
+                        continue;
+                    };
+                    for packet in encode_udp_response_packets(
+                        &target,
+                        &payload,
+                        DEFAULT_RESPONSE_FRAGMENT_PAYLOAD,
+                    )? {
+                        udp.send_to(&packet, peer).await?;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Open the configured TCP outer transport for a client plan.
@@ -673,6 +797,93 @@ where
     Ok(())
 }
 
+async fn client_quic_udp_association<S>(cfg: &ClientCfg, control: &mut S) -> Result<(), CoreError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let udp = bind_socks_udp_relay(cfg).await?;
+    let bound = udp.local_addr()?;
+    write_bound_success_reply(control, bound).await?;
+    let server_addr = resolve_server_addr(&cfg.server).await?;
+    let bind_addr: SocketAddr = if server_addr.is_ipv6() {
+        "[::]:0"
+            .parse()
+            .map_err(|_| CoreError::InvalidConfig("invalid QUIC IPv6 bind address"))?
+    } else {
+        "0.0.0.0:0"
+            .parse()
+            .map_err(|_| CoreError::InvalidConfig("invalid QUIC IPv4 bind address"))?
+    };
+    let mut endpoint = quinn::Endpoint::client(bind_addr).map_err(quic_error)?;
+    endpoint.set_default_client_config(quic_crypto::client_config(cfg)?);
+    let connection = endpoint
+        .connect(server_addr, &cfg.server_name)
+        .map_err(quic_error)?
+        .await
+        .map_err(quic_error)?;
+    let (mut send, mut recv) = connection.open_bi().await.map_err(quic_error)?;
+    write_udp_association_marker(&mut send).await?;
+
+    let mut reassembler = SocksUdpReassembler::default();
+    let mut client_peer = None;
+    let mut control_buf = [0_u8; 1];
+    let mut udp_buf = vec![0_u8; UDP_RELAY_BUF_LEN];
+
+    loop {
+        let idle = tokio::time::sleep(DEFAULT_SESSION_IDLE_TIMEOUT);
+        tokio::pin!(idle);
+        tokio::select! {
+            () = &mut idle => {
+                connection.close(0_u32.into(), b"");
+                endpoint.close(0_u32.into(), b"");
+                return Err(CoreError::IdleTimeout("client QUIC UDP association"));
+            }
+            read = control.read(&mut control_buf) => {
+                if read? == 0 {
+                    connection.close(0_u32.into(), b"");
+                    endpoint.close(0_u32.into(), b"");
+                    return Ok(());
+                }
+            }
+            received = udp.recv_from(&mut udp_buf) => {
+                let (read, peer) = received?;
+                if let Some(expected) = client_peer {
+                    if expected != peer {
+                        continue;
+                    }
+                }
+                let Ok(packet) = decode_udp_packet(&udp_buf[..read]) else {
+                    continue;
+                };
+                if client_peer.is_none() {
+                    client_peer = Some(peer);
+                }
+                if let Some(payload) = reassembler.process(packet, Instant::now())? {
+                    write_udp_envelope_stream(&mut send, &payload.target, &payload.payload).await?;
+                }
+            }
+            envelope = read_udp_envelope_stream(&mut recv) => {
+                let envelope = match envelope {
+                    Ok(envelope) => envelope,
+                    Err(umbra_transport::TransportError::Io(err))
+                        if is_association_closed_io(&err) => return Ok(()),
+                    Err(err) => return Err(err.into()),
+                };
+                let Some(peer) = client_peer else {
+                    continue;
+                };
+                for packet in encode_udp_response_packets(
+                    &envelope.target,
+                    &envelope.payload,
+                    DEFAULT_RESPONSE_FRAGMENT_PAYLOAD,
+                )? {
+                    udp.send_to(&packet, peer).await?;
+                }
+            }
+        }
+    }
+}
+
 async fn resolve_server_addr(server: &str) -> Result<SocketAddr, CoreError> {
     tokio::net::lookup_host(server)
         .await?
@@ -680,6 +891,28 @@ async fn resolve_server_addr(server: &str) -> Result<SocketAddr, CoreError> {
         .ok_or(CoreError::InvalidConfig(
             "QUIC server address did not resolve",
         ))
+}
+
+async fn bind_socks_udp_relay(cfg: &ClientCfg) -> Result<UdpSocket, CoreError> {
+    UdpSocket::bind(socks_udp_bind_addr(cfg))
+        .await
+        .map_err(CoreError::from)
+}
+
+fn socks_udp_bind_addr(cfg: &ClientCfg) -> SocketAddr {
+    let ip = match cfg.socks_listen.ip() {
+        IpAddr::V4(addr) if addr.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(addr) if addr.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        concrete => concrete,
+    };
+    SocketAddr::new(ip, 0)
+}
+
+fn is_association_closed_io(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::UnexpectedEof | io::ErrorKind::NotConnected | io::ErrorKind::ConnectionReset
+    )
 }
 
 fn quic_error(err: impl std::fmt::Display) -> CoreError {
@@ -1415,19 +1648,35 @@ async fn run_authenticated_quic_stream(
         .await
         .ok_or_else(|| CoreError::Quic("QUIC endpoint closed before accept".to_owned()))?;
     let connection = incoming.await.map_err(quic_error)?;
-    let (send, mut recv) = connection.accept_bi().await.map_err(quic_error)?;
-    let target = read_target_stream(&mut recv).await?;
-    let target_io = TcpStream::connect(target_to_host_port(&target)).await?;
-    Box::pin(relay_quic_server_stream(target_io, send, recv)).await?;
+    let (send, recv) = connection.accept_bi().await.map_err(quic_error)?;
+    Box::pin(run_quic_accepted_bi_stream(send, recv, drain_timeout)).await?;
     let _ = tokio::time::timeout(drain_timeout, connection.closed()).await;
     endpoint.close(0_u32.into(), b"");
+    Ok(())
+}
+
+async fn run_quic_accepted_bi_stream(
+    send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    drain_timeout: Duration,
+) -> Result<(), CoreError> {
+    let mut first = [0_u8; 1];
+    AsyncReadExt::read_exact(&mut recv, &mut first).await?;
+    if first[0] == QUIC_UDP_ASSOCIATE_MARKER {
+        Box::pin(relay_quic_server_udp_association(send, recv, drain_timeout)).await?;
+    } else {
+        let mut recv = PrefixedStream::new(vec![first[0]], recv);
+        let target = read_target_stream(&mut recv).await?;
+        let target_io = TcpStream::connect(target_to_host_port(&target)).await?;
+        Box::pin(relay_quic_server_stream(target_io, send, recv)).await?;
+    }
     Ok(())
 }
 
 async fn relay_quic_server_stream(
     target: TcpStream,
     mut send: quinn::SendStream,
-    mut recv: quinn::RecvStream,
+    mut recv: impl AsyncRead + Unpin,
 ) -> Result<(), CoreError> {
     let (mut target_read, mut target_write) = tokio::io::split(target);
     let client_to_target = async {
@@ -1452,6 +1701,46 @@ async fn relay_quic_server_stream(
     };
     let _ = tokio::try_join!(client_to_target, target_to_client)?;
     Ok(())
+}
+
+async fn relay_quic_server_udp_association(
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    idle_timeout: Duration,
+) -> Result<(), CoreError> {
+    let (tx, mut rx) = mpsc::channel(UDP_RELAY_CHANNEL_CAPACITY);
+    let mut targets = HashMap::new();
+
+    loop {
+        let idle = tokio::time::sleep(idle_timeout);
+        tokio::pin!(idle);
+        tokio::select! {
+            () = &mut idle => return Err(CoreError::IdleTimeout("server QUIC UDP association")),
+            envelope = read_udp_envelope_stream(&mut recv) => {
+                let envelope = match envelope {
+                    Ok(envelope) => envelope,
+                    Err(umbra_transport::TransportError::Io(err))
+                        if is_association_closed_io(&err) => return Ok(()),
+                    Err(err) => return Err(err.into()),
+                };
+                send_udp_to_target(
+                    &mut targets,
+                    &tx,
+                    UdpRelayDatagram {
+                        target: envelope.target,
+                        payload: envelope.payload,
+                    },
+                )
+                .await?;
+            }
+            reply = rx.recv() => {
+                let Some(reply) = reply else {
+                    return Ok(());
+                };
+                write_udp_envelope_stream(&mut send, &reply.target, &reply.payload).await?;
+            }
+        }
+    }
 }
 
 async fn relay_bidirectional_until_idle<A, B>(
@@ -1709,15 +1998,28 @@ where
     match mode {
         ServerInnerMode::Mux => {
             let mut mux = MuxSession::server(tls_io, padding_scheme)?;
-            let (stream, target) = mux.accept().await?;
-            let mut target_io = connect_target(target_to_host_port(&target)).await?;
-            Box::pin(relay_mux_server_stream(
-                &mut target_io,
-                mux,
-                stream,
-                idle_timeout,
-            ))
-            .await
+            match mux.receive_next().await? {
+                MuxEvent::Syn { stream_id, target } => {
+                    let (stream, target) = mux.accept_syn(stream_id, target).await?;
+                    let mut target_io = connect_target(target_to_host_port(&target)).await?;
+                    Box::pin(relay_mux_server_stream(
+                        &mut target_io,
+                        mux,
+                        stream,
+                        idle_timeout,
+                    ))
+                    .await
+                }
+                MuxEvent::UdpDatagram { target, payload } => {
+                    Box::pin(relay_mux_server_udp_association(
+                        mux,
+                        Some(UdpRelayDatagram { target, payload }),
+                        idle_timeout,
+                    ))
+                    .await
+                }
+                _ => Err(CoreError::InvalidConfig("unexpected mux opening frame")),
+            }
         }
         ServerInnerMode::VisionSolo => {
             let mut solo = tls_io;
@@ -1770,7 +2072,7 @@ fn looks_like_mux_opening_prefix(prefix: &[u8]) -> bool {
     let stream_id = u32::from_be_bytes([prefix[2], prefix[3], prefix[4], prefix[5]]);
     match MuxCommand::try_from(prefix[1]) {
         Ok(MuxCommand::Syn) => stream_id == 1 && prefix[6] <= 1,
-        Ok(MuxCommand::Padding) => stream_id == 0,
+        Ok(MuxCommand::Padding | MuxCommand::UdpDatagram) => stream_id == 0,
         Ok(_) | Err(_) => false,
     }
 }
@@ -1873,6 +2175,129 @@ where
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct UdpRelayDatagram {
+    target: TargetAddr,
+    payload: Vec<u8>,
+}
+
+struct UdpTargetState {
+    socket: Arc<UdpSocket>,
+    task: JoinHandle<()>,
+}
+
+impl Drop for UdpTargetState {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn relay_mux_server_udp_association<IO>(
+    mut mux: MuxSession<IO>,
+    first: Option<UdpRelayDatagram>,
+    idle_timeout: Duration,
+) -> Result<(), CoreError>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    let (tx, mut rx) = mpsc::channel(UDP_RELAY_CHANNEL_CAPACITY);
+    let mut targets = HashMap::new();
+    if let Some(datagram) = first {
+        send_udp_to_target(&mut targets, &tx, datagram).await?;
+    }
+
+    loop {
+        let idle = tokio::time::sleep(idle_timeout);
+        tokio::pin!(idle);
+        tokio::select! {
+            () = &mut idle => return Err(CoreError::IdleTimeout("server mux UDP association")),
+            event = mux.receive_next() => {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(umbra_inner::InnerError::Io(err))
+                        if is_association_closed_io(&err) => return Ok(()),
+                    Err(err) => return Err(err.into()),
+                };
+                match event {
+                    MuxEvent::UdpDatagram { target, payload } => {
+                        send_udp_to_target(
+                            &mut targets,
+                            &tx,
+                            UdpRelayDatagram { target, payload },
+                        )
+                        .await?;
+                    }
+                    MuxEvent::Fin { .. } | MuxEvent::Rst { .. } => return Ok(()),
+                    _ => {}
+                }
+            }
+            reply = rx.recv() => {
+                let Some(reply) = reply else {
+                    return Ok(());
+                };
+                mux.send_udp_datagram(&reply.target, &reply.payload).await?;
+            }
+        }
+    }
+}
+
+async fn send_udp_to_target(
+    targets: &mut HashMap<TargetAddr, UdpTargetState>,
+    tx: &mpsc::Sender<UdpRelayDatagram>,
+    datagram: UdpRelayDatagram,
+) -> Result<(), CoreError> {
+    if !targets.contains_key(&datagram.target) {
+        if targets.len() >= MAX_UDP_TARGETS_PER_ASSOCIATION {
+            return Ok(());
+        }
+        let state = connect_udp_target(datagram.target.clone(), tx.clone()).await?;
+        targets.insert(datagram.target.clone(), state);
+    }
+    if let Some(state) = targets.get(&datagram.target) {
+        state.socket.send(&datagram.payload).await?;
+    }
+    Ok(())
+}
+
+async fn connect_udp_target(
+    target: TargetAddr,
+    tx: mpsc::Sender<UdpRelayDatagram>,
+) -> Result<UdpTargetState, CoreError> {
+    let resolved = resolve_target_socket_addr(&target).await?;
+    let bind_addr = if resolved.is_ipv6() {
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
+    } else {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+    };
+    let socket = Arc::new(UdpSocket::bind(bind_addr).await?);
+    socket.connect(resolved).await?;
+    let reader = Arc::clone(&socket);
+    let task = tokio::spawn(async move {
+        let mut buf = vec![0_u8; UDP_RELAY_BUF_LEN];
+        while let Ok(read) = reader.recv(&mut buf).await {
+            let datagram = UdpRelayDatagram {
+                target: target.clone(),
+                payload: buf[..read].to_vec(),
+            };
+            if tx.send(datagram).await.is_err() {
+                break;
+            }
+        }
+    });
+    Ok(UdpTargetState { socket, task })
+}
+
+async fn resolve_target_socket_addr(target: &TargetAddr) -> Result<SocketAddr, CoreError> {
+    match target {
+        TargetAddr::Ipv4(addr, port) => Ok(SocketAddr::new(IpAddr::V4(*addr), *port)),
+        TargetAddr::Ipv6(addr, port) => Ok(SocketAddr::new(IpAddr::V6(*addr), *port)),
+        TargetAddr::Domain(domain, port) => tokio::net::lookup_host((domain.as_str(), *port))
+            .await?
+            .next()
+            .ok_or(CoreError::InvalidConfig("UDP target did not resolve")),
+    }
 }
 
 async fn read_required_tls_record<R>(reader: &mut R) -> Result<Vec<u8>, CoreError>
@@ -2096,6 +2521,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scenario_server_udp_multiple_targets_are_isolated() {
+        let target_one_socket = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind first UDP target");
+        let target_two_socket = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind second UDP target");
+        let target_one = target_addr_from_udp_socket(&target_one_socket);
+        let target_two = target_addr_from_udp_socket(&target_two_socket);
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut targets = HashMap::new();
+
+        send_udp_to_target(
+            &mut targets,
+            &tx,
+            UdpRelayDatagram {
+                target: target_one.clone(),
+                payload: b"one".to_vec(),
+            },
+        )
+        .await
+        .expect("send first target datagram");
+        let mut observed = [0_u8; 16];
+        let (read, peer) = target_one_socket
+            .recv_from(&mut observed)
+            .await
+            .expect("first target receives");
+        assert_eq!(&observed[..read], b"one");
+        target_one_socket
+            .send_to(b"answer-one", peer)
+            .await
+            .expect("first target replies");
+        let reply = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("receive first reply")
+            .expect("first reply present");
+        assert_eq!(reply.target, target_one);
+        assert_eq!(reply.payload, b"answer-one");
+
+        send_udp_to_target(
+            &mut targets,
+            &tx,
+            UdpRelayDatagram {
+                target: target_two.clone(),
+                payload: b"two".to_vec(),
+            },
+        )
+        .await
+        .expect("send second target datagram");
+        let (read, peer) = target_two_socket
+            .recv_from(&mut observed)
+            .await
+            .expect("second target receives");
+        assert_eq!(&observed[..read], b"two");
+        target_two_socket
+            .send_to(b"answer-two", peer)
+            .await
+            .expect("second target replies");
+        let reply = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("receive second reply")
+            .expect("second reply present");
+        assert_eq!(reply.target, target_two);
+        assert_eq!(reply.payload, b"answer-two");
+        assert_eq!(targets.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn scenario_server_udp_target_limit_is_enforced() {
+        let shared_socket = Arc::new(
+            UdpSocket::bind("127.0.0.1:0")
+                .await
+                .expect("bind shared UDP socket"),
+        );
+        let (tx, _rx) = mpsc::channel(1);
+        let mut targets = HashMap::new();
+        for index in 0..MAX_UDP_TARGETS_PER_ASSOCIATION {
+            let port = u16::try_from(index + 1).expect("target index fits port");
+            let task = tokio::spawn(async {});
+            targets.insert(
+                TargetAddr::Ipv4(Ipv4Addr::LOCALHOST, port),
+                UdpTargetState {
+                    socket: Arc::clone(&shared_socket),
+                    task,
+                },
+            );
+        }
+        let overflow_target = TargetAddr::Ipv4(Ipv4Addr::LOCALHOST, u16::MAX);
+
+        send_udp_to_target(
+            &mut targets,
+            &tx,
+            UdpRelayDatagram {
+                target: overflow_target.clone(),
+                payload: b"drop".to_vec(),
+            },
+        )
+        .await
+        .expect("overflow target is dropped cleanly");
+
+        assert_eq!(targets.len(), MAX_UDP_TARGETS_PER_ASSOCIATION);
+        assert!(!targets.contains_key(&overflow_target));
+    }
+
+    #[tokio::test]
     async fn scenario_required_tls_record_reads_complete_record() {
         let (mut writer, mut reader) = tokio::io::duplex(32);
         writer
@@ -2172,5 +2702,12 @@ mod tests {
             offset,
             bytes: bytes.to_vec(),
         }
+    }
+
+    fn target_addr_from_udp_socket(socket: &UdpSocket) -> TargetAddr {
+        let std::net::SocketAddr::V4(addr) = socket.local_addr().expect("local address") else {
+            panic!("test binds IPv4 UDP sockets");
+        };
+        TargetAddr::Ipv4(*addr.ip(), addr.port())
     }
 }

@@ -1,12 +1,16 @@
-//! `umbra-inner` — 内层传输。
+//! `umbra-inner` implements authenticated inner transports.
 //!
-//! 模块：`mux`（`MuxFrame` 多路复用会话，含流控窗口）、`padding`（自适应填充 scheme，抗 TLS-in-TLS）、
-//! `vision`（Vision 真拼接：内层握手嗅探、整形、原始 splice，solo 模式）、`address`（目标地址编解码）。
+//! `mux` provides `MuxFrame`-based logical streams with flow-control windows,
+//! `padding` adds adaptive cover frames, `vision` handles solo-mode TLS
+//! sniffing, shaping, and raw splice, and `address` wraps target address
+//! encoding for SYN payloads and solo prefaces.
 //!
-//! 选择逻辑：默认 mux+padding；被标记单流大吞吐/已知 TLS 内层者走 solo/Vision。
+//! The default path is mux plus padding. Solo/Vision is reserved for known TLS
+//! inner streams or single-stream high-throughput flows.
 //!
-//! 规范来源：`docs/protocol-design.md` 的内层传输章节；OpenSpec 能力：`inner-mux`、
-//! `inner-vision`、`inner-padding`。
+//! The normative design lives in the inner transport section of
+//! `docs/protocol-design.md`; matching OpenSpec capabilities are `inner-mux`,
+//! `inner-vision`, and `inner-padding`.
 
 pub mod address;
 pub mod error;

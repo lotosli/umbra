@@ -55,6 +55,7 @@ pub(crate) fn client_config(cfg: &ClientCfg) -> Result<quinn::ClientConfig, Core
     Ok(config)
 }
 
+/// Authenticated server-side material recovered before handing a flow to quinn.
 pub(crate) struct AuthenticatedServerCrypto {
     pub(crate) sni: String,
     pub(crate) session_id: [u8; 32],
@@ -71,6 +72,7 @@ pub(crate) fn server_config(authenticated: AuthenticatedServerCrypto) -> quinn::
     config
 }
 
+/// Quinn client crypto config that creates one Umbra-backed TLS session.
 struct UmbraQuicClientConfig {
     public_key: [u8; 32],
     short_id: Vec<u8>,
@@ -100,6 +102,7 @@ impl quinn_proto::crypto::ClientConfig for UmbraQuicClientConfig {
     }
 }
 
+/// Quinn server crypto config seeded with an already-authenticated Initial.
 struct UmbraQuicServerConfig {
     authenticated: AuthenticatedServerCrypto,
 }
@@ -154,6 +157,7 @@ impl quinn_proto::crypto::ServerConfig for UmbraQuicServerConfig {
     }
 }
 
+/// Stateful quinn crypto session backed by `umbra-tls` handshake transitions.
 struct UmbraQuicSession {
     side: quinn_proto::Side,
     server_name: Option<String>,
@@ -167,6 +171,7 @@ struct UmbraQuicSession {
     handshake_data_reported: bool,
 }
 
+/// Minimal handshake state machine required by quinn's crypto trait.
 enum SessionState {
     ClientExpectServerHello {
         client: QuicTlsClient,
@@ -186,6 +191,7 @@ enum SessionState {
     Failed,
 }
 
+/// Server-side values expected to match the prefetched authenticated ClientHello.
 struct ServerExpected {
     sni: String,
     session_id: [u8; 32],
@@ -196,6 +202,7 @@ struct ServerExpected {
     local_transport_parameters: Vec<u8>,
 }
 
+/// Certificate verifier that accepts only Umbra-forged REALITY certificates.
 struct QuicRealityCertVerifier {
     shared: [u8; 32],
     session_id: [u8; 32],
@@ -218,11 +225,13 @@ impl CertVerify for QuicRealityCertVerifier {
     }
 }
 
+/// Traffic secrets waiting to be installed into quinn packet keys.
 enum PendingKeys {
     Handshake(QuicTrafficSecrets),
     Application(QuicTrafficSecrets),
 }
 
+/// Handshake metadata returned to quinn once authentication is complete.
 struct UmbraQuicHandshakeData {
     _protocol: Option<Vec<u8>>,
     _server_name: Option<String>,

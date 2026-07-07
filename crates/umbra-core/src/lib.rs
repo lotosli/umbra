@@ -1,10 +1,14 @@
-//! `umbra-core` — 编排层：把各组件粘合为可运行的 client / server 会话。
+//! `umbra-core` orchestrates runnable client and server sessions.
 //!
-//! 计划模块：`config`（server/client TOML）、`dispatch`（服务端分派：读 ClientHello→认证→冒充/转发）、
-//! `socks`（SOCKS5 入站）、`relay`（中继/半关闭）、`session`（client/server 每连接编排）、`prefixed`（回放流）。
+//! Planned modules are `config` for server/client TOML, `dispatch` for
+//! ClientHello classification and authenticated-or-fallback routing, `socks`
+//! for local SOCKS5 ingress, `relay` for bidirectional copy and half-close
+//! handling, and `prefixed` for replaying already-read bytes.
 //!
-//! 规范来源：`docs/protocol-design.md` 的服务端分派、SOCKS5、运行参数章节；OpenSpec 能力：
-//! `server-dispatch`、`socks-inbound`、`config`、`orchestration`。
+//! The normative design lives in the server dispatch, SOCKS5, and runtime
+//! configuration sections of `docs/protocol-design.md`; matching OpenSpec
+//! capabilities are `server-dispatch`, `socks-inbound`, `config`, and
+//! `orchestration`.
 
 pub mod config;
 pub mod dispatch;

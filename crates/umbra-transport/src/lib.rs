@@ -1,13 +1,18 @@
-//! `umbra-transport` — 外层传输。
+//! `umbra-transport` implements outer transports.
 //!
-//! 模块：`tcp`（TCP 外层）、`quic`（QUIC/HTTP-3，复用 `umbra-tls` 握手；REALITY-over-QUIC 认证载体）、
-//! `geneva`（TCP 分段/TTL 诱饵/乱序，TCB 去同步抗 RST 注入）。
+//! `tcp` builds and writes the profile-shaped TCP ClientHello, `quic` carries
+//! REALITY authentication through QUIC/HTTP-3 surfaces while reusing
+//! `umbra-tls`, and the planned Geneva path covers TCP segmentation and
+//! desynchronization policies.
 //!
-//! 说明：QUIC 指纹与 REALITY-over-QUIC 载体须以真实 Chrome 抓包核对；Geneva 高级策略需 `CAP_NET_RAW`，
-//! 默认仅启用低风险分段且失败回退普通发送。
+//! QUIC fingerprints and REALITY-over-QUIC carriers must be checked against
+//! real Chrome captures. Advanced Geneva policies require raw-socket
+//! privileges; the default path stays with low-risk segmentation and falls back
+//! to ordinary writes on failure.
 //!
-//! 规范来源：`docs/protocol-design.md` 的外层传输章节；OpenSpec 能力：`transport-tcp`、
-//! `transport-quic`、`tcp-evasion`。
+//! The normative design lives in the outer transport section of
+//! `docs/protocol-design.md`; matching OpenSpec capabilities are
+//! `transport-tcp`, `transport-quic`, and `tcp-evasion`.
 
 pub mod error;
 pub mod evasion;

@@ -19,6 +19,15 @@ lcov.info
 *.pem
 umbra-*.der
 *.local.toml
+*.env
+!*.env.example
+*.log
+*.pid
+client.toml
+client-info.env
+
+# local helper scripts may contain deployment-specific endpoints
+/scripts/
 
 # os / editor
 .DS_Store

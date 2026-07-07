@@ -150,10 +150,13 @@ CI（`.github/workflows/ci.yml`）闸门：**fmt · clippy(-D warnings) · nexte
 
 ## 8. 提交 / 分支 / PR 规范
 - **提交**：Conventional Commits，单行主题：`type(scope): subject`（如 `feat(reality): seal/open session_id`）。
-  AI 生成的代码在 PR 说明中注明所用代理与模型。
+  AI 辅助改动必须由人类贡献者理解、审查、测试并负责；大段 AI 生成内容须在 PR 说明或 commit trailer
+  中注明工具/模型与生成范围，使用 `Assisted-by:` 或 `Generated-by:`。
 - **分支**：`feat/<capability>`、`fix/<...>`、`spec/<capability>`。
 - **PR 必须**：① 关联一个 OpenSpec 变更（改动实现前该变更的 spec 已批准）；② CI 全绿（含覆盖率≥90%）；
   ③ 无秘密泄露；④ 公共 API 有文档与测试。评审对照 `specs/` 场景。
+- **AI 禁止项**：不得提交无法解释/调试/维护/确认许可证兼容的 AI 生成代码；不得把秘密、真实基础设施细节、
+  未公开漏洞或实时抗审查运营情报放进 prompt、commit、issue 或 PR。
 - **合并后**：`/opsx:archive` 归档变更、更新 `openspec/specs/`。
 
 ---

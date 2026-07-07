@@ -27,7 +27,7 @@ The project combines protocol camouflage, pre-response authentication, browser-g
 
 Umbra is under active implementation. The repository now contains the real crate structure, CLI entry point, protocol modules, test harness, CI gates, and tag-based release automation. It is no longer just a workspace scaffold.
 
-The protocol target is documented in [`docs/protocol-design.md`](docs/protocol-design.md), and the crate architecture is mapped in [`docs/architecture.md`](docs/architecture.md). Implementation work follows OpenSpec; see [`AGENTS.md`](AGENTS.md).
+The protocol target is documented in [`docs/protocol-design.md`](docs/protocol-design.md), and the crate architecture is mapped in [`docs/architecture.md`](docs/architecture.md). Implementation work follows OpenSpec; see [`AGENTS.md`](AGENTS.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Repository Layout
 
@@ -123,7 +123,8 @@ cargo deny check
 
 - Protocol design: [`docs/protocol-design.md`](docs/protocol-design.md)
 - Architecture: [`docs/architecture.md`](docs/architecture.md)
-- Contributor and agent rules: [`AGENTS.md`](AGENTS.md)
+- Contributor rules: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Agent rules: [`AGENTS.md`](AGENTS.md)
 
 ## License
 

@@ -16,8 +16,9 @@ fn default_fingerprint() -> &'static QuicFingerprint {
     })
 }
 
-// 不变量：任意 SCID/transport parameter 组合不得 panic；非法 carrier 返回结构化错误。
-// 运行：cargo +nightly fuzz run quic_auth_carrier
+// Invariant: arbitrary SCID and transport-parameter combinations never panic;
+// invalid carriers return structured errors.
+// Run: cargo +nightly fuzz run quic_auth_carrier
 fuzz_target!(|data: &[u8]| {
     if data.len() >= 32 {
         let mut token = [0_u8; 32];

@@ -1,6 +1,8 @@
-//! xtask — 开发/CI 辅助任务运行器（仅依赖 std，通过 shell 调用 cargo 工具）。
+//! xtask development and CI helper tasks.
 //!
-//! 用法：`cargo xtask <coverage|ci|deny|dist|fingerprint-check|fuzz>`
+//! The binary intentionally depends only on `std` and shells out to the cargo
+//! tools pinned by the workspace. Usage: `cargo xtask
+//! <coverage|ci|deny|dist|fingerprint-check|fuzz>`.
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -27,11 +29,11 @@ fn main() {
         "dist" => dist(&rest),
         "fingerprint-check" => fingerprint_check(),
         "fuzz" => {
-            eprintln!("fuzz: 使用 `cargo +nightly fuzz run <target>`（见 fuzz/ 与 AGENTS.md）");
+            eprintln!("fuzz: use `cargo +nightly fuzz run <target>`; see fuzz/ and AGENTS.md");
             0
         }
         other => {
-            eprintln!("未知任务: {other:?}");
+            eprintln!("unknown task: {other:?}");
             print_usage();
             2
         }
@@ -39,7 +41,7 @@ fn main() {
     exit(code);
 }
 
-/// 90% 行覆盖率闸门（需 cargo-llvm-cov + cargo-nextest）。
+/// Run the 90% line-coverage gate with `cargo-llvm-cov` and `cargo-nextest`.
 fn coverage() -> i32 {
     run(
         "cargo",
@@ -58,7 +60,7 @@ fn coverage() -> i32 {
     )
 }
 
-/// 本地复现 CI 闸门：fmt → clippy → deny → fingerprint-check → coverage(≥90%)。
+/// Reproduce the CI gate locally: formatting, clippy, deny, fingerprints, coverage.
 fn ci() -> i32 {
     let steps: &[(&str, &[&str])] = &[
         ("cargo", &["fmt", "--all", "--check"]),
@@ -136,7 +138,7 @@ fn dist(args: &[String]) -> i32 {
     }
 
     if let Err(error) = fs::create_dir_all(dist_dir()) {
-        eprintln!("无法创建 dist 目录: {error}");
+        eprintln!("failed to create dist directory: {error}");
         return 1;
     }
 
@@ -151,6 +153,7 @@ fn dist(args: &[String]) -> i32 {
     0
 }
 
+/// Parse comma-separated and repeated `cargo xtask dist` target arguments.
 fn parse_dist_targets(args: &[String]) -> Result<Vec<String>, String> {
     if args.is_empty() {
         return Ok(default_dist_targets()
@@ -166,12 +169,12 @@ fn parse_dist_targets(args: &[String]) -> Result<Vec<String>, String> {
             "--help" | "-h" => return Ok(Vec::new()),
             "--target" | "--targets" => {
                 let Some(value) = iter.next() else {
-                    return Err(format!("{arg} 需要一个 target triple"));
+                    return Err(format!("{arg} requires a target triple"));
                 };
                 push_targets(&mut targets, value);
             }
             value if value.starts_with("--") => {
-                return Err(format!("未知 dist 参数: {value}"));
+                return Err(format!("unknown dist argument: {value}"));
             }
             value => push_targets(&mut targets, value),
         }
@@ -182,6 +185,7 @@ fn parse_dist_targets(args: &[String]) -> Result<Vec<String>, String> {
     Ok(targets)
 }
 
+/// Append one comma-separated target argument while ignoring empty segments.
 fn push_targets(targets: &mut Vec<String>, value: &str) {
     targets.extend(
         value
@@ -192,6 +196,7 @@ fn push_targets(targets: &mut Vec<String>, value: &str) {
     );
 }
 
+/// Build one release binary and copy it to the distribution directory.
 fn build_dist_target(target: &str) -> Result<(), String> {
     validate_dist_target(target)?;
     ensure_rust_target(target)?;
@@ -226,7 +231,7 @@ fn build_dist_target(target: &str) -> Result<(), String> {
     let destination = dist_binary_path(target);
     fs::copy(&source, &destination).map_err(|error| {
         format!(
-            "复制 {} 到 {} 失败: {error}",
+            "failed to copy {} to {}: {error}",
             source.display(),
             destination.display()
         )
@@ -235,13 +240,14 @@ fn build_dist_target(target: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Ensure `rustup` has the requested compilation target installed.
 fn ensure_rust_target(target: &str) -> Result<(), String> {
     let output = Command::new("rustup")
         .args(["target", "list", "--installed"])
         .output()
-        .map_err(|error| format!("无法运行 rustup target list --installed: {error}"))?;
+        .map_err(|error| format!("failed to run rustup target list --installed: {error}"))?;
     if !output.status.success() {
-        return Err("rustup target list --installed 失败".to_string());
+        return Err("rustup target list --installed failed".to_string());
     }
 
     let installed = String::from_utf8_lossy(&output.stdout);
@@ -254,6 +260,7 @@ fn ensure_rust_target(target: &str) -> Result<(), String> {
     run_command(&mut command)
 }
 
+/// Create or refresh the `zig cc` wrapper used for local Linux cross builds.
 fn ensure_zig_cc_wrapper(target: &str, zig_target: &str) -> Result<PathBuf, String> {
     ensure_tool("zig")?;
     let path = linker_dir().join(script_name(&format!("zig-cc-{target}")));
@@ -262,6 +269,7 @@ fn ensure_zig_cc_wrapper(target: &str, zig_target: &str) -> Result<PathBuf, Stri
     absolute_path(&path)
 }
 
+/// Create or refresh the `zig ar` wrapper paired with the Zig C compiler.
 fn ensure_zig_ar_wrapper(target: &str) -> Result<PathBuf, String> {
     ensure_tool("zig")?;
     let path = linker_dir().join(script_name(&format!("zig-ar-{target}")));
@@ -270,31 +278,35 @@ fn ensure_zig_ar_wrapper(target: &str) -> Result<PathBuf, String> {
     absolute_path(&path)
 }
 
+/// Verify that a required command-line tool can be executed.
 fn ensure_tool(tool: &str) -> Result<(), String> {
     let status = Command::new(tool)
         .arg("version")
         .status()
-        .map_err(|error| format!("无法运行 {tool}: {error}"))?;
+        .map_err(|error| format!("failed to run {tool}: {error}"))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("{tool} version 返回失败状态"))
+        Err(format!("{tool} version returned a failing status"))
     }
 }
 
+/// Reject targets that this host cannot build without external toolchains.
 fn validate_dist_target(target: &str) -> Result<(), String> {
     if target.contains("windows") && !cfg!(windows) && !mingw_toolchain_available() {
         return Err(format!(
-            "{target} 需要 Windows runner/MSVC，或本机安装 MinGW-w64 工具链；当前 macOS 环境已验证 macOS/Linux targets。"
+            "{target} requires a Windows runner/MSVC or a local MinGW-w64 toolchain; this macOS environment is validated for macOS/Linux targets."
         ));
     }
     Ok(())
 }
 
+/// Return true when a MinGW toolchain is available for local Windows builds.
 fn mingw_toolchain_available() -> bool {
     tool_available("x86_64-w64-mingw32-gcc") || tool_available("x86_64-w64-mingw32-clang")
 }
 
+/// Return true when `tool --version` exits successfully.
 fn tool_available(tool: &str) -> bool {
     Command::new(tool)
         .arg("--version")
@@ -302,33 +314,38 @@ fn tool_available(tool: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// Write a helper script and make it executable on platforms that require it.
 fn write_executable_script(path: &Path, body: &str) -> Result<(), String> {
     let parent = path
         .parent()
-        .ok_or_else(|| format!("无法解析脚本目录: {}", path.display()))?;
+        .ok_or_else(|| format!("failed to resolve script directory: {}", path.display()))?;
     fs::create_dir_all(parent)
-        .map_err(|error| format!("无法创建 {}: {error}", parent.display()))?;
-    fs::write(path, body).map_err(|error| format!("无法写入 {}: {error}", path.display()))?;
+        .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    fs::write(path, body)
+        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
     make_executable(path)
 }
 
 #[cfg(unix)]
+/// Mark a generated helper script executable on Unix-like hosts.
 fn make_executable(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
     let mut permissions = fs::metadata(path)
-        .map_err(|error| format!("无法读取 {} 权限: {error}", path.display()))?
+        .map_err(|error| format!("failed to read permissions for {}: {error}", path.display()))?
         .permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(path, permissions)
-        .map_err(|error| format!("无法设置 {} 为可执行: {error}", path.display()))
+        .map_err(|error| format!("failed to make {} executable: {error}", path.display()))
 }
 
 #[cfg(not(unix))]
+/// Keep script generation portable on platforms without Unix execute bits.
 fn make_executable(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Build a tiny platform-specific shell wrapper around a command.
 fn shell_script(command: &str) -> String {
     if cfg!(windows) {
         format!("@echo off\r\n{command} %*\r\n")
@@ -337,6 +354,7 @@ fn shell_script(command: &str) -> String {
     }
 }
 
+/// Build a Zig C compiler wrapper that removes cargo-provided target flags.
 fn zig_cc_script(zig_target: &str) -> String {
     if cfg!(windows) {
         return format!("@echo off\r\nzig cc -target {zig_target} %*\r\n");
@@ -358,6 +376,7 @@ exec zig cc -target {zig_target} "${{args[@]}}"
     )
 }
 
+/// Return the platform-specific script file name for a wrapper stem.
 fn script_name(stem: &str) -> String {
     if cfg!(windows) {
         format!("{stem}.cmd")
@@ -366,6 +385,7 @@ fn script_name(stem: &str) -> String {
     }
 }
 
+/// Map Rust target triples to Zig target triples when Zig can cross-compile them.
 fn zig_target(target: &str) -> Option<&'static str> {
     match target {
         "x86_64-unknown-linux-gnu" => Some("x86_64-linux-gnu"),
@@ -374,6 +394,7 @@ fn zig_target(target: &str) -> Option<&'static str> {
     }
 }
 
+/// Return the path where cargo writes the release binary for a target.
 fn target_binary_path(target: &str) -> PathBuf {
     PathBuf::from("target")
         .join(target)
@@ -381,14 +402,17 @@ fn target_binary_path(target: &str) -> PathBuf {
         .join(binary_name(target))
 }
 
+/// Return the final distribution artifact path for a target.
 fn dist_binary_path(target: &str) -> PathBuf {
     dist_dir().join(format!("umbra-{target}{}", binary_suffix(target)))
 }
 
+/// Return the target-specific Umbra binary name.
 fn binary_name(target: &str) -> String {
     format!("umbra{}", binary_suffix(target))
 }
 
+/// Return the executable suffix required by the target platform.
 fn binary_suffix(target: &str) -> &'static str {
     if target.contains("windows") {
         ".exe"
@@ -397,28 +421,32 @@ fn binary_suffix(target: &str) -> &'static str {
     }
 }
 
+/// Return the directory where distribution artifacts are collected.
 fn dist_dir() -> PathBuf {
     PathBuf::from("target").join("dist")
 }
 
+/// Return the directory where generated linker wrapper scripts live.
 fn linker_dir() -> PathBuf {
     PathBuf::from("target").join("xtask-linkers")
 }
 
+/// Convert a repository-relative path into an absolute path for cargo env vars.
 fn absolute_path(path: &Path) -> Result<PathBuf, String> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
     }
     env::current_dir()
-        .map_err(|error| format!("无法读取当前目录: {error}"))
+        .map_err(|error| format!("failed to read current directory: {error}"))
         .map(|cwd| cwd.join(path))
 }
 
+/// Run a fully configured command and convert a failing status into an error.
 fn run_command(command: &mut Command) -> Result<(), String> {
     eprintln!("+ {:?}", command);
     let status = command
         .status()
-        .map_err(|error| format!("无法运行 {:?}: {error}", command))?;
+        .map_err(|error| format!("failed to run {:?}: {error}", command))?;
     if status.success() {
         Ok(())
     } else {
@@ -426,6 +454,7 @@ fn run_command(command: &mut Command) -> Result<(), String> {
     }
 }
 
+/// Run a simple command and return a process-like exit code.
 fn run(cmd: &str, args: &[&str]) -> i32 {
     eprintln!("+ {cmd} {}", args.join(" "));
     Command::new(cmd)
@@ -434,17 +463,20 @@ fn run(cmd: &str, args: &[&str]) -> i32 {
         .map_or(1, |s| s.code().unwrap_or(1))
 }
 
+/// Print top-level xtask usage.
 fn print_usage() {
-    eprintln!("用法: cargo xtask <coverage|ci|deny|dist|fingerprint-check|fuzz>");
+    eprintln!("usage: cargo xtask <coverage|ci|deny|dist|fingerprint-check|fuzz>");
 }
 
+/// Print distribution task usage and host-specific notes.
 fn print_dist_usage() {
-    eprintln!("用法: cargo xtask dist [--target <triple>[,<triple>...]] [<triple>...]");
-    eprintln!("默认 targets: {}", default_dist_targets().join(", "));
-    eprintln!("macOS 上的 Linux 交叉目标需要系统 PATH 中存在 zig。");
-    eprintln!("Windows 目标建议在 Windows runner 上运行: cargo xtask dist --target x86_64-pc-windows-msvc");
+    eprintln!("usage: cargo xtask dist [--target <triple>[,<triple>...]] [<triple>...]");
+    eprintln!("default targets: {}", default_dist_targets().join(", "));
+    eprintln!("Linux cross targets on macOS require zig in PATH.");
+    eprintln!("Windows targets should run on a Windows runner: cargo xtask dist --target x86_64-pc-windows-msvc");
 }
 
+/// Return the default release targets supported by the current host.
 fn default_dist_targets() -> &'static [&'static str] {
     if cfg!(target_os = "macos") {
         MACOS_DIST_TARGETS

@@ -1073,6 +1073,7 @@ fn tls_client_hello_params(
     }
 }
 
+/// Deterministic inputs used by tests and the runtime to build one QUIC Initial.
 struct QuicInitialMaterial {
     profile: umbra_fingerprint::FingerprintProfile,
     keypair: x25519::Keypair,
@@ -1188,6 +1189,7 @@ fn validate_quic_cid_len(len: usize) -> Result<usize, CoreError> {
     Ok(len)
 }
 
+/// Hybrid X25519 plus ML-KEM material needed to later decapsulate TLS secrets.
 struct HybridMlkemMaterial {
     key_exchange: Vec<u8>,
     decapsulation_key: SecretBytes,
@@ -1215,6 +1217,7 @@ async fn shutdown_on_ctrl_c() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
+/// Certificate verifier used by the TCP outer runtime after REALITY auth.
 struct RealityCertVerifier {
     shared: [u8; 32],
     session_id: [u8; 32],
@@ -1302,6 +1305,7 @@ where
     }
 }
 
+/// Context kept together while dispatching one server-side QUIC flow.
 struct QuicRuntimeDispatch<'a> {
     client_socket: &'a UdpSocket,
     endpoint_socket: StdUdpSocket,
@@ -1314,6 +1318,7 @@ struct QuicRuntimeDispatch<'a> {
     idle_timeout: Duration,
 }
 
+/// Buffered QUIC datagrams plus the contiguous ClientHello recovered from CRYPTO frames.
 struct QuicPrefetchedClientHello {
     datagrams: Vec<Vec<u8>>,
     client_hello: Vec<u8>,
@@ -1321,6 +1326,7 @@ struct QuicPrefetchedClientHello {
     dcid_len: usize,
 }
 
+/// Result of prefetching enough QUIC Initial data for local authentication.
 enum QuicPrefetchOutcome {
     Complete(QuicPrefetchedClientHello),
     Fallback {
@@ -1589,6 +1595,7 @@ fn read_quic_u24(input: &[u8]) -> Result<usize, CoreError> {
     Ok((usize::from(input[0]) << 16) | (usize::from(input[1]) << 8) | usize::from(input[2]))
 }
 
+/// Authenticated QUIC values passed from dispatch into the quinn server runtime.
 struct AuthenticatedQuicRuntime {
     sni: String,
     session_id: [u8; 32],
@@ -1852,6 +1859,7 @@ struct PrefetchedDatagram {
     peer: SocketAddr,
 }
 
+/// Quinn UDP socket wrapper that replays datagrams consumed during prefetch.
 struct PrefetchedUdpSocket {
     inner: Arc<dyn quinn::AsyncUdpSocket>,
     pending: Mutex<VecDeque<PrefetchedDatagram>>,
@@ -2039,6 +2047,7 @@ where
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+/// Opening mode selected after sniffing the first authenticated inner bytes.
 enum ServerInnerMode {
     Mux,
     VisionSolo,
@@ -2183,6 +2192,7 @@ struct UdpRelayDatagram {
     payload: Vec<u8>,
 }
 
+/// Per-target UDP socket task that is aborted when the association drops.
 struct UdpTargetState {
     socket: Arc<UdpSocket>,
     task: JoinHandle<()>,

@@ -3,7 +3,7 @@
 use std::{
     io::{Read, Write},
     net::{TcpStream, ToSocketAddrs},
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, LazyLock, Mutex, RwLock},
     time::{Duration, Instant},
 };
 
@@ -12,6 +12,8 @@ use rustls::{
     pki_types::ServerName, ClientConfig, ClientConnection, KeyLog, ProtocolVersion, RootCertStore,
     StreamOwned,
 };
+use tokio::sync::Semaphore;
+use umbra_crypto::secret::SecretBytes;
 use umbra_tls::{
     keyschedule::derive_traffic_keys,
     records::{RecordLayer, CONTENT_TYPE_APPLICATION_DATA, CONTENT_TYPE_HANDSHAKE},
@@ -27,6 +29,10 @@ const HANDSHAKE_ENCRYPTED_EXTENSIONS: u8 = 0x08;
 const HANDSHAKE_CERTIFICATE: u8 = 0x0b;
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_PROBE_WORKERS: usize = 4;
+const SERVER_HANDSHAKE_SECRET: &str = "SERVER_HANDSHAKE_TRAFFIC_SECRET";
+static PROBE_SLOTS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MAX_PROBE_WORKERS)));
 
 /// Visible certificate fields collected from the real destination.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -68,7 +74,7 @@ pub struct DestProfile {
     pub leaf_template: CertTemplate,
     /// OCSP staple bytes, when observed.
     pub ocsp: Option<Vec<u8>>,
-    /// Measured time to first byte.
+    /// Destination connection attempt (including DNS) to first TLS response.
     pub rtt: Duration,
 }
 
@@ -126,16 +132,33 @@ impl DestProfile {
 }
 
 /// Network probe settings for the default standard TLS probe.
+///
+/// The overall deadline is `connect_timeout + io_timeout`, including worker
+/// queueing, DNS, connection establishment, TLS, and metadata extraction.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ProbeSettings {
-    /// TCP connection timeout.
+    /// Shared DNS/TCP connection budget across all resolved addresses.
     pub connect_timeout: Duration,
-    /// Read/write timeout for TLS and first-byte sampling.
+    /// Maximum duration of each TLS read/write, capped by the overall deadline.
     pub io_timeout: Duration,
-    /// HTTP request path used to elicit a first application byte.
-    pub request_path: String,
-    /// ALPN protocols offered during probing.
+    /// ALPN protocols offered during probing. No application request is sent.
     pub alpn: Vec<Vec<u8>>,
+}
+
+impl ProbeSettings {
+    fn deadline(&self) -> Result<Instant, RealityError> {
+        if self.connect_timeout.is_zero() || self.io_timeout.is_zero() {
+            return Err(RealityError::InvalidDestProfile(
+                "probe timeouts must be nonzero",
+            ));
+        }
+        self.connect_timeout
+            .checked_add(self.io_timeout)
+            .and_then(|budget| Instant::now().checked_add(budget))
+            .ok_or(RealityError::InvalidDestProfile(
+                "probe timeout is too large",
+            ))
+    }
 }
 
 impl Default for ProbeSettings {
@@ -143,7 +166,6 @@ impl Default for ProbeSettings {
         Self {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             io_timeout: DEFAULT_IO_TIMEOUT,
-            request_path: "/".to_owned(),
             alpn: vec![b"h2".to_vec(), b"http/1.1".to_vec()],
         }
     }
@@ -162,24 +184,43 @@ impl StandardTlsProbe {
         Self { settings }
     }
 
+    /// Probe without blocking the Tokio executor, using the shared worker limit.
+    ///
+    /// The deadline includes waiting for a worker. A timed-out or cancelled
+    /// caller does not release its worker slot until the worker actually exits.
+    /// OS DNS calls cannot be interrupted, but remain inside that bound. This
+    /// method requires a Tokio runtime with its time driver enabled.
+    pub async fn probe_async(&self, dest: &str) -> Result<DestProfile, RealityError> {
+        self.probe_async_with_extra_roots(dest, Vec::new()).await
+    }
+
+    async fn probe_async_with_extra_roots(
+        &self,
+        dest: &str,
+        extra_root_der: Vec<Vec<u8>>,
+    ) -> Result<DestProfile, RealityError> {
+        let deadline = self.settings.deadline()?;
+        validate_dest(dest)?;
+        let probe = self.clone();
+        let dest = dest.to_owned();
+        run_bounded_probe(PROBE_SLOTS.clone(), deadline, move || {
+            probe.probe_with_extra_roots(&dest, &extra_root_der, deadline)
+        })
+        .await
+    }
+
     fn probe(&self, dest: &str) -> Result<DestProfile, RealityError> {
-        self.probe_with_extra_roots(dest, &[])
+        self.probe_with_extra_roots(dest, &[], self.settings.deadline()?)
     }
 
     fn probe_with_extra_roots(
         &self,
         dest: &str,
         extra_root_der: &[Vec<u8>],
+        deadline: Instant,
     ) -> Result<DestProfile, RealityError> {
+        remaining(deadline)?;
         let parsed = parse_dest(dest)?;
-        let stream = connect_tcp(&parsed, self.settings.connect_timeout)?;
-        stream
-            .set_read_timeout(Some(self.settings.io_timeout))
-            .map_err(|_| RealityError::ProbeFailed("failed to set TCP read timeout"))?;
-        stream
-            .set_write_timeout(Some(self.settings.io_timeout))
-            .map_err(|_| RealityError::ProbeFailed("failed to set TCP write timeout"))?;
-
         let key_log = Arc::new(MemoryKeyLog::default());
         let mut config = tls_client_config(&self.settings, key_log.clone(), extra_root_der)?;
         config.enable_sni = true;
@@ -188,34 +229,26 @@ impl StandardTlsProbe {
             .map_err(|_| RealityError::InvalidDestProfile("destination host is not a valid SNI"))?;
         let connection = ClientConnection::new(Arc::new(config), server_name)
             .map_err(|_| RealityError::ProbeFailed("TLS client initialization failed"))?;
-        let mut tls = StreamOwned::new(connection, RecordingStream::new(stream));
+        let connect_started = Instant::now();
+        let stream = connect_tcp(&parsed, self.settings.connect_timeout, deadline)?;
+        let mut tls = StreamOwned::new(
+            connection,
+            RecordingStream::new(stream, deadline, self.settings.io_timeout),
+        );
 
-        let start = Instant::now();
         while tls.conn.is_handshaking() {
+            remaining(deadline)?;
             tls.conn
                 .complete_io(&mut tls.sock)
                 .map_err(|_| RealityError::ProbeFailed("TLS handshake failed"))?;
         }
-
-        let request = format!(
-            "HEAD {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: UmbraProbe/0\r\nAccept: */*\r\nConnection: close\r\n\r\n",
-            self.settings.request_path, parsed.host
-        );
-        tls.write_all(request.as_bytes())
-            .map_err(|_| RealityError::ProbeFailed("probe request write failed"))?;
-        tls.flush()
-            .map_err(|_| RealityError::ProbeFailed("probe request flush failed"))?;
-
-        let mut first_byte = [0_u8; 1];
-        let read = tls
-            .read(&mut first_byte)
-            .map_err(|_| RealityError::ProbeFailed("first byte read failed"))?;
-        if read == 0 {
-            return Err(RealityError::ProbeFailed(
-                "destination closed before first byte",
-            ));
-        }
-        let rtt = start.elapsed();
+        // TLS already supplies every profile field. Sending HTTP here would
+        // distort timing and, after negotiating h2, require an HTTP/2 client.
+        let rtt = tls
+            .sock
+            .first_response_at
+            .ok_or(RealityError::ProbeFailed("first TLS response missing"))?
+            .duration_since(connect_started);
 
         let tls_ver = protocol_version_code(
             tls.conn
@@ -247,14 +280,17 @@ impl StandardTlsProbe {
             .to_vec();
         let mut leaf_template = cert_template_from_der(&leaf_der)?;
 
-        let handshake_secret =
-            key_log
-                .secret("SERVER_HANDSHAKE_TRAFFIC_SECRET")
-                .ok_or(RealityError::ProbeFailed(
-                    "server handshake traffic secret missing",
-                ))?;
-        let metadata = collect_handshake_metadata(&tls.sock.inbound, cipher, &handshake_secret)?;
+        let handshake_secret = key_log.take_secret().ok_or(RealityError::ProbeFailed(
+            "server handshake traffic secret missing",
+        ))?;
+        remaining(deadline)?;
+        let metadata = collect_handshake_metadata(
+            &tls.sock.inbound,
+            cipher,
+            handshake_secret.expose_secret(),
+        )?;
         leaf_template.sct.extend(metadata.sct);
+        remaining(deadline)?;
 
         DestProfile::from_sample(
             dest,
@@ -289,11 +325,14 @@ pub struct ProbeSample {
     pub leaf_template: CertTemplate,
     /// OCSP staple bytes, when present.
     pub ocsp: Option<Vec<u8>>,
-    /// Measured first-byte RTT.
+    /// Destination connection attempt (including DNS) to first TLS response.
     pub rtt: Duration,
 }
 
 /// Synchronous probing backend.
+///
+/// Network backends may block in the OS resolver. Do not invoke these methods
+/// on async executor threads; use [`probe_dest`] or [`StandardTlsProbe::probe_async`].
 pub trait ProbeBackend {
     /// Probe `dest` and return a validated profile.
     fn probe_dest(&self, dest: &str) -> Result<DestProfile, RealityError>;
@@ -314,10 +353,47 @@ pub fn probe_dest_with(
     backend.probe_dest(dest)
 }
 
-/// Default network probe entry point.
+/// Default network probe entry point, requiring a Tokio runtime with time enabled.
+///
+/// At most four default/configured async probe workers run concurrently. The
+/// 20-second default deadline includes queueing and all probe stages.
 pub async fn probe_dest(dest: &str) -> Result<DestProfile, RealityError> {
-    std::future::ready(()).await;
-    StandardTlsProbe::default().probe_dest(dest)
+    StandardTlsProbe::default().probe_async(dest).await
+}
+
+async fn run_bounded_probe(
+    slots: Arc<Semaphore>,
+    deadline: Instant,
+    probe: impl FnOnce() -> Result<DestProfile, RealityError> + Send + 'static,
+) -> Result<DestProfile, RealityError> {
+    tokio::time::timeout_at(deadline.into(), async move {
+        let permit = slots
+            .acquire_owned()
+            .await
+            .map_err(|_| RealityError::ProbeFailed("probe worker pool closed"))?;
+        remaining(deadline)?;
+        tokio::task::spawn_blocking(move || {
+            // Dropping the JoinHandle on timeout/cancellation cannot stop a
+            // running OS resolver. Keep the permit in the worker, never in the
+            // caller, so retries cannot create unbounded replacement workers.
+            let _permit = permit;
+            remaining(deadline)?;
+            let result = probe();
+            remaining(deadline)?;
+            result
+        })
+        .await
+        .map_err(|_| RealityError::ProbeFailed("probe worker failed"))?
+    })
+    .await
+    .map_err(|_| RealityError::ProbeFailed("probe deadline exceeded"))?
+}
+
+fn remaining(deadline: Instant) -> Result<Duration, RealityError> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(RealityError::ProbeFailed("probe deadline exceeded"))
 }
 
 /// Last-known-good destination profile store.
@@ -433,14 +509,25 @@ impl ParsedDest {
     }
 }
 
-fn connect_tcp(parsed: &ParsedDest, timeout: Duration) -> Result<TcpStream, RealityError> {
-    let mut last_error = false;
-    for addr in parsed
+fn connect_tcp(
+    parsed: &ParsedDest,
+    timeout: Duration,
+    deadline: Instant,
+) -> Result<TcpStream, RealityError> {
+    let connect_deadline = Instant::now()
+        .checked_add(timeout)
+        .map_or(deadline, |end| end.min(deadline));
+    remaining(connect_deadline)?;
+    // The OS resolver is blocking and not cancellable. The async entry point
+    // runs this inside the same bounded worker as TCP/TLS, under caller timeout.
+    let addresses = parsed
         .socket_target()
         .to_socket_addrs()
-        .map_err(|_| RealityError::ProbeFailed("DNS resolution failed"))?
-    {
-        match TcpStream::connect_timeout(&addr, timeout) {
+        .map_err(|_| RealityError::ProbeFailed("DNS resolution failed"))?;
+    remaining(connect_deadline)?;
+    let mut last_error = false;
+    for addr in addresses {
+        match TcpStream::connect_timeout(&addr, remaining(connect_deadline)?) {
             Ok(stream) => return Ok(stream),
             Err(_) => last_error = true,
         }
@@ -541,7 +628,9 @@ fn collect_handshake_metadata(
 ) -> Result<HandshakeMetadata, RealityError> {
     let traffic_keys = derive_traffic_keys(cipher, server_handshake_secret)
         .map_err(|_| RealityError::ProbeFailed("server handshake keys could not be derived"))?;
-    let mut layer = RecordLayer::new(cipher, traffic_keys.key, traffic_keys.iv);
+    // Both TrafficKeys and RecordLayer zeroize on drop; transfer ownership
+    // without creating an unprotected temporary traffic-key copy.
+    let mut layer = RecordLayer::from_traffic_keys(cipher, traffic_keys);
     let mut plaintext = Vec::new();
     let mut offset = 0;
 
@@ -752,66 +841,86 @@ fn checked_end(offset: usize, len: usize) -> Result<usize, RealityError> {
 struct RecordingStream {
     inner: TcpStream,
     inbound: Vec<u8>,
+    first_response_at: Option<Instant>,
+    deadline: Instant,
+    io_timeout: Duration,
 }
 
 impl RecordingStream {
-    const fn new(inner: TcpStream) -> Self {
+    const fn new(inner: TcpStream, deadline: Instant, io_timeout: Duration) -> Self {
         Self {
             inner,
             inbound: Vec::new(),
+            first_response_at: None,
+            deadline,
+            io_timeout,
         }
+    }
+
+    fn remaining_io(&self) -> std::io::Result<Duration> {
+        remaining(self.deadline)
+            .map(|budget| budget.min(self.io_timeout))
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "probe deadline exceeded")
+            })
     }
 }
 
 impl Read for RecordingStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.set_read_timeout(Some(self.remaining_io()?))?;
         let read = self.inner.read(buf)?;
-        self.inbound.extend_from_slice(&buf[..read]);
+        if read > 0 {
+            self.first_response_at.get_or_insert_with(Instant::now);
+            self.inbound.extend_from_slice(&buf[..read]);
+        }
         Ok(read)
     }
 }
 
 impl Write for RecordingStream {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.set_write_timeout(Some(self.remaining_io()?))?;
         self.inner.write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.set_write_timeout(Some(self.remaining_io()?))?;
         self.inner.flush()
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct MemoryKeyLog {
-    secrets: Mutex<Vec<KeyLogEntry>>,
+    // Retain only the handshake secret needed for metadata decryption. Every
+    // ownership path, including poison/error/timeout, drops zeroizing storage.
+    secret: Mutex<Option<SecretBytes>>,
+}
+
+impl std::fmt::Debug for MemoryKeyLog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MemoryKeyLog(<redacted>)")
+    }
 }
 
 impl MemoryKeyLog {
-    fn secret(&self, label: &str) -> Option<Vec<u8>> {
-        self.secrets.lock().ok().and_then(|secrets| {
-            secrets
-                .iter()
-                .find(|entry| entry.label == label)
-                .map(|entry| entry.secret.clone())
-        })
+    fn take_secret(&self) -> Option<SecretBytes> {
+        self.secret.lock().ok()?.take()
     }
 }
 
 impl KeyLog for MemoryKeyLog {
     fn log(&self, label: &str, _client_random: &[u8], secret: &[u8]) {
-        if let Ok(mut secrets) = self.secrets.lock() {
-            secrets.push(KeyLogEntry {
-                label: label.to_owned(),
-                secret: secret.to_vec(),
-            });
+        if self.will_log(label) {
+            if let Ok(mut stored) = self.secret.lock() {
+                *stored = Some(SecretBytes::new(secret.to_vec()));
+            }
         }
     }
-}
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct KeyLogEntry {
-    label: String,
-    secret: Vec<u8>,
+    fn will_log(&self, label: &str) -> bool {
+        label == SERVER_HANDSHAKE_SECRET
+    }
 }
 
 #[cfg(test)]
@@ -824,64 +933,427 @@ mod tests {
         ServerConfig, ServerConnection,
     };
 
-    #[test]
-    fn standard_probe_collects_loopback_tls13_profile() {
-        let rcgen::CertifiedKey { cert, key_pair } =
-            rcgen::generate_simple_self_signed(["localhost".to_owned()])
-                .expect("certificate generation");
-        let cert_der = cert.der().as_ref().to_vec();
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
-        let addr = listener.local_addr().expect("local addr");
-        let server = thread::spawn(move || {
-            let mut config = ServerConfig::builder_with_provider(Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .expect("TLS 1.3 server provider")
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![CertificateDer::from(cert_der)],
-                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der())),
-            )
-            .expect("server certificate");
-            config.alpn_protocols = vec![b"h2".to_vec()];
+    #[tokio::test(flavor = "current_thread")]
+    async fn standard_probe_collects_tls_profile_without_waiting_for_http() {
+        for alpn in [b"h2".to_vec(), b"http/1.1".to_vec()] {
+            let rcgen::CertifiedKey { cert, key_pair } =
+                rcgen::generate_simple_self_signed(["localhost".to_owned()])
+                    .expect("certificate generation");
+            let cert_der = cert.der().as_ref().to_vec();
+            let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+            let addr = listener.local_addr().expect("local addr");
+            let selected_alpn = alpn.clone();
+            let (release_http, wait_for_probe) = std::sync::mpsc::channel();
+            let server = thread::spawn(move || {
+                let mut config = ServerConfig::builder_with_provider(Arc::new(
+                    rustls::crypto::ring::default_provider(),
+                ))
+                .with_protocol_versions(&[&rustls::version::TLS13])
+                .expect("TLS 1.3 server provider")
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![CertificateDer::from(cert_der)],
+                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der())),
+                )
+                .expect("server certificate");
+                config.alpn_protocols = vec![selected_alpn];
+                // No post-handshake tickets remain unread when the probe closes.
+                config.send_tls13_tickets = 0;
 
-            let (tcp, _) = listener.accept().expect("accept");
-            let connection = ServerConnection::new(Arc::new(config)).expect("server connection");
-            let mut tls = StreamOwned::new(connection, tcp);
-            let mut request = [0_u8; 1024];
-            let read = tls.read(&mut request).expect("read request");
-            assert!(read > 0);
-            tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-                .expect("write response");
-            tls.flush().expect("flush response");
+                let (tcp, _) = listener.accept().expect("accept");
+                tcp.set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("read timeout");
+                tcp.set_write_timeout(Some(Duration::from_secs(2)))
+                    .expect("write timeout");
+                let connection =
+                    ServerConnection::new(Arc::new(config)).expect("server connection");
+                let mut tls = StreamOwned::new(connection, tcp);
+                while tls.conn.is_handshaking() {
+                    tls.conn
+                        .complete_io(&mut tls.sock)
+                        .expect("server handshake");
+                }
+                // Deliberately gate all application work until the probe has
+                // returned. A probe waiting for HTTP will time out instead.
+                wait_for_probe
+                    .recv_timeout(Duration::from_secs(3))
+                    .expect("probe completed before HTTP");
+                let mut request = [0_u8; 1024];
+                match tls.read(&mut request) {
+                    Ok(read) => assert_eq!(read, 0, "probe must not send application data"),
+                    Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof),
+                }
+            });
+
+            let probe = StandardTlsProbe::new(ProbeSettings {
+                connect_timeout: Duration::from_secs(1),
+                io_timeout: Duration::from_secs(1),
+                ..ProbeSettings::default()
+            });
+            let started = Instant::now();
+            let result = probe
+                .probe_async_with_extra_roots(
+                    &format!("localhost:{}", addr.port()),
+                    vec![cert.der().as_ref().to_vec()],
+                )
+                .await;
+            let completed = started.elapsed();
+            release_http.send(()).expect("release application gate");
+            tokio::task::spawn_blocking(move || server.join().expect("server thread"))
+                .await
+                .expect("join task");
+            let profile = result.expect("loopback TLS probe must not await HTTP");
+            assert_eq!(profile.tls_ver, 0x0304);
+            assert!([0x1301, 0x1303].contains(&profile.cipher));
+            assert_ne!(profile.group, 0);
+            assert_eq!(profile.alpn, vec![alpn]);
+            assert!(profile.ee_exts.contains(&0x0010));
+            assert!(profile
+                .leaf_template
+                .san_dns
+                .contains(&"localhost".to_owned()));
+            assert!(profile.rtt > Duration::ZERO);
+            assert!(profile.rtt <= completed);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stalled_tls_probe_times_out_while_unrelated_work_progresses() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let dest = listener.local_addr().expect("address").to_string();
+        let (accepted, ready) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut peer, _) = listener.accept().await.expect("accept");
+            let mut hello = [0_u8; 1024];
+            assert!(peer.read(&mut hello).await.expect("ClientHello") > 0);
+            accepted.send(()).expect("signal handshake stall");
+            let mut rest = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), peer.read_to_end(&mut rest))
+                .await
+                .expect("worker must close stalled connection")
+                .expect("read EOF");
         });
+        let probe = tokio::spawn(async move {
+            StandardTlsProbe::new(ProbeSettings {
+                connect_timeout: Duration::from_millis(150),
+                io_timeout: Duration::from_millis(150),
+                ..ProbeSettings::default()
+            })
+            .probe_async(&dest)
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), ready)
+            .await
+            .expect("executor progressed")
+            .expect("server ready");
+        // A current-thread runtime cannot service this timer if the probe uses
+        // blocking I/O directly. Keep the peer alive through the probe timeout.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(
+            !probe.is_finished(),
+            "unrelated work runs during stalled TLS"
+        );
+        assert!(tokio::time::timeout(Duration::from_secs(1), probe)
+            .await
+            .expect("finite caller deadline")
+            .expect("probe task")
+            .is_err());
+        server.await.expect("server task");
+    }
 
-        let settings = ProbeSettings {
-            connect_timeout: Duration::from_secs(2),
-            io_timeout: Duration::from_secs(2),
-            request_path: "/".to_owned(),
-            alpn: vec![b"h2".to_vec(), b"http/1.1".to_vec()],
-        };
-        let probe = StandardTlsProbe::new(settings);
-        let profile = probe
-            .probe_with_extra_roots(
-                &format!("localhost:{}", addr.port()),
-                &[cert.der().as_ref().to_vec()],
-            )
-            .expect("loopback probe");
+    #[tokio::test(flavor = "current_thread")]
+    async fn trickling_tls_bytes_cannot_reset_the_overall_deadline() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        server.join().expect("server thread");
-        assert_eq!(profile.tls_ver, 0x0304);
-        assert!([0x1301, 0x1303].contains(&profile.cipher));
-        assert_ne!(profile.group, 0);
-        assert_eq!(profile.alpn, vec![b"h2".to_vec()]);
-        assert!(profile.ee_exts.contains(&0x0010));
-        assert!(profile
-            .leaf_template
-            .san_dns
-            .contains(&"localhost".to_owned()));
-        assert!(profile.rtt > Duration::ZERO);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let dest = listener.local_addr().expect("address").to_string();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut peer, _) = listener.accept().await.expect("accept");
+            let mut hello = [0_u8; 1024];
+            assert!(peer.read(&mut hello).await.expect("ClientHello") > 0);
+            // A long incomplete TLS record keeps the handshake waiting even
+            // though each individual read makes progress before its I/O cap.
+            peer.write_all(&[0x16, 0x03, 0x03, 0x01, 0x00])
+                .await
+                .expect("record header");
+            tokio::pin!(stopped);
+            let mut tick = tokio::time::interval(Duration::from_millis(10));
+            let mut sent = 0;
+            loop {
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    _ = tick.tick() => {
+                        if peer.write_all(&[0]).await.is_err() {
+                            break;
+                        }
+                        sent += 1;
+                    }
+                }
+            }
+            sent
+        });
+        let probe = StandardTlsProbe::new(ProbeSettings {
+            connect_timeout: Duration::from_millis(100),
+            io_timeout: Duration::from_millis(100),
+            ..ProbeSettings::default()
+        });
+        let started = Instant::now();
+        let result = tokio::time::timeout(Duration::from_secs(1), probe.probe_async(&dest))
+            .await
+            .expect("overall deadline ends trickling handshake");
+        let elapsed = started.elapsed();
+        let _ = stop.send(());
+        assert!(result.is_err());
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "reads kept making progress"
+        );
+        assert!(server.await.expect("server task") > 1);
+    }
+
+    #[test]
+    fn expired_work_queued_in_blocking_pool_never_starts_network_io() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .max_blocking_threads(1)
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let (release, wait) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                started.send(()).expect("blocker started");
+                wait.recv_timeout(Duration::from_secs(2))
+                    .expect("release blocker");
+            });
+            ready.await.expect("blocking pool occupied");
+            let slots = Arc::new(Semaphore::new(1));
+            let invoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker_invoked = invoked.clone();
+            assert_eq!(
+                run_bounded_probe(
+                    slots.clone(),
+                    Instant::now() + Duration::from_millis(20),
+                    move || {
+                        worker_invoked.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Err(RealityError::ProbeFailed("expired queued work ran"))
+                    }
+                )
+                .await,
+                Err(RealityError::ProbeFailed("probe deadline exceeded"))
+            );
+            assert_eq!(
+                slots.available_permits(),
+                0,
+                "queued worker still owns permit"
+            );
+            release.send(()).expect("release pool");
+            blocker.await.expect("blocker exit");
+            let permit = tokio::time::timeout(Duration::from_secs(1), slots.acquire())
+                .await
+                .expect("expired worker exits")
+                .expect("pool open");
+            drop(permit);
+            assert_eq!(slots.available_permits(), 1);
+            assert!(!invoked.load(std::sync::atomic::Ordering::SeqCst));
+        });
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn default_entry_point_does_not_block_the_executor() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let dest = listener.local_addr().expect("address").to_string();
+        let probe = tokio::spawn(async move { probe_dest(&dest).await });
+        let (peer, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .expect("accept must run alongside default probe")
+            .expect("accept");
+        tokio::task::yield_now().await;
+        assert!(!probe.is_finished());
+        drop(peer);
+        assert!(tokio::time::timeout(Duration::from_secs(2), probe)
+            .await
+            .expect("closed peer terminates probe")
+            .expect("probe task")
+            .is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn timed_out_and_cancelled_workers_keep_slots_until_they_exit() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let slots = Arc::new(Semaphore::new(2));
+        let mut callers = Vec::new();
+        let mut releases = Vec::new();
+        for _ in 0..2 {
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, stalled) = std::sync::mpsc::channel();
+            releases.push(release);
+            callers.push(tokio::spawn(run_bounded_probe(
+                slots.clone(),
+                Instant::now() + Duration::from_millis(200),
+                move || {
+                    started.send(()).expect("started");
+                    // Model a noninterruptible OS DNS call with a controlled
+                    // gate. It outlives the caller, but never escapes its slot.
+                    stalled
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("release worker");
+                    Err(RealityError::ProbeFailed("controlled resolver finished"))
+                },
+            )));
+            tokio::time::timeout(Duration::from_secs(1), ready)
+                .await
+                .expect("worker started")
+                .expect("start signal");
+        }
+        let cancelled = callers.remove(0);
+        cancelled.abort();
+        assert!(cancelled
+            .await
+            .expect_err("caller cancelled")
+            .is_cancelled());
+        assert_eq!(
+            callers.remove(0).await.expect("caller task"),
+            Err(RealityError::ProbeFailed("probe deadline exceeded"))
+        );
+        assert_eq!(slots.available_permits(), 0);
+
+        let replacements = Arc::new(AtomicUsize::new(0));
+        for _ in 0..8 {
+            let replacements = replacements.clone();
+            assert_eq!(
+                run_bounded_probe(
+                    slots.clone(),
+                    Instant::now() + Duration::from_millis(5),
+                    move || {
+                        replacements.fetch_add(1, Ordering::SeqCst);
+                        Err(RealityError::ProbeFailed("replacement must not start"))
+                    },
+                )
+                .await,
+                Err(RealityError::ProbeFailed("probe deadline exceeded"))
+            );
+        }
+        assert_eq!(replacements.load(Ordering::SeqCst), 0);
+        assert_eq!(slots.available_permits(), 0);
+        for release in releases {
+            release.send(()).expect("release blocked worker");
+        }
+        let all_slots = tokio::time::timeout(Duration::from_secs(1), slots.acquire_many(2))
+            .await
+            .expect("workers actually exit")
+            .expect("pool open");
+        drop(all_slots);
+        assert_eq!(slots.available_permits(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn expired_and_closed_queues_never_run_the_probe() {
+        let slots = Arc::new(Semaphore::new(1));
+        assert_eq!(
+            run_bounded_probe(slots.clone(), Instant::now(), || {
+                panic!("expired work must not start");
+            })
+            .await,
+            Err(RealityError::ProbeFailed("probe deadline exceeded"))
+        );
+        slots.close();
+        assert_eq!(
+            run_bounded_probe(slots, Instant::now() + Duration::from_secs(1), || {
+                panic!("closed pool must not start work");
+            })
+            .await,
+            Err(RealityError::ProbeFailed("probe worker pool closed"))
+        );
+    }
+
+    #[test]
+    fn recording_stream_preserves_first_response_timestamp_and_remaining_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let connect_started = Instant::now();
+        let client = TcpStream::connect(listener.local_addr().expect("address")).expect("connect");
+        let (mut peer, _) = listener.accept().expect("accept");
+        let mut stream = RecordingStream::new(
+            client,
+            Instant::now() + Duration::from_secs(2),
+            Duration::from_secs(1),
+        );
+        assert!(stream.first_response_at.is_none());
+        peer.write_all(&[0x16]).expect("first TLS byte");
+        let mut byte = [0_u8; 1];
+        stream.read_exact(&mut byte).expect("first read");
+        assert_eq!(byte, [0x16]);
+        let first_response = stream.first_response_at.expect("response timestamp");
+        assert!(first_response > connect_started);
+        peer.write_all(&[0x03, 0x03]).expect("later TLS bytes");
+        stream.read_exact(&mut byte).expect("second read");
+        assert_eq!(stream.first_response_at, Some(first_response));
+        assert_eq!(stream.inbound, [0x16, 0x03]);
+        assert!(stream.remaining_io().expect("I/O budget") <= Duration::from_secs(1));
+        stream.deadline = Instant::now() + Duration::from_millis(20);
+        assert!(stream.remaining_io().expect("shortened budget") <= Duration::from_millis(20));
+        stream.deadline = Instant::now();
+        // Even buffered peer bytes cannot restart a spent deadline.
+        assert_eq!(
+            stream.read(&mut byte).expect_err("expired read").kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            stream.write(&byte).expect_err("expired write").kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            stream.flush().expect_err("expired flush").kind(),
+            std::io::ErrorKind::TimedOut
+        );
+    }
+
+    #[test]
+    fn recording_stream_eof_is_not_a_tls_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let client = TcpStream::connect(listener.local_addr().expect("address")).expect("connect");
+        let (peer, _) = listener.accept().expect("accept");
+        drop(peer);
+        let mut stream = RecordingStream::new(
+            client,
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        assert_eq!(stream.read(&mut [0_u8; 1]).expect("EOF"), 0);
+        assert!(stream.first_response_at.is_none());
+        assert!(stream.inbound.is_empty());
+    }
+
+    #[test]
+    fn probe_settings_reject_zero_and_overflowing_deadlines() {
+        for (connect_timeout, io_timeout) in [
+            (Duration::ZERO, Duration::from_secs(1)),
+            (Duration::from_secs(1), Duration::ZERO),
+            (Duration::MAX, Duration::MAX),
+        ] {
+            assert!(ProbeSettings {
+                connect_timeout,
+                io_timeout,
+                ..ProbeSettings::default()
+            }
+            .deadline()
+            .is_err());
+        }
+        let before = Instant::now();
+        let deadline = ProbeSettings::default().deadline().expect("default budget");
+        assert!(deadline >= before + Duration::from_secs(20));
+        assert!(deadline <= Instant::now() + Duration::from_secs(20));
+        assert!(StandardTlsProbe::default().probe_dest("").is_err());
     }
 
     #[test]
@@ -991,15 +1463,22 @@ mod tests {
     }
 
     #[test]
-    fn memory_keylog_returns_recorded_secret() {
+    fn memory_keylog_moves_zeroizing_secret_and_redacts_debug() {
         let log = MemoryKeyLog::default();
-        log.log("SERVER_HANDSHAKE_TRAFFIC_SECRET", b"random", b"secret");
-
-        assert_eq!(
-            log.secret("SERVER_HANDSHAKE_TRAFFIC_SECRET"),
-            Some(b"secret".to_vec())
+        assert!(log.will_log(SERVER_HANDSHAKE_SECRET));
+        assert!(!log.will_log("CLIENT_TRAFFIC_SECRET_0"));
+        log.log("CLIENT_TRAFFIC_SECRET_0", b"random", b"unused secret");
+        assert!(log.take_secret().is_none());
+        log.log(SERVER_HANDSHAKE_SECRET, b"random", b"old secret");
+        log.log(SERVER_HANDSHAKE_SECRET, b"random", b"replacement secret");
+        assert_eq!(format!("{log:?}"), "MemoryKeyLog(<redacted>)");
+        let secret: SecretBytes = log.take_secret().expect("recorded secret");
+        assert_eq!(secret.expose_secret(), b"replacement secret");
+        assert_eq!(format!("{secret:?}"), "SecretBytes(<redacted>)");
+        assert!(
+            log.take_secret().is_none(),
+            "secret must be moved, not copied"
         );
-        assert_eq!(log.secret("CLIENT_TRAFFIC_SECRET_0"), None);
     }
 
     fn push_handshake(msg_type: u8, body: &[u8], out: &mut Vec<u8>) {

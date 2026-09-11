@@ -59,10 +59,10 @@ pub(crate) fn client_config(cfg: &ClientCfg) -> Result<quinn::ClientConfig, Core
 pub(crate) struct AuthenticatedServerCrypto {
     pub(crate) sni: String,
     pub(crate) session_id: [u8; 32],
-    pub(crate) shared_secret: [u8; 32],
+    pub(crate) shared_secret: Secret<32>,
     pub(crate) client_hello: Vec<u8>,
     pub(crate) profile: DestProfile,
-    pub(crate) mldsa_seed: [u8; 32],
+    pub(crate) mldsa_seed: Secret<32>,
 }
 
 pub(crate) fn server_config(authenticated: AuthenticatedServerCrypto) -> quinn::ServerConfig {
@@ -139,10 +139,10 @@ impl quinn_proto::crypto::ServerConfig for UmbraQuicServerConfig {
                 authenticated: Box::new(ServerExpected {
                     sni: self.authenticated.sni.clone(),
                     session_id: self.authenticated.session_id,
-                    shared_secret: self.authenticated.shared_secret,
+                    shared_secret: Secret::new(*self.authenticated.shared_secret.expose_secret()),
                     client_hello: self.authenticated.client_hello.clone(),
                     profile: self.authenticated.profile.clone(),
-                    mldsa_seed: self.authenticated.mldsa_seed,
+                    mldsa_seed: Secret::new(*self.authenticated.mldsa_seed.expose_secret()),
                     local_transport_parameters,
                 }),
             },
@@ -195,32 +195,41 @@ enum SessionState {
 struct ServerExpected {
     sni: String,
     session_id: [u8; 32],
-    shared_secret: [u8; 32],
+    shared_secret: Secret<32>,
     client_hello: Vec<u8>,
     profile: DestProfile,
-    mldsa_seed: [u8; 32],
+    mldsa_seed: Secret<32>,
     local_transport_parameters: Vec<u8>,
 }
 
 /// Certificate verifier that accepts only Umbra-forged REALITY certificates.
 struct QuicRealityCertVerifier {
-    shared: [u8; 32],
+    shared: Secret<32>,
     session_id: [u8; 32],
     mldsa_verify: Vec<u8>,
+    server_name: String,
 }
 
 impl CertVerify for QuicRealityCertVerifier {
-    fn verify(&self, leaf_der: &[u8], _chain: &[Vec<u8>]) -> TlsPeerKind {
+    fn verify(&self, leaf_der: &[u8], chain: &[Vec<u8>]) -> TlsPeerKind {
         match classify_peer_certificate(
             leaf_der,
-            &self.shared,
+            self.shared.expose_secret(),
             &self.session_id,
             &self.mldsa_verify,
             true,
         ) {
             RealityPeerKind::UmbraTrusted => TlsPeerKind::UmbraTrusted,
-            RealityPeerKind::RealSite => TlsPeerKind::RealSite,
-            RealityPeerKind::Invalid => TlsPeerKind::Invalid,
+            RealityPeerKind::RealSite
+                if umbra_reality::cert::verify_site_certificate(
+                    leaf_der,
+                    chain,
+                    &self.server_name,
+                ) =>
+            {
+                TlsPeerKind::RealSite
+            }
+            RealityPeerKind::RealSite | RealityPeerKind::Invalid => TlsPeerKind::Invalid,
         }
     }
 }
@@ -410,6 +419,17 @@ impl UmbraQuicSession {
         let finished = client
             .read_server_flight(&server_flight, &verifier)
             .map_err(|err| proto_error(err.to_string()))?;
+        self.complete_client_handshake(finished)
+    }
+
+    fn complete_client_handshake(
+        &mut self,
+        finished: umbra_tls::quic::QuicClientFinished,
+    ) -> Result<bool, quinn_proto::TransportError> {
+        if finished.peer_kind != TlsPeerKind::UmbraTrusted {
+            self.state = SessionState::Failed;
+            return Err(proto_error("peer certificate was not Umbra trusted"));
+        }
         self.peer_transport_parameters = Some(finished.peer_transport_parameters);
         self.outgoing.push_back(finished.finished);
         self.pending_keys
@@ -431,19 +451,20 @@ impl UmbraQuicSession {
         if client_hello != authenticated.client_hello {
             return Err(proto_error("authenticated QUIC ClientHello changed"));
         }
-        let seed = Secret::new(authenticated.mldsa_seed);
         let forged = forge_leaf_certificate(
             &authenticated.profile,
             &authenticated.sni,
-            &authenticated.shared_secret,
+            authenticated.shared_secret.expose_secret(),
             &authenticated.session_id,
-            &seed,
+            &authenticated.mldsa_seed,
         )
         .map_err(|err| proto_error(err.to_string()))?;
+        let mut profile = authenticated.profile.to_tls_server_profile();
+        profile.alpn = Some("h3".to_owned());
         let accepted = QuicTlsServer::accept_with_transport_parameters(
             &client_hello,
             forged.tls_cert,
-            &authenticated.profile.to_tls_server_profile(),
+            &profile,
             &authenticated.local_transport_parameters,
         )
         .map_err(|err| proto_error(err.to_string()))?;
@@ -544,9 +565,10 @@ fn build_client_session(
     );
     let (client, client_hello) = QuicTlsClient::start(&params)?;
     let verifier = QuicRealityCertVerifier {
-        shared: *shared.expose_secret(),
+        shared,
         session_id: auth_token,
         mldsa_verify: cfg.mldsa_verify.clone(),
+        server_name: server_name.to_owned(),
     };
     let mut outgoing = VecDeque::new();
     outgoing.push_back(client_hello);
@@ -1013,6 +1035,64 @@ mod tests {
         let mut failed = test_session(SessionState::Failed);
 
         assert!(failed.read_handshake(b"\x01\x00\x00\x00").is_err());
+    }
+
+    #[test]
+    fn scenario_quic_verifier_rejects_untrusted_ordinary_certificate() {
+        let cert = rcgen::generate_simple_self_signed(vec!["site.example".to_owned()])
+            .expect("synthetic certificate");
+        let verifier = QuicRealityCertVerifier {
+            shared: Secret::new([1; 32]),
+            session_id: [2; 32],
+            mldsa_verify: Vec::new(),
+            server_name: "site.example".to_owned(),
+        };
+        assert_eq!(verifier.verify(cert.cert.der(), &[]), TlsPeerKind::Invalid);
+        assert_eq!(verifier.verify(b"bad DER", &[]), TlsPeerKind::Invalid);
+    }
+
+    #[test]
+    fn scenario_quic_untrusted_peer_cannot_publish_application_keys() {
+        for peer_kind in [TlsPeerKind::RealSite, TlsPeerKind::Invalid] {
+            let mut session = test_session(SessionState::Failed);
+            let finished = test_client_finished(peer_kind);
+            assert!(session.complete_client_handshake(finished).is_err());
+            assert!(matches!(session.state, SessionState::Failed));
+            assert!(!session.handshake_data_ready);
+            assert!(!session.handshake_data_reported);
+            assert!(session.handshake_data().is_none());
+            assert!(session.pending_keys.is_empty());
+            assert!(session.outgoing.is_empty());
+            assert!(session.peer_transport_parameters.is_none());
+            assert!(session.next_1rtt_keys().is_none());
+        }
+    }
+
+    #[test]
+    fn scenario_quic_trusted_peer_publishes_readiness_once() {
+        let mut session = test_session(SessionState::Failed);
+        assert!(session
+            .complete_client_handshake(test_client_finished(TlsPeerKind::UmbraTrusted))
+            .expect("trusted handshake"));
+        assert!(matches!(session.state, SessionState::Connected));
+        assert!(session.handshake_data_ready);
+        assert!(session.handshake_data().is_some());
+        assert!(!session.report_handshake_data_once());
+        assert_eq!(session.peer_transport_parameters, Some(vec![1, 2]));
+        assert_eq!(session.outgoing.pop_front(), Some(vec![0x14, 0, 0, 0]));
+        assert!(matches!(
+            session.pending_keys.pop_front(),
+            Some(PendingKeys::Application(_))
+        ));
+    }
+
+    fn test_client_finished(peer_kind: TlsPeerKind) -> umbra_tls::quic::QuicClientFinished {
+        umbra_tls::quic::QuicClientFinished {
+            finished: vec![0x14, 0, 0, 0],
+            application_secrets: test_traffic_secrets(),
+            peer_kind,
+            peer_transport_parameters: vec![1, 2],
+        }
     }
 
     fn test_session(state: SessionState) -> UmbraQuicSession {

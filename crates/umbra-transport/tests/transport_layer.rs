@@ -49,10 +49,25 @@ fn scenario_segment_strategy_parses_and_unknown_is_rejected() {
         }
     );
     assert_eq!(
-        parse_tcp_evasion("geneva:fragment{tcp}").expect("geneva parses"),
-        TcpEvasionPolicy::Geneva("fragment{tcp}".to_owned())
+        parse_tcp_evasion(" off ").expect("off parses"),
+        TcpEvasionPolicy::Off
     );
-    assert!(parse_tcp_evasion("geneva:").is_err());
+    for strategy in [
+        "geneva:",
+        "geneva:fragment{tcp}",
+        " geneva:SYNTHETIC_SECRET ",
+    ] {
+        let error = parse_tcp_evasion(strategy).expect_err("Geneva sender unavailable");
+        assert!(matches!(
+            error,
+            umbra_transport::TransportError::InvalidEvasionStrategy(_)
+        ));
+        assert_eq!(
+            error.to_string(),
+            "invalid TCP evasion strategy: unsupported Geneva strategy: sender unavailable"
+        );
+        assert!(!format!("{error:?}").contains("SYNTHETIC_SECRET"));
+    }
     assert!(parse_tcp_evasion("segment:threshold=x,first=4").is_err());
     assert!(parse_tcp_evasion("segment:threshold=10,extra=4").is_err());
     assert!(parse_tcp_evasion("segment:first=4").is_err());
@@ -116,6 +131,183 @@ async fn scenario_evasion_off_writes_once() {
         .await
         .expect("read ClientHello");
     assert_eq!(received, hello);
+}
+
+#[tokio::test]
+async fn scenario_evasion_geneva_direct_sender_fails_without_touching_writer() {
+    for hello in [&b"clienthello bytes"[..], &b""[..]] {
+        let mut writer = EvasionWriter::default();
+        let policy = TcpEvasionPolicy::Geneva("SYNTHETIC_SECRET".to_owned());
+        let error = send_client_hello(&mut writer, hello, &policy)
+            .await
+            .expect_err("Geneva cannot silently become Off");
+        assert!(matches!(
+            error,
+            umbra_transport::TransportError::InvalidEvasionStrategy(_)
+        ));
+        assert!(!format!("{error} {error:?}").contains("SYNTHETIC_SECRET"));
+        assert!(writer.attempts.is_empty());
+        assert!(writer.bytes.is_empty());
+        assert_eq!(writer.flushes, 0);
+    }
+}
+
+#[tokio::test]
+async fn scenario_evasion_segment_preserves_order_at_threshold_and_split_boundaries() {
+    for len in [0, 1, 20, 21, 100] {
+        let hello = (0_u8..len).collect::<Vec<_>>();
+        for first_segment_len in [1, 7, 1000] {
+            let policy = TcpEvasionPolicy::Segment {
+                threshold: 20,
+                first_segment_len,
+            };
+            let mut writer = EvasionWriter::default();
+            let report = send_client_hello(&mut writer, &hello, &policy)
+                .await
+                .expect("ordered segmentation");
+            assert_eq!(writer.bytes, hello);
+            assert_eq!(writer.attempts.concat(), hello);
+            assert_eq!(report.bytes, hello.len());
+            assert_eq!(writer.flushes, 1);
+            if len > 20 {
+                let split = first_segment_len.min(hello.len() - 1);
+                assert_eq!(
+                    writer.attempts,
+                    vec![hello[..split].to_vec(), hello[split..].to_vec()]
+                );
+                assert_eq!(report.writes, 2);
+            } else {
+                // An empty write_all need not poll the writer.
+                assert_eq!(writer.attempts.len(), usize::from(len != 0));
+                assert_eq!(report.writes, 1);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn scenario_evasion_partial_write_is_not_replayed() {
+    let hello = (0_u8..100).collect::<Vec<_>>();
+    for policy in [
+        TcpEvasionPolicy::Off,
+        TcpEvasionPolicy::Segment {
+            threshold: 20,
+            first_segment_len: 7,
+        },
+    ] {
+        // Include a zero-byte I/O error: it is not a recoverable setup failure.
+        for fail_after in [0, 1, 7, 9, 99] {
+            let mut writer = EvasionWriter {
+                remaining_before_failure: Some(fail_after),
+                ..Default::default()
+            };
+            let error = send_client_hello(&mut writer, &hello, &policy)
+                .await
+                .expect_err("write failure terminates the send");
+            assert!(matches!(error, umbra_transport::TransportError::Io(_)));
+            assert_eq!(writer.bytes, hello[..fail_after]);
+            // The error is one-shot: any retry would be recorded and could succeed.
+            assert_eq!(
+                writer.attempts.last().expect("failing write")[0],
+                hello[fail_after]
+            );
+            assert_eq!(writer.flushes, 0);
+        }
+    }
+}
+
+#[tokio::test]
+async fn scenario_evasion_invalid_segment_is_not_a_recoverable_setup_failure() {
+    for policy in [
+        TcpEvasionPolicy::Segment {
+            threshold: 0,
+            first_segment_len: 7,
+        },
+        TcpEvasionPolicy::Segment {
+            threshold: 20,
+            first_segment_len: 0,
+        },
+    ] {
+        let mut writer = EvasionWriter::default();
+        let error = send_client_hello(&mut writer, b"clienthello", &policy)
+            .await
+            .expect_err("invalid policy is not recoverable");
+        assert!(matches!(
+            error,
+            umbra_transport::TransportError::InvalidEvasionStrategy(_)
+        ));
+        assert!(writer.attempts.is_empty());
+        assert_eq!(writer.flushes, 0);
+    }
+}
+
+#[tokio::test]
+async fn scenario_evasion_recoverable_setup_fallback_sends_ordinary_bytes_once() {
+    let hello = b"clienthello bytes";
+    let mut writer = EvasionWriter::default();
+    let EvasionPlan::Ordinary(bytes) =
+        fallback_plan_on_recoverable_error(hello, Err(RecoverableBeforeSend))
+    else {
+        panic!("recoverable setup failure should fall back")
+    };
+    assert!(writer.attempts.is_empty());
+    let report = send_client_hello(&mut writer, &bytes, &TcpEvasionPolicy::Off)
+        .await
+        .expect("ordinary fallback send");
+    assert_eq!(report.writes, 1);
+    assert_eq!(report.bytes, hello.len());
+    assert_eq!(writer.attempts, vec![hello.to_vec()]);
+    assert_eq!(writer.bytes, hello);
+}
+
+#[derive(Default)]
+struct EvasionWriter {
+    attempts: Vec<Vec<u8>>,
+    bytes: Vec<u8>,
+    remaining_before_failure: Option<usize>,
+    flushes: usize,
+}
+
+impl tokio::io::AsyncWrite for EvasionWriter {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        self.attempts.push(buf.to_vec());
+        let len = match self.remaining_before_failure {
+            Some(0) => {
+                self.remaining_before_failure = None;
+                return std::task::Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "injected write failure",
+                )));
+            }
+            Some(remaining) => {
+                let len = buf.len().min(remaining);
+                self.remaining_before_failure = Some(remaining - len);
+                len
+            }
+            None => buf.len(),
+        };
+        self.bytes.extend_from_slice(&buf[..len]);
+        std::task::Poll::Ready(Ok(len))
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        self.flushes += 1;
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
 }
 
 #[tokio::test]

@@ -21,9 +21,9 @@ const DUPLEX_BUFFER_LEN: usize = 256 * 1024;
 /// TLS endpoint capable of sealing and opening application-data records.
 pub enum TlsAppEndpoint {
     /// Client-side TLS endpoint after the handshake completed.
-    Client(Tls13Client),
+    Client(Box<Tls13Client>),
     /// Server-side TLS endpoint after the handshake completed.
-    Server(Tls13Server),
+    Server(Box<Tls13Server>),
 }
 
 impl TlsAppEndpoint {
@@ -181,8 +181,10 @@ mod tests {
             .expect("server completes");
 
         let (client_raw, server_raw) = tokio::io::duplex(16 * 1024);
-        let mut client_plain = spawn_tls_app_io(client_raw, TlsAppEndpoint::Client(client));
-        let mut server_plain = spawn_tls_app_io(server_raw, TlsAppEndpoint::Server(server));
+        let mut client_plain =
+            spawn_tls_app_io(client_raw, TlsAppEndpoint::Client(Box::new(client)));
+        let mut server_plain =
+            spawn_tls_app_io(server_raw, TlsAppEndpoint::Server(Box::new(server)));
 
         client_plain
             .write_all(b"client bytes")

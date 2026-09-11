@@ -12,14 +12,14 @@ pub const DEFAULT_FIRST_SEGMENT_LEN: usize = 32;
 pub enum TcpEvasionPolicy {
     /// Ordinary ordered TCP write.
     Off,
-    /// Conservative ordered segmentation.
+    /// Conservative ordered write segmentation, without a TCP packet-boundary guarantee.
     Segment {
         /// Segment threshold.
         threshold: usize,
         /// Length of the first segment.
         first_segment_len: usize,
     },
-    /// Parsed Geneva-style strategy string retained for privileged senders.
+    /// Unsupported Geneva-style policy; parsing and send planning reject it.
     Geneva(String),
 }
 
@@ -44,7 +44,7 @@ pub enum EvasionPlan {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct RecoverableBeforeSend;
 
-/// Parse `off`, `segment`, or a Geneva-style strategy string.
+/// Parse `off` or `segment`; Geneva-style strategies have no implemented sender.
 pub fn parse_tcp_evasion(input: &str) -> Result<TcpEvasionPolicy, TransportError> {
     let trimmed = input.trim();
     if trimmed == "off" {
@@ -54,14 +54,8 @@ pub fn parse_tcp_evasion(input: &str) -> Result<TcpEvasionPolicy, TransportError
             threshold: DEFAULT_SEGMENT_THRESHOLD,
             first_segment_len: DEFAULT_FIRST_SEGMENT_LEN,
         })
-    } else if let Some(strategy) = trimmed.strip_prefix("geneva:") {
-        if strategy.is_empty() {
-            Err(TransportError::InvalidEvasionStrategy(
-                "Geneva strategy is empty",
-            ))
-        } else {
-            Ok(TcpEvasionPolicy::Geneva(strategy.to_owned()))
-        }
+    } else if trimmed.starts_with("geneva:") {
+        Err(unsupported_geneva())
     } else if let Some(rest) = trimmed.strip_prefix("segment:") {
         parse_explicit_segment(rest)
     } else {
@@ -77,12 +71,17 @@ pub fn plan_client_hello_writes(
     policy: &TcpEvasionPolicy,
 ) -> Result<Vec<Vec<u8>>, TransportError> {
     match policy {
-        TcpEvasionPolicy::Off | TcpEvasionPolicy::Geneva(_) => Ok(vec![client_hello.to_vec()]),
+        TcpEvasionPolicy::Off => Ok(vec![client_hello.to_vec()]),
+        TcpEvasionPolicy::Geneva(_) => Err(unsupported_geneva()),
         TcpEvasionPolicy::Segment {
             threshold,
             first_segment_len,
         } => conservative_segments(client_hello, *threshold, *first_segment_len),
     }
+}
+
+fn unsupported_geneva() -> TransportError {
+    TransportError::InvalidEvasionStrategy("unsupported Geneva strategy: sender unavailable")
 }
 
 /// Fall back to an ordinary write if evasion failed before bytes were sent.

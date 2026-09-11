@@ -78,9 +78,9 @@ pub struct UselessRecordPolicy {
 impl UselessRecordPolicy {
     /// Validate a useless-record policy.
     pub fn validate(self) -> Result<(), CoreError> {
-        if matches!(self.action, UselessRecordAction::Close) && self.max_useless_records == 0 {
+        if matches!(self.action, UselessRecordAction::Close) {
             return Err(CoreError::InvalidConfig(
-                "close policy requires a positive useless-record limit",
+                "unauthenticated traffic must be forwarded to dest",
             ));
         }
         Ok(())

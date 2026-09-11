@@ -11,7 +11,13 @@ alpn = ["h2", "http/1.1"]
 alps = ["h2"]
 padding_target = 1757
 expected_ja3 = "fc513d165de2da9e593e11eddc48906e"
-expected_ja4 = "t771c15e16g4_57acf744df56_95821207fdf2_fefd5cd8f1da"
+expected_ja4 = "t13d1516h2_8daaf6152771_806a8c22fdea"
+
+[evidence]
+# Parsed transcription only; generated fixtures cannot verify capture parity.
+parsed_tls = "recorded"
+full_tls_payload = "unverified"
+quic = "unverified"
 
 [quic]
 # Inherited from the previous seed profile pending a decoded QUIC Initial capture.

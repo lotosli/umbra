@@ -18,7 +18,7 @@ pub const CONTENT_TYPE_ALERT: u8 = 0x15;
 const TLS13_RECORD_VERSION: u16 = 0x0303;
 
 /// Stateful TLS 1.3 record layer for one direction.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct RecordLayer {
     cipher_suite: u16,
     key: Vec<u8>,
@@ -35,7 +35,23 @@ pub struct OpenRecord {
     pub plaintext: Vec<u8>,
 }
 
+impl core::fmt::Debug for RecordLayer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RecordLayer")
+            .field("cipher_suite", &self.cipher_suite)
+            .field("sequence", &self.sequence)
+            .field("keys", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
 impl RecordLayer {
+    /// Transfer derived keys into a record layer without duplicating the key allocation.
+    #[must_use]
+    pub fn from_traffic_keys(cipher_suite: u16, mut keys: crate::keyschedule::TrafficKeys) -> Self {
+        Self::new(cipher_suite, core::mem::take(&mut keys.key), keys.iv)
+    }
+
     /// Construct a record layer from an AEAD key and static IV.
     #[must_use]
     pub fn new(cipher_suite: u16, key: Vec<u8>, iv: [u8; TLS13_IV_LEN]) -> Self {
@@ -97,7 +113,10 @@ pub fn seal_record(
     plaintext: &[u8],
 ) -> Result<Vec<u8>, TlsError> {
     let algorithm = algorithm(cipher_suite)?;
-    let mut inner = Vec::with_capacity(plaintext.len() + 1);
+    if plaintext.len() > 16384 {
+        return Err(TlsError::LengthOutOfRange);
+    }
+    let mut inner = zeroize::Zeroizing::new(Vec::with_capacity(plaintext.len() + 1));
     inner.extend_from_slice(plaintext);
     inner.push(content_type);
 
@@ -128,13 +147,21 @@ pub fn open_record(
     if record[0] != CONTENT_TYPE_APPLICATION_DATA {
         return Err(TlsError::InvalidInput("protected record has bad type"));
     }
+    if record[1..3] != TLS13_RECORD_VERSION.to_be_bytes() {
+        return Err(TlsError::InvalidInput("protected record has bad version"));
+    }
     let declared = usize::from(u16::from_be_bytes([record[3], record[4]]));
+    if declared > 16384 + 256 {
+        return Err(TlsError::LengthOutOfRange);
+    }
     if record.len() != 5 + declared {
         return Err(TlsError::InvalidInput("record length mismatch"));
     }
     let nonce = sequence_nonce(iv, sequence);
-    let inner = aead::open(algorithm, key, &nonce, &record[5..], &record[..5])
-        .map_err(|_| TlsError::AuthenticationFailed)?;
+    let inner = zeroize::Zeroizing::new(
+        aead::open(algorithm, key, &nonce, &record[5..], &record[..5])
+            .map_err(|_| TlsError::AuthenticationFailed)?,
+    );
     split_inner_plaintext(&inner)
 }
 

@@ -23,6 +23,9 @@ subtle.workspace = true
 thiserror.workspace = true
 ring.workspace = true
 x509-parser.workspace = true
+zeroize.workspace = true
+rustls = { workspace = true, features = ["brotli"] }
+ml-dsa.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

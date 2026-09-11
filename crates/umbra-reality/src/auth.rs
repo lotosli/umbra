@@ -1,7 +1,12 @@
 //! REALITY `legacy_session_id` authentication token.
 
 use subtle::ConstantTimeEq;
-use umbra_crypto::{aead, aead::AeadAlgorithm, kdf};
+use umbra_crypto::{
+    aead,
+    aead::AeadAlgorithm,
+    kdf,
+    secret::{Secret, SecretBytes},
+};
 
 use crate::{replay::ReplayCache, RealityError};
 
@@ -78,12 +83,12 @@ pub fn seal_session_id_with_flags(
     let timestamp = u32::try_from(now).map_err(|_| RealityError::TimestampOutOfRange)?;
     let short_id = ShortId::from_slice(short_id)?;
     let (auth_key, nonce) = auth_key_nonce(shared)?;
-    let plaintext = plaintext(flags, timestamp, short_id);
+    let plaintext = Secret::new(plaintext(flags, timestamp, short_id));
     let sealed = aead::seal(
         AeadAlgorithm::Aes128Gcm,
-        &auth_key,
-        &nonce,
-        &plaintext,
+        auth_key.expose_secret(),
+        nonce.expose_secret(),
+        plaintext.expose_secret(),
         hello0,
     )
     .map_err(|_| RealityError::AuthenticationFailed)?;
@@ -93,6 +98,10 @@ pub fn seal_session_id_with_flags(
 }
 
 /// Open and validate a REALITY session id.
+///
+/// Accepted tokens are replay-protected through `timestamp + max_diff` inclusive,
+/// independently of the cache's default TTL. Expiry overflow and cache capacity
+/// exhaustion reject local authentication just like other validation failures.
 pub fn open_session_id(
     shared: &[u8; 32],
     session_id: &[u8; SESSION_ID_LEN],
@@ -106,18 +115,20 @@ pub fn open_session_id(
         return Err(RealityError::InvalidTimeWindow);
     }
     let (auth_key, nonce) = auth_key_nonce(shared)?;
-    let plaintext = aead::open(
-        AeadAlgorithm::Aes128Gcm,
-        &auth_key,
-        &nonce,
-        session_id,
-        hello0,
-    )
-    .map_err(|_| RealityError::AuthenticationFailed)?;
-    let opened = parse_plaintext(&plaintext)?;
-    validate_time(opened.timestamp, now, max_diff)?;
+    let plaintext = SecretBytes::new(
+        aead::open(
+            AeadAlgorithm::Aes128Gcm,
+            auth_key.expose_secret(),
+            nonce.expose_secret(),
+            session_id,
+            hello0,
+        )
+        .map_err(|_| RealityError::AuthenticationFailed)?,
+    );
+    let opened = parse_plaintext(plaintext.expose_secret())?;
+    let expires_at = validate_time(opened.timestamp, now, max_diff)?;
     validate_short_id(opened.short_id, allowed)?;
-    replay.insert_or_reject(*session_id, now)?;
+    replay.insert_or_reject_until(*session_id, now, expires_at)?;
     Ok(opened)
 }
 
@@ -146,15 +157,15 @@ pub fn seal_session_id(
     try_seal_session_id(shared, short_id, hello0, now).unwrap_or([0_u8; SESSION_ID_LEN])
 }
 
-fn auth_key_nonce(shared: &[u8; 32]) -> Result<([u8; 16], [u8; 12]), RealityError> {
-    let key = kdf::hkdf_sha256(SALT, shared, b"key", 16)
-        .map_err(|_| RealityError::AuthenticationFailed)?
-        .try_into()
-        .map_err(|_| RealityError::AuthenticationFailed)?;
-    let nonce = kdf::hkdf_sha256(SALT, shared, b"nonce", 12)
-        .map_err(|_| RealityError::AuthenticationFailed)?
-        .try_into()
-        .map_err(|_| RealityError::AuthenticationFailed)?;
+fn auth_key_nonce(shared: &[u8; 32]) -> Result<(SecretBytes, SecretBytes), RealityError> {
+    let key = SecretBytes::new(
+        kdf::hkdf_sha256(SALT, shared, b"key", 16)
+            .map_err(|_| RealityError::AuthenticationFailed)?,
+    );
+    let nonce = SecretBytes::new(
+        kdf::hkdf_sha256(SALT, shared, b"nonce", 12)
+            .map_err(|_| RealityError::AuthenticationFailed)?,
+    );
     Ok((key, nonce))
 }
 
@@ -195,13 +206,15 @@ fn parse_plaintext(input: &[u8]) -> Result<AuthOk, RealityError> {
     })
 }
 
-fn validate_time(timestamp: u32, now: u64, max_diff: u64) -> Result<(), RealityError> {
+fn validate_time(timestamp: u32, now: u64, max_diff: u64) -> Result<u64, RealityError> {
     let timestamp = u64::from(timestamp);
     let diff = now.abs_diff(timestamp);
     if diff > max_diff {
         return Err(RealityError::Expired);
     }
-    Ok(())
+    timestamp
+        .checked_add(max_diff)
+        .ok_or(RealityError::ReplayExpiryOverflow)
 }
 
 fn validate_short_id(short_id: ShortId, allowed: &[Vec<u8>]) -> Result<(), RealityError> {

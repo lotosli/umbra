@@ -38,7 +38,7 @@ fn scenario_session_id_and_key_share_are_caller_controlled() {
     assert_eq!(parsed.x25519_key_share, Some(public_key));
     assert_eq!(parsed.sni.as_deref(), Some("server.example"));
     assert_eq!(
-        hello0(&record).expect("HELLO0 should build")[44..76],
+        hello0(&record).expect("HELLO0 should build")[39..71],
         [0_u8; 32]
     );
 }
@@ -194,9 +194,9 @@ fn scenario_clienthello_fail_fast_errors() {
         TlsError::InvalidInput("short TLS record")
     );
 
-    let mut raw = vec![0x01, 0x00, 0x00, 0x26, 0x03, 0x03];
-    raw.extend_from_slice(&[0_u8; 32]);
-    raw.push(0);
+    let mut params = client_hello_params();
+    params.session_id.clear();
+    let raw = build_client_hello_handshake(&params).expect("empty session id is valid TLS");
     assert_eq!(
         hello0(&raw).expect_err("short session id must fail"),
         TlsError::InvalidInput("session id is not 32 bytes")
@@ -284,17 +284,119 @@ fn scenario_rfc8448_key_schedule_vector() {
 }
 
 #[test]
+fn scenario_full_schedule_matches_rfc8448_and_independent_sha384_reference() {
+    // RFC 8448 section 3: CH, SH, EE, Certificate, CV, server Finished, client Finished.
+    let transcript = hex(concat!(
+        "010000c00303cb34ecb1e78163ba1c38c6dacb196a6dffa21a8d9912ec18a2ef6283024dece7000006130113031302010000910000000b0009000006736572766572ff01000100000a00140012001d0017001800190100010101020103010400230000003300260024001d002099381de560e4bd43d23d8e435a7dbafeb3c06e51c13cae4d5413691e529aaf2c002b0003020304000d0020001e040305030603020308040805080604010501060102010402050206020202002d00020101001c00024001",
+        "020000560303a6af06a4121860dc5e6e60249cd34c95930c8ac5cb1434dac155772ed3e2692800130100002e00330024001d0020c9828876112095fe66762bdbf7c672e156d6cc253b833df1dd69b1b04e751f0f002b00020304",
+        "080000240022000a00140012001d00170018001901000101010201030104001c0002400100000000",
+        "0b0001b9000001b50001b0308201ac30820115a003020102020102300d06092a864886f70d01010b0500300e310c300a06035504031303727361301e170d3136303733303031323335395a170d3236303733303031323335395a300e310c300a0603550403130372736130819f300d06092a864886f70d010101050003818d0030818902818100b4bb498f8279303d980836399b36c6988c0c68de55e1bdb826d3901a2461eafd2de49a91d015abbc9a95137ace6c1af19eaa6af98c7ced43120998e187a80ee0ccb0524b1b018c3e0b63264d449a6d38e22a5fda430846748030530ef0461c8ca9d9efbfae8ea6d1d03e2bd193eff0ab9a8002c47428a6d35a8d88d79f7f1e3f0203010001a31a301830090603551d1304023000300b0603551d0f0404030205a0300d06092a864886f70d01010b05000381810085aad2a0e5b9276b908c65f73a7267170618a54c5f8a7b337d2df7a594365417f2eae8f8a58c8f8172f9319cf36b7fd6c55b80f21a03015156726096fd335e5e67f2dbf102702e608ccae6bec1fc63a42a99be5c3eb7107c3c54e9b9eb2bd5203b1c3b84e0a8b2f759409ba3eac9d91d402dcc0cc8f8961229ac9187b42b4de10000",
+        "0f000084080400805a747c5d88fa9bd2e55ab085a61015b7211f824cd484145ab3ff52f1fda8477b0b7abc90db78e2d33a5c141a078653fa6bef780c5ea248eeaaa785c4f394cab6d30bbe8d4859ee511f602957b15411ac027671459e46445c9ea58c181e818e95b8c3fb0bf3278409d3be152a3da5043e063dda65cdf5aea20d53dfacd42f74f3",
+        "140000209b9b141d906337fbd2cbdce71df4deda4ab42c309572cb7fffee5454b78f0718",
+        "14000020a8ec436d677634ae525ac1fcebe11a039ec17694fac6e98527b642f2edd5ce61",
+    ));
+    assert_eq!(transcript.len(), 979);
+    let shared = hex("8bd4054fb55b9d63fdfbacf9f04b9f0d35e6d63f537563efd46272900f89492d");
+    let published = [
+        "9e40646ce79a7f9dc05af8889bce6552875afa0b06df0087f792ebb7c17504a5",
+        "a11af9f05531f856ad47116b45a950328204b4f44bfb6b3a4b4f1f3fcb631643",
+        "fe22f881176eda18eb8f44529e6792c50c9a3f89452f68d8ae311b4309d3cf50",
+        "7df235f2031d2a051287d02b0241b0bfdaf86cc856231f2d5aba46c434ec196c",
+    ];
+    // SHA-384 values: independent Python hashlib/hmac RFC 8446 reference over the
+    // same RFC bytes (not a published RFC 8448 SHA-384 handshake). HKDF output is
+    // HMAC(PRK, uint16(HashLen)||uint8(LabelLen)||Label||uint8(HashLen)||Hash(T)||01).
+    let sha384_reference = [
+        "bbafec3b0ca7533f456f73d389ef910ec44f2c6fa5dc2e112a4414b6752a1d00ddf6d0ce9b6dd4b111e191562ed967be",
+        "9aabfb28a3106d6af28555d12ee08fb6b233680580a2a2b7df5cce8742aeba5f8cc14daf944fa21ab06a713deaf829a7",
+        "b496a8cef4fbd4a75ad8209682639a7278810704c35f3457c6775104d3ca14eb74045acf4d9a30446e4f164a7cf3d42c",
+        "39419dc4397778d9772a6a75429fdc3fc3f12b28ddda960fd2e717d0c1a710e97dd9ccc5437cd864ff8b4f9e3d66ae6d",
+    ];
+    for suite in [
+        TLS_AES_128_GCM_SHA256,
+        TLS_AES_256_GCM_SHA384,
+        TLS_CHACHA20_POLY1305_SHA256,
+    ] {
+        let actual = derive_tls13_secrets_for_suite(
+            suite,
+            &shared,
+            &transcript[..286],
+            &transcript[..943],
+            &transcript,
+        )
+        .unwrap();
+        let expected = if suite == TLS_AES_256_GCM_SHA384 {
+            sha384_reference
+        } else {
+            published
+        };
+        for (secret, value) in [
+            &actual.client_application_traffic_secret,
+            &actual.server_application_traffic_secret,
+            &actual.exporter_master_secret,
+            &actual.resumption_master_secret,
+        ]
+        .into_iter()
+        .zip(expected)
+        {
+            assert_eq!(*secret, hex(value));
+        }
+        let changed = derive_tls13_secrets_for_suite(
+            suite,
+            &shared,
+            &transcript[..286],
+            &transcript[..943],
+            b"different client Finished",
+        )
+        .unwrap();
+        assert_eq!(
+            actual.client_application_traffic_secret,
+            changed.client_application_traffic_secret
+        );
+        assert_eq!(
+            actual.exporter_master_secret,
+            changed.exporter_master_secret
+        );
+        assert_ne!(
+            actual.resumption_master_secret,
+            changed.resumption_master_secret
+        );
+    }
+    let actual =
+        derive_tls13_secrets(&shared, &transcript[..286], &transcript[..943], &transcript).unwrap();
+    assert_eq!(
+        actual.client_handshake_traffic_secret,
+        hex_32("b3eddb126e067f35a780b3abf45e2d8f3b1a950738f52e9600746a0e27a55a21")
+    );
+    assert_eq!(
+        actual.master_secret,
+        hex_32("18df06843d13a08bf2a449844c5f8a478001bc4d4c627984d5a41da8d0402919")
+    );
+    assert_eq!(
+        actual.client_application_traffic_secret,
+        hex_32(published[0])
+    );
+    assert_eq!(actual.resumption_master_secret, hex_32(published[3]));
+}
+
+#[test]
 fn scenario_sha256_legacy_key_schedule_matches_suite_aware_schedule() {
     let ecdhe = [0x42_u8; 32];
     let handshake_transcript = b"client hello || server hello";
     let application_transcript = b"server flight || client finished";
 
-    let legacy = derive_tls13_secrets(&ecdhe, handshake_transcript, application_transcript)
-        .expect("legacy SHA-256 schedule");
+    let legacy = derive_tls13_secrets(
+        &ecdhe,
+        handshake_transcript,
+        b"through server finished",
+        application_transcript,
+    )
+    .expect("legacy SHA-256 schedule");
     let suite = derive_tls13_secrets_for_suite(
         TLS_AES_128_GCM_SHA256,
         &ecdhe,
         handshake_transcript,
+        b"through server finished",
         application_transcript,
     )
     .expect("suite-aware SHA-256 schedule");
@@ -342,6 +444,7 @@ fn scenario_sha256_legacy_key_schedule_matches_suite_aware_schedule() {
         TLS_AES_256_GCM_SHA384,
         &ecdhe,
         handshake_transcript,
+        b"through server finished",
         application_transcript,
     )
     .expect("SHA-384 schedule");
@@ -529,9 +632,144 @@ fn scenario_client_handshake_completes_against_test_server() {
 }
 
 #[test]
+fn scenario_negotiated_alpn_is_published_only_after_verified_handshake() {
+    for (selected, offer_alpn) in [
+        (Some("http/1.1"), true),
+        (Some("h2"), true),
+        (None, true),
+        (None, false),
+    ] {
+        let mut params = client_hello_params();
+        params.profile.alpn = vec!["h2".into(), "http/1.1".into()];
+        if !offer_alpn {
+            params.profile.extension_order.retain(|id| *id != 0x0010);
+        }
+        let mut profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
+        profile.alpn = selected.map(str::to_owned);
+        let (mut client, hello) = Tls13Client::start(params).unwrap();
+        assert_eq!(client.negotiated_alpn(), None);
+        let (mut server, flight) = Tls13Server::accept(&hello, forged_cert(), &profile).unwrap();
+        let last = flight.len() - 1;
+        assert!(
+            !client
+                .drive(&flight[..last], &RealSiteVerifier)
+                .unwrap()
+                .complete
+        );
+        assert_eq!(client.negotiated_alpn(), None);
+        assert!(client.app_seal(b"not authenticated").is_err());
+        let out = client.drive(&flight[last..], &RealSiteVerifier).unwrap();
+        assert!(out.complete);
+        assert_eq!(out.peer_kind, Some(PeerKind::RealSite));
+        assert_eq!(client.negotiated_alpn(), selected.map(str::as_bytes));
+        assert!(server.drive(&out.outbound).unwrap().complete);
+    }
+}
+
+#[test]
+fn scenario_unoffered_empty_and_duplicate_alpn_are_rejected() {
+    for (selected, offer_alpn, extension_ids, error) in [
+        ("h3", true, vec![16], "unoffered ALPN protocol"),
+        ("H2", true, vec![16], "unoffered ALPN protocol"),
+        ("h2", false, vec![16], "unoffered ALPN protocol"),
+        (
+            "",
+            true,
+            vec![16],
+            "ALPN must select exactly one nonempty protocol",
+        ),
+        (
+            "h2",
+            true,
+            vec![16, 16],
+            "duplicate EncryptedExtensions extension",
+        ),
+    ] {
+        let mut params = client_hello_params();
+        params.profile.alpn = vec!["h2".into(), "http/1.1".into()];
+        if !offer_alpn {
+            params.profile.extension_order.retain(|id| *id != 16);
+        }
+        let mut profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
+        profile.alpn = Some(selected.into());
+        profile.encrypted_extensions = extension_ids;
+        let (mut client, hello) = Tls13Client::start(params).unwrap();
+        let (_server, flight) = Tls13Server::accept(&hello, forged_cert(), &profile).unwrap();
+        assert_eq!(
+            client.drive(&flight, &AcceptAll),
+            Err(TlsError::InvalidInput(error))
+        );
+        assert_eq!(client.negotiated_alpn(), None);
+        assert!(client.app_seal(b"rejected").is_err());
+        assert!(client.drive(&[], &AcceptAll).is_err());
+        assert_eq!(client.negotiated_alpn(), None);
+    }
+}
+
+#[test]
+fn scenario_truncated_alpn_and_invalid_finished_never_publish_selection() {
+    for truncate_alpn in [true, false] {
+        let params = client_hello_params();
+        let private = umbra_crypto::secret::Secret::new(params.x25519_priv);
+        let mut profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
+        profile.cipher_suite = TLS_AES_128_GCM_SHA256;
+        profile.key_share_group = 0x001d;
+        profile.alpn = Some("h2".into());
+        let (mut client, hello) = Tls13Client::start(params).unwrap();
+        let (_server, flight) = Tls13Server::accept(&hello, forged_cert(), &profile).unwrap();
+        let (server_hello, encrypted) = split_first_record_for_test(&flight);
+        let parsed = umbra_tls::handshake::parse_server_hello_record(server_hello).unwrap();
+        let shared = x25519::agree(&private, &parsed.x25519_key_share).unwrap();
+        let transcript = [&hello[5..], &server_hello[5..]].concat();
+        let secrets = derive_tls13_secrets_for_suite(
+            profile.cipher_suite,
+            shared.expose_secret(),
+            &transcript,
+            &[],
+            &[],
+        )
+        .unwrap();
+        let keys = derive_traffic_keys(
+            profile.cipher_suite,
+            &secrets.server_handshake_traffic_secret,
+        )
+        .unwrap();
+        let mut plaintext = open_record(profile.cipher_suite, &keys.key, &keys.iv, 0, encrypted)
+            .unwrap()
+            .plaintext;
+        let expected = if truncate_alpn {
+            // EE selects h2: make its name length exceed the ALPN payload without
+            // changing the enclosing message lengths or the record authentication.
+            assert_eq!(&plaintext[..13], &[8, 0, 0, 11, 0, 9, 0, 16, 0, 5, 0, 3, 2]);
+            plaintext[12] = 3;
+            TlsError::InvalidInput("ALPN must select exactly one nonempty protocol")
+        } else {
+            // Leave CertificateVerify valid but corrupt Finished inside a valid AEAD record.
+            *plaintext.last_mut().unwrap() ^= 1;
+            TlsError::AuthenticationFailed
+        };
+        let mut writer = RecordLayer::from_traffic_keys(profile.cipher_suite, keys);
+        let before_finished = plaintext.len() - 36;
+        let prefix = writer
+            .seal(CONTENT_TYPE_HANDSHAKE, &plaintext[..before_finished])
+            .unwrap();
+        assert!(!client.drive(server_hello, &AcceptAll).unwrap().complete);
+        assert!(!client.drive(&prefix, &AcceptAll).unwrap().complete);
+        assert_eq!(client.negotiated_alpn(), None);
+        let last = writer
+            .seal(CONTENT_TYPE_HANDSHAKE, &plaintext[before_finished..])
+            .unwrap();
+        assert_eq!(client.drive(&last, &AcceptAll), Err(expected));
+        assert_eq!(client.negotiated_alpn(), None);
+        assert!(client.app_seal(b"unauthenticated").is_err());
+    }
+}
+
+#[test]
 fn scenario_quic_tls_raw_handshake_derives_matching_secrets() {
     let mut params = client_hello_params();
     params.session_id = Vec::new();
+    params.profile.alpn = vec!["h3".into()];
     params
         .profile
         .extension_order
@@ -592,6 +830,30 @@ fn scenario_quic_tls_raw_handshake_derives_matching_secrets() {
 }
 
 #[test]
+fn scenario_quic_tls_rejects_unoffered_alpn() {
+    let mut params = client_hello_params();
+    params.session_id.clear();
+    params.profile.alpn = vec!["h3".into()];
+    let mut profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
+    profile.alpn = Some("h2".into());
+    let (mut client, hello) = QuicTlsClient::start(&params).unwrap();
+    let accepted = QuicTlsServer::accept_with_transport_parameters(
+        &hello,
+        forged_cert(),
+        &profile,
+        &[4, 1, 64],
+    )
+    .unwrap();
+    client.read_server_hello(&accepted.server_hello).unwrap();
+    assert_eq!(
+        client
+            .read_server_flight(&accepted.server_flight, &AcceptAll)
+            .err(),
+        Some(TlsError::InvalidInput("unoffered ALPN protocol"))
+    );
+}
+
+#[test]
 fn scenario_quic_tls_rejects_compatibility_session_id() {
     let params = client_hello_params();
 
@@ -634,6 +896,7 @@ fn scenario_certificate_callback_can_reject_peer() {
             .expect_err("peer should be rejected"),
         TlsError::PeerRejected
     );
+    assert_eq!(client.negotiated_alpn(), None);
 }
 
 #[test]
@@ -654,6 +917,7 @@ fn scenario_certificate_verify_signature_is_checked() {
             .expect_err("mismatched CertificateVerify key must fail"),
         TlsError::AuthenticationFailed
     );
+    assert_eq!(client.negotiated_alpn(), None);
 }
 
 #[test]
@@ -692,10 +956,212 @@ fn scenario_state_machines_fail_fast_before_connected_and_on_tamper() {
     );
 }
 
+#[test]
+fn scenario_hello0_is_record_independent_and_compression_encoding_is_rfc8879() {
+    let params = client_hello_params();
+    let raw = build_client_hello_handshake(&params).unwrap();
+    let record = build_client_hello(&params).unwrap();
+    let expected = hello0(&raw).unwrap();
+    assert_eq!(hello0(&record).unwrap(), expected);
+    assert_eq!(expected.len(), raw.len());
+    assert_eq!(extension_data_from_record(&record, 27), [2, 0, 2]);
+    for size in [1, 3, 17, 64, raw.len() - 1] {
+        let mut reframed = Vec::new();
+        for chunk in raw.chunks(size) {
+            reframed.extend_from_slice(&[22, 3, 1]);
+            reframed.extend_from_slice(&u16::try_from(chunk.len()).unwrap().to_be_bytes());
+            reframed.extend_from_slice(chunk);
+        }
+        assert_eq!(hello0(&reframed).unwrap(), expected);
+    }
+    for len in 0..raw.len() {
+        assert!(hello0(&raw[..len]).is_err());
+    }
+    let mut trailing = raw.clone();
+    trailing.push(0);
+    assert!(hello0(&trailing).is_err());
+    let mut changed = raw;
+    changed[6] ^= 1;
+    assert_ne!(hello0(&changed).unwrap(), expected);
+}
+
+#[test]
+fn scenario_standard_rustls_peer_interoperates_with_fragmentation_and_brotli() {
+    for suite in [
+        TLS_AES_128_GCM_SHA256,
+        TLS_AES_256_GCM_SHA384,
+        TLS_CHACHA20_POLY1305_SHA256,
+    ] {
+        for algorithm in [
+            &rcgen::PKCS_ECDSA_P256_SHA256,
+            &rcgen::PKCS_ECDSA_P384_SHA384,
+            &rcgen::PKCS_ED25519,
+        ] {
+            for compressed in [false, true] {
+                rustls_interop(suite, algorithm, compressed);
+            }
+        }
+    }
+}
+
+fn rustls_interop(suite: u16, algorithm: &'static rcgen::SignatureAlgorithm, compressed: bool) {
+    use std::{
+        io::{Cursor, Read, Write},
+        sync::Arc,
+    };
+    let key = rcgen::KeyPair::generate_for(algorithm).unwrap();
+    let cert = rcgen::CertificateParams::new(vec!["server.example".to_owned()])
+        .unwrap()
+        .self_signed(&key)
+        .unwrap();
+    let mut provider = rustls::crypto::ring::default_provider();
+    provider
+        .cipher_suites
+        .retain(|candidate| u16::from(candidate.suite()) == suite);
+    let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(provider))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der().clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+        )
+        .unwrap();
+    config.max_fragment_size = Some(64);
+    config.send_tls13_tickets = 0;
+    config.alpn_protocols = vec![b"h2".to_vec()];
+    if !compressed {
+        config.cert_compressors.clear();
+    }
+    let mut peer = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+    let mut params = client_hello_params();
+    params.profile.signature_algorithms.push(0x0807);
+    // ECH placeholder serialization belongs to the separately deferred profile work.
+    params.profile.extension_order.retain(|ext| *ext != 0xfe0d);
+    let (mut client, mut hello) = Tls13Client::start(params).unwrap();
+    hello.extend_from_slice(&Tls13Client::dummy_change_cipher_spec());
+    peer.read_tls(&mut Cursor::new(hello)).unwrap();
+    peer.process_new_packets().unwrap();
+    let mut flight = Vec::new();
+    peer.write_tls(&mut flight).unwrap();
+    let mut outbound = Vec::new();
+    let mut completed = false;
+    for chunk in flight.chunks(7) {
+        let out = client.drive(chunk, &RealSiteVerifier).unwrap();
+        if out.complete {
+            completed = true;
+            assert_eq!(out.peer_kind, Some(PeerKind::RealSite));
+        } else {
+            assert_eq!(client.negotiated_alpn(), None);
+        }
+        outbound.extend_from_slice(&out.outbound);
+    }
+    assert!(completed);
+    assert_eq!(client.negotiated_alpn(), Some(b"h2".as_slice()));
+    assert!(client.take_pending_input().is_empty());
+    peer.read_tls(&mut Cursor::new(outbound)).unwrap();
+    peer.process_new_packets().unwrap();
+    assert!(!peer.is_handshaking());
+    let request = client.app_seal(b"standard-peer request").unwrap();
+    peer.read_tls(&mut Cursor::new(request)).unwrap();
+    peer.process_new_packets().unwrap();
+    let mut actual = vec![0; b"standard-peer request".len()];
+    peer.reader().read_exact(&mut actual).unwrap();
+    assert_eq!(actual, b"standard-peer request");
+    peer.writer().write_all(b"standard-peer response").unwrap();
+    let mut response = Vec::new();
+    peer.write_tls(&mut response).unwrap();
+    assert_eq!(
+        client.app_open(&response).unwrap(),
+        b"standard-peer response"
+    );
+}
+
+#[test]
+fn scenario_streamed_client_rejects_invalid_ccs_and_bounds() {
+    for invalid in [
+        vec![20, 3, 3, 0, 1, 2],
+        vec![20, 3, 3, 0, 2, 1, 1],
+        vec![23, 3, 3, 0xff, 0xff],
+    ] {
+        let (mut client, _) = Tls13Client::start(client_hello_params()).unwrap();
+        assert!(client.drive(&invalid, &AcceptAll).is_err());
+        assert!(client.drive(&[], &AcceptAll).is_err());
+        assert!(client.app_seal(b"not connected").is_err());
+    }
+    let (mut client, _) = Tls13Client::start(client_hello_params()).unwrap();
+    assert!(client.drive(&vec![0; 1024 * 1024 + 1], &AcceptAll).is_err());
+}
+
+#[test]
+fn scenario_fragmented_server_hello_large_chain_and_pending_input() {
+    let params = client_hello_params();
+    let profile = DestProfile::from_fingerprint("server.example".into(), &params.profile);
+    let (mut client, hello) = Tls13Client::start(params).unwrap();
+    let mut cert = forged_cert();
+    cert.chain_der = vec![cert.leaf_der.clone(); 64];
+    let (mut server, flight) = Tls13Server::accept(&hello, cert, &profile).unwrap();
+    let (server_hello, encrypted) = split_first_record_for_test(&flight);
+    assert!(encrypted.len() > 16384);
+    let mut reframed = Vec::new();
+    for fragment in server_hello[5..].chunks(3) {
+        reframed.extend_from_slice(&[22, 3, 3]);
+        reframed.extend_from_slice(&u16::try_from(fragment.len()).unwrap().to_be_bytes());
+        reframed.extend_from_slice(fragment);
+        reframed.extend_from_slice(&Tls13Client::dummy_change_cipher_spec());
+    }
+    reframed.extend_from_slice(encrypted);
+    for chunk in reframed[..reframed.len() - 1].chunks(31) {
+        assert!(!client.drive(chunk, &RealSiteVerifier).unwrap().complete);
+    }
+    assert!(client.take_pending_input().is_empty());
+    let pending = [23, 3, 3, 0, 17, 0];
+    let last = [&reframed[reframed.len() - 1..], pending.as_slice()].concat();
+    let finished = client.drive(&last, &RealSiteVerifier).unwrap();
+    assert!(finished.complete);
+    assert_eq!(client.take_pending_input(), pending);
+    assert!(client.take_pending_input().is_empty());
+    assert!(server.drive(&finished.outbound).unwrap().complete);
+    let response = server.app_seal(b"fragmented handshake succeeded").unwrap();
+    assert_eq!(
+        client.app_open(&response).unwrap(),
+        b"fragmented handshake succeeded"
+    );
+}
+
+#[test]
+fn scenario_secret_holders_are_zeroizing_and_debug_is_redacted() {
+    use zeroize::{Zeroize, ZeroizeOnDrop};
+    fn drops_zeroized<T: ZeroizeOnDrop>() {}
+    drops_zeroized::<umbra_tls::keyschedule::SuiteSecrets>();
+    drops_zeroized::<umbra_tls::keyschedule::Tls13Secrets>();
+    drops_zeroized::<umbra_tls::keyschedule::TrafficKeys>();
+    drops_zeroized::<umbra_tls::quic::QuicTrafficSecrets>();
+    drops_zeroized::<RecordLayer>();
+    drops_zeroized::<ForgedCert>();
+    let mut secrets = derive_tls13_secrets(&[42; 32], b"hs", b"sf", b"cf").unwrap();
+    assert_eq!(format!("{secrets:?}"), "Tls13Secrets(<redacted>)");
+    secrets.zeroize();
+    assert_eq!(secrets.master_secret, [0; 32]);
+    assert_eq!(secrets.client_application_traffic_secret, [0; 32]);
+    let mut keys = derive_traffic_keys(TLS_AES_128_GCM_SHA256, &[42; 32]).unwrap();
+    assert_eq!(format!("{keys:?}"), "TrafficKeys(<redacted>)");
+    keys.zeroize();
+    assert!(keys.key.is_empty());
+    assert_eq!(keys.iv, [0; 12]);
+    let mut cert = forged_cert();
+    assert!(format!("{cert:?}").contains("<redacted>"));
+    cert.zeroize();
+    assert!(cert.certificate_verify_key_der.is_empty());
+}
+
 proptest! {
     #[test]
     fn scenario_arbitrary_bytes_do_not_panic(input in proptest::collection::vec(any::<u8>(), 0..1024)) {
         let _ = parse_client_hello(&input);
+        let _ = hello0(&input);
+        let _ = umbra_tls::handshake::parse_server_hello_record(&input);
+        let _ = umbra_tls::handshake::parse_server_hello_handshake(&input);
     }
 }
 
@@ -818,14 +1284,13 @@ fn forged_cert() -> ForgedCert {
 }
 
 fn forged_cert_with_mismatched_certificate_verify_key() -> ForgedCert {
-    let cert = forged_cert();
+    let mut cert = forged_cert();
     let rcgen::CertifiedKey { key_pair, .. } =
         rcgen::generate_simple_self_signed(["server.example".to_owned()])
             .expect("test certificate should generate");
-    ForgedCert {
-        certificate_verify_key_der: key_pair.serialize_der(),
-        ..cert
-    }
+    zeroize::Zeroize::zeroize(&mut cert);
+    cert.certificate_verify_key_der = key_pair.serialize_der();
+    cert
 }
 
 fn split_first_record_for_test(input: &[u8]) -> (&[u8], &[u8]) {

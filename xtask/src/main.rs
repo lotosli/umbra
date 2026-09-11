@@ -111,6 +111,10 @@ fn fingerprint_check() -> i32 {
                 "scenario_extension_order_follows_profile",
             ],
         ),
+        (
+            "cargo",
+            &["test", "-p", "umbra-tls", "--lib", "clienthello::tests"],
+        ),
     ];
     for (cmd, args) in steps {
         let code = run(cmd, args);
@@ -118,6 +122,7 @@ fn fingerprint_check() -> i32 {
             return code;
         }
     }
+    eprintln!("Fingerprint field and production-builder self-checks passed; this command does not verify full TLS payload or QUIC parity against raw Chrome captures.");
     0
 }
 

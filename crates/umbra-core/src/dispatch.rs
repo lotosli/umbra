@@ -2,7 +2,7 @@
 
 use std::{
     future::Future,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use tokio::{
@@ -32,6 +32,7 @@ const TLS_HANDSHAKE_CLIENT_HELLO: u8 = 0x01;
 const DEFAULT_MAX_CLIENT_HELLO_BYTES: usize = 64 * 1024;
 const DEFAULT_MAX_CLIENT_HELLO_RECORDS: usize = 16;
 const DEFAULT_MAX_USELESS_RECORDS: usize = 0;
+const CLIENT_HELLO_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Limits used while reading a complete initial ClientHello.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -173,10 +174,10 @@ pub enum DispatchOutcome {
     },
 }
 
-/// Read a complete ClientHello and return the original TLS record bytes.
+/// Read original TLS records through a complete, possibly fragmented ClientHello.
 ///
-/// The reader waits until the declared ClientHello handshake length has been
-/// received, even when the handshake is split across multiple TLS records.
+/// EOF, read limits, or a five-second overall deadline return the exact consumed
+/// prefix for fallback. Invalid limits and terminal I/O failures remain errors.
 pub async fn read_client_hello_raw<R>(
     reader: &mut R,
     limits: HelloReadLimits,
@@ -184,64 +185,116 @@ pub async fn read_client_hello_raw<R>(
 where
     R: AsyncRead + Unpin,
 {
+    read_client_hello_raw_with_timeout(reader, limits, CLIENT_HELLO_READ_TIMEOUT).await
+}
+
+async fn read_client_hello_raw_with_timeout<R>(
+    reader: &mut R,
+    limits: HelloReadLimits,
+    timeout: Duration,
+) -> Result<Vec<u8>, CoreError>
+where
+    R: AsyncRead + Unpin,
+{
     validate_limits(limits)?;
+    // The timeout owns only a borrow: cancellation must not discard consumed bytes.
     let mut raw = Vec::new();
+    let deadline = Instant::now() + timeout;
+    if let Ok(result) = tokio::time::timeout_at(
+        deadline,
+        read_client_hello_prefix(reader, limits, &mut raw, deadline),
+    )
+    .await
+    {
+        result?;
+    }
+    Ok(raw)
+}
+
+async fn read_client_hello_prefix<R>(
+    reader: &mut R,
+    limits: HelloReadLimits,
+    raw: &mut Vec<u8>,
+    deadline: Instant,
+) -> Result<(), CoreError>
+where
+    R: AsyncRead + Unpin,
+{
     let mut handshake = Vec::new();
-    let mut records = 0_usize;
     let mut useless_records = 0_usize;
 
-    loop {
-        if records >= limits.max_records {
-            return Err(CoreError::ClientHelloTooLarge);
+    for _ in 0..limits.max_records {
+        let header_start = raw.len();
+        let header_end = header_start
+            .saturating_add(TLS_RECORD_HEADER_LEN)
+            .min(limits.max_bytes);
+        if !read_prefix_until(reader, raw, header_end, deadline).await?
+            || header_end - header_start < TLS_RECORD_HEADER_LEN
+        {
+            return Ok(());
         }
-        let mut header = [0_u8; TLS_RECORD_HEADER_LEN];
-        reader.read_exact(&mut header).await?;
-        records += 1;
-
-        let record_len = usize::from(u16::from_be_bytes([header[3], header[4]]));
-        let next_len = raw
-            .len()
-            .checked_add(TLS_RECORD_HEADER_LEN)
-            .and_then(|len| len.checked_add(record_len))
-            .ok_or(CoreError::ClientHelloTooLarge)?;
-        if next_len > limits.max_bytes {
-            return Err(CoreError::ClientHelloTooLarge);
+        let record_type = raw[header_start];
+        let record_len = usize::from(u16::from_be_bytes([
+            raw[header_end - 2],
+            raw[header_end - 1],
+        ]));
+        let Some(record_end) = header_end
+            .checked_add(record_len)
+            .filter(|end| *end <= limits.max_bytes)
+        else {
+            return Ok(());
+        };
+        if !read_prefix_until(reader, raw, record_end, deadline).await? {
+            return Ok(());
         }
 
-        raw.extend_from_slice(&header);
-        let mut payload = vec![0_u8; record_len];
-        reader.read_exact(&mut payload).await?;
-        raw.extend_from_slice(&payload);
-
-        if header[0] != TLS_RECORD_HANDSHAKE {
+        if record_type != TLS_RECORD_HANDSHAKE {
             useless_records += 1;
             if useless_records > limits.max_useless_records {
-                return Ok(raw);
+                return Ok(());
             }
             continue;
         }
 
-        handshake.extend_from_slice(&payload);
-        if handshake.len() < 4 {
-            continue;
-        }
-        if handshake[0] != TLS_HANDSHAKE_CLIENT_HELLO {
-            return Ok(raw);
-        }
-        let declared = read_u24(&handshake[1..4])?;
-        let needed = 4_usize
-            .checked_add(declared)
-            .ok_or(CoreError::ClientHelloTooLarge)?;
-        if needed > limits.max_bytes {
-            return Err(CoreError::ClientHelloTooLarge);
-        }
-        if handshake.len() >= needed {
-            return Ok(raw);
+        handshake.extend_from_slice(&raw[header_end..record_end]);
+        match complete_client_hello_len(&handshake) {
+            Ok(Some(needed)) if needed > limits.max_bytes || handshake.len() >= needed => {
+                return Ok(());
+            }
+            Err(_) => return Ok(()),
+            _ => {}
         }
     }
+    Ok(())
 }
 
-/// Classify a complete ClientHello into local-authenticated or fallback path.
+async fn read_prefix_until<R>(
+    reader: &mut R,
+    raw: &mut Vec<u8>,
+    end: usize,
+    deadline: Instant,
+) -> Result<bool, CoreError>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut chunk = [0_u8; 4096];
+    while raw.len() < end {
+        // Also bound readers that keep returning immediately without yielding.
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        let capacity = (end - raw.len()).min(chunk.len());
+        let read = reader.read(&mut chunk[..capacity]).await?;
+        if read == 0 {
+            return Ok(false);
+        }
+        // No await between a successful, cancellation-safe read and retention.
+        raw.extend_from_slice(&chunk[..read]);
+    }
+    Ok(true)
+}
+
+/// Classify a prefetched ClientHello or incomplete prefix for fallback.
 pub fn classify_client_hello(
     chello_raw: Vec<u8>,
     ctx: DispatchContext<'_>,
@@ -271,7 +324,7 @@ pub fn classify_client_hello(
     let Ok(shared) = x25519::agree(&ctx.cfg.private_key, &client_public) else {
         return Ok(fallback(FallbackReason::MissingKeyShare, chello_raw));
     };
-    let aad = hello0(&chello_raw).or_else(|_| hello0(&handshake))?;
+    let aad = hello0(&handshake)?;
     if open_session_id(
         shared.expose_secret(),
         &session_id,
@@ -674,4 +727,157 @@ fn current_unix_time() -> Result<u64, CoreError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| CoreError::InvalidConfig("system clock is before Unix epoch"))
         .map(|duration| duration.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    use tokio::io::{self, ReadBuf};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn deadline_preserves_each_partial_header_and_body_then_relays() {
+        // Two fragments, including a split handshake header, never complete the hello.
+        let input = [
+            0x16, 3, 3, 0, 2, 1, 0, 0x16, 3, 3, 0, 6, 0, 32, 0xaa, 0xbb, 0xcc, 0xdd,
+        ];
+        for end in 0..input.len() {
+            let (mut client, mut server) = io::duplex(64);
+            client
+                .write_all(&input[..end])
+                .await
+                .expect("write partial hello");
+            let raw = tokio::time::timeout(
+                Duration::from_secs(1),
+                read_client_hello_raw_with_timeout(
+                    &mut server,
+                    HelloReadLimits::default(),
+                    Duration::from_millis(10),
+                ),
+            )
+            .await
+            .expect("classification deadline fires")
+            .expect("timeout returns prefix");
+            assert_eq!(raw, input[..end]);
+
+            client
+                .write_all(&input[end..])
+                .await
+                .expect("write after deadline");
+            client.shutdown().await.expect("half-close request");
+            let (dest, mut dest_peer) = io::duplex(64);
+            let destination = async {
+                let mut received = Vec::new();
+                dest_peer
+                    .read_to_end(&mut received)
+                    .await
+                    .expect("receive request EOF");
+                assert_eq!(received, input);
+                dest_peer
+                    .write_all(b"response")
+                    .await
+                    .expect("reply after EOF");
+                dest_peer.shutdown().await.expect("half-close destination");
+            };
+            let (copied, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+                tokio::join!(relay_prefixed(server, dest, raw), destination)
+            })
+            .await
+            .expect("relay completes");
+            assert_eq!(copied.expect("relay succeeds"), (18, 8));
+            let mut response = Vec::new();
+            client
+                .read_to_end(&mut response)
+                .await
+                .expect("read reverse response");
+            assert_eq!(response, b"response");
+        }
+    }
+
+    #[tokio::test]
+    async fn slow_progress_does_not_reset_overall_deadline() {
+        let (mut client, mut server) = io::duplex(512);
+        let mut sent = vec![0x16, 3, 3, 0x10, 0];
+        client.write_all(&sent).await.expect("write record header");
+        let raw = tokio::time::timeout(Duration::from_millis(500), async {
+            tokio::select! {
+                result = read_client_hello_raw_with_timeout(
+                    &mut server,
+                    HelloReadLimits::default(),
+                    Duration::from_millis(60),
+                ) => result.expect("deadline returns prefix"),
+                () = async {
+                    for byte in 0..200_u8 {
+                        client.write_all(&[byte]).await.expect("drip one byte");
+                        sent.push(byte);
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                } => panic!("classification waited for the slow sender"),
+            }
+        })
+        .await
+        .expect("overall deadline must not restart after progress");
+        assert!(raw.len() > TLS_RECORD_HEADER_LEN);
+        assert_eq!(raw, sent[..raw.len()]);
+        client.shutdown().await.expect("half-close sender");
+        let mut remaining = Vec::new();
+        server
+            .read_to_end(&mut remaining)
+            .await
+            .expect("read remaining bytes");
+        assert_eq!([raw, remaining].concat(), sent);
+    }
+
+    #[tokio::test]
+    async fn expired_deadline_consumes_nothing() {
+        let mut reader = &b"untouched"[..];
+        let raw = read_client_hello_raw_with_timeout(
+            &mut reader,
+            HelloReadLimits::default(),
+            Duration::ZERO,
+        )
+        .await
+        .expect("expired deadline returns prefix");
+        assert!(raw.is_empty());
+        assert_eq!(reader, b"untouched");
+    }
+
+    struct ResetAtEof(io::DuplexStream);
+
+    impl AsyncRead for ResetAtEof {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let before = buf.filled().len();
+            match Pin::new(&mut self.0).poll_read(cx, buf) {
+                Poll::Ready(Ok(())) if buf.filled().len() == before => {
+                    Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()))
+                }
+                result => result,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_read_error_remains_an_error() {
+        let (mut client, server) = io::duplex(64);
+        client
+            .write_all(&[0x16, 3])
+            .await
+            .expect("write partial header");
+        client.shutdown().await.expect("finish test input");
+        let err = read_client_hello_raw(&mut ResetAtEof(server), HelloReadLimits::default())
+            .await
+            .expect_err("terminal reset must remain an error");
+        assert!(
+            matches!(err, CoreError::Io(error) if error.kind() == std::io::ErrorKind::ConnectionReset)
+        );
+    }
 }

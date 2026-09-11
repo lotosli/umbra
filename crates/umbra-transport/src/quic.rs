@@ -657,17 +657,46 @@ where
     Ok(())
 }
 
-/// Read one length-delimited UDP envelope from a QUIC association stream.
+/// Persistent framing state for cancellation-safe UDP envelope reads.
+#[derive(Debug, Default)]
+pub struct UdpEnvelopeReader {
+    bytes: Vec<u8>,
+}
+
+impl UdpEnvelopeReader {
+    /// Read one envelope, retaining partial length and payload bytes on cancellation.
+    pub async fn read_next<R>(&mut self, reader: &mut R) -> Result<UdpEnvelope, TransportError>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let mut buf = [0_u8; 4096];
+        loop {
+            let needed = if self.bytes.len() < 2 {
+                2
+            } else {
+                2 + usize::from(u16::from_be_bytes([self.bytes[0], self.bytes[1]]))
+            };
+            if self.bytes.len() == needed {
+                let result = UdpEnvelope::decode(&self.bytes[2..]).map_err(TransportError::from);
+                self.bytes.clear();
+                return result;
+            }
+            let remaining = (needed - self.bytes.len()).min(buf.len());
+            let read = reader.read(&mut buf[..remaining]).await?;
+            if read == 0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+            }
+            self.bytes.extend_from_slice(&buf[..read]);
+        }
+    }
+}
+
+/// Read an envelope without cancellation; select loops must retain a `UdpEnvelopeReader`.
 pub async fn read_udp_envelope_stream<R>(reader: &mut R) -> Result<UdpEnvelope, TransportError>
 where
     R: AsyncRead + Unpin,
 {
-    let mut len = [0_u8; 2];
-    reader.read_exact(&mut len).await?;
-    let len = usize::from(u16::from_be_bytes(len));
-    let mut bytes = vec![0_u8; len];
-    reader.read_exact(&mut bytes).await?;
-    UdpEnvelope::decode(&bytes).map_err(TransportError::from)
+    UdpEnvelopeReader::default().read_next(reader).await
 }
 
 async fn read_exact_to<R>(
@@ -1423,6 +1452,53 @@ mod tests {
         build_client_hello, ClientHelloParams, ClientQuicTransportParameter, MlkemShare,
         EXT_QUIC_TRANSPORT_PARAMETERS,
     };
+
+    #[tokio::test]
+    async fn scenario_udp_envelope_read_survives_cancellation_at_every_boundary() {
+        let expected = UdpEnvelope::new(
+            TargetAddr::domain("target.example", 53).expect("target"),
+            b"query".to_vec(),
+        )
+        .expect("envelope");
+        let encoded = expected.encode().expect("encode");
+        let mut framed = u16::try_from(encoded.len())
+            .expect("length")
+            .to_be_bytes()
+            .to_vec();
+        framed.extend_from_slice(&encoded);
+        for cut in 1..framed.len() {
+            let (mut writer, mut reader) = tokio::io::duplex(256);
+            writer.write_all(&framed[..cut]).await.expect("prefix");
+            let mut state = UdpEnvelopeReader::default();
+            {
+                let pending = state.read_next(&mut reader);
+                tokio::pin!(pending);
+                std::future::poll_fn(|cx| {
+                    assert!(std::future::Future::poll(pending.as_mut(), cx).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+            }
+            writer.write_all(&framed[cut..]).await.expect("suffix");
+            writer.write_all(&framed).await.expect("next envelope");
+            assert_eq!(
+                state.read_next(&mut reader).await.expect("resumed"),
+                expected
+            );
+            assert_eq!(state.read_next(&mut reader).await.expect("next"), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn scenario_udp_envelope_rejects_truncation_and_malformed_payload() {
+        for bytes in [vec![0], vec![0, 5, 1, 2], vec![0, 0]] {
+            let mut reader = bytes.as_slice();
+            assert!(UdpEnvelopeReader::default()
+                .read_next(&mut reader)
+                .await
+                .is_err());
+        }
+    }
 
     #[test]
     fn scenario_quic_initial_crypto_decrypts_contiguous_crypto_frame() {

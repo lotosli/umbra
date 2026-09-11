@@ -51,6 +51,12 @@ pub enum RealityError {
     /// Replay cache capacity must be nonzero.
     #[error("replay cache capacity must be nonzero")]
     InvalidReplayCapacity,
+    /// Replay cache has no capacity available without evicting a live entry.
+    #[error("replay cache is full")]
+    ReplayCacheFull,
+    /// The inclusive replay expiry cannot be represented in u64 seconds.
+    #[error("replay expiry timestamp overflow")]
+    ReplayExpiryOverflow,
     /// Replay cache lock was poisoned by a previous panic.
     #[error("replay cache lock is poisoned")]
     ReplayCachePoisoned,

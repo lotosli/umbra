@@ -28,7 +28,7 @@ pub struct ServerCfg {
     pub max_time_diff: Duration,
     /// ML-DSA seed used for certificate binding.
     pub mldsa_seed: Secret<32>,
-    /// Whether destination probing should run before serving.
+    /// Whether periodic destination prebuild refresh is enabled after the mandatory startup probe.
     pub prebuild: bool,
     /// Inner padding policy.
     pub padding_scheme: PadScheme,
@@ -48,7 +48,7 @@ impl ServerCfg {
         overrides: ServerConfigOverrides,
     ) -> Result<Self, CoreError> {
         let mut raw: RawServerCfg =
-            toml::from_str(input).map_err(|err| CoreError::ConfigParse(err.to_string()))?;
+            toml::from_str(input).map_err(|err| sanitized_parse_error(input, &err))?;
         overrides.apply_to(&mut raw);
         server_from_raw(raw)
     }
@@ -134,7 +134,7 @@ impl ClientCfg {
         overrides: ClientConfigOverrides,
     ) -> Result<Self, CoreError> {
         let mut raw: RawClientCfg =
-            toml::from_str(input).map_err(|err| CoreError::ConfigParse(err.to_string()))?;
+            toml::from_str(input).map_err(|err| sanitized_parse_error(input, &err))?;
         overrides.apply_to(&mut raw);
         client_from_raw(raw)
     }
@@ -494,6 +494,28 @@ fn client_from_raw(raw: RawClientCfg) -> Result<ClientCfg, CoreError> {
     })
 }
 
+// TOML's message and source excerpt can both contain secrets, including values
+// nested in arrays. Retain only a static error category and a numeric location;
+// never attach the original error as a source.
+fn sanitized_parse_error(input: &str, error: &toml::de::Error) -> CoreError {
+    let Some(span) = error.span() else {
+        return CoreError::ConfigParse("invalid TOML syntax or type".to_owned());
+    };
+    let (line, column) = input
+        .char_indices()
+        .take_while(|(offset, _)| *offset < span.start)
+        .fold((1_usize, 1_usize), |(line, column), (_, ch)| {
+            if ch == '\n' {
+                (line + 1, 1)
+            } else {
+                (line, column + 1)
+            }
+        });
+    CoreError::ConfigParse(format!(
+        "invalid TOML syntax or type at line {line}, column {column}"
+    ))
+}
+
 fn required<T>(value: Option<T>, message: &'static str) -> Result<T, CoreError> {
     value.ok_or(CoreError::InvalidConfig(message))
 }
@@ -664,5 +686,231 @@ struct RedactedCount(usize);
 impl fmt::Debug for RedactedCount {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "<{} redacted>", self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error as _;
+
+    use super::*;
+
+    const FAKE_SECRET: &str = "SYNTHETIC_PRIVATE_KEY_SEED_SHORT_ID";
+
+    #[test]
+    fn syntax_errors_omit_secret_lines_and_retain_location() {
+        for field in ["private_key", "mldsa_seed", "short_ids"] {
+            let input = format!("# synthetic fixture\n{field} = [\"{FAKE_SECRET}\" trailing]");
+            assert_safe_parse_error(&ServerCfg::from_toml_str(&input).expect_err("syntax error"));
+        }
+        for field in ["public_key", "mldsa_verify", "short_id"] {
+            let input = format!("# synthetic fixture\n{field} = [\"{FAKE_SECRET}\" trailing]");
+            assert_safe_parse_error(&ClientCfg::from_toml_str(&input).expect_err("syntax error"));
+        }
+    }
+
+    #[test]
+    fn type_errors_omit_secret_values_including_nested_arrays() {
+        for field in ["private_key", "mldsa_seed", "short_ids", "prebuild"] {
+            for value in [
+                format!("[\"{FAKE_SECRET}\", \"cafebabedeadbeef\"]"),
+                format!("[[\"{FAKE_SECRET}\", \"cafebabedeadbeef\"]]"),
+                format!("{{ value = \"{FAKE_SECRET}\" }}"),
+            ] {
+                // A string array is the correct type for short_ids; use nested arrays there.
+                if field == "short_ids" && value.starts_with("[\"") {
+                    continue;
+                }
+                let input = format!("# synthetic fixture\n{field} = {value}");
+                assert_safe_parse_error(&ServerCfg::from_toml_str(&input).expect_err("type error"));
+            }
+        }
+        for field in ["public_key", "mldsa_verify", "short_id", "mux"] {
+            let input = format!(
+                "# synthetic fixture\n{field} = [[\"{FAKE_SECRET}\", \"cafebabedeadbeef\"]]"
+            );
+            assert_safe_parse_error(&ClientCfg::from_toml_str(&input).expect_err("type error"));
+        }
+        for input in [
+            format!("# synthetic fixture\nprebuild = \"{FAKE_SECRET}\""),
+            format!("# synthetic fixture\n{FAKE_SECRET} = true"),
+        ] {
+            assert_safe_parse_error(
+                &ServerCfg::from_toml_str(&input).expect_err("invalid field or type"),
+            );
+        }
+    }
+
+    #[test]
+    fn sanitized_error_handles_unicode_eof_and_missing_span() {
+        let input = "private_key = \"é\" trailing";
+        let error = ServerCfg::from_toml_str(input).expect_err("trailing content");
+        assert_eq!(
+            error.to_string(),
+            "configuration parse failed: invalid TOML syntax or type at line 1, column 19"
+        );
+        let input = format!("# synthetic fixture\nprivate_key = \"{FAKE_SECRET}");
+        assert_safe_parse_error(
+            &ServerCfg::from_toml_str(&input).expect_err("unterminated string"),
+        );
+
+        let original: toml::de::Error = serde::de::Error::custom(FAKE_SECRET);
+        let error = sanitized_parse_error("", &original);
+        assert_eq!(
+            error.to_string(),
+            "configuration parse failed: invalid TOML syntax or type"
+        );
+        assert!(error.source().is_none());
+        assert!(!format!("{error:?}").contains(FAKE_SECRET));
+    }
+
+    #[test]
+    fn validation_errors_omit_secret_values() {
+        for field in ["private_key", "mldsa_seed", "short_ids"] {
+            let value = if field == "short_ids" {
+                format!("[\"{FAKE_SECRET}\"]")
+            } else {
+                format!("\"{FAKE_SECRET}\"")
+            };
+            let input = replace_field(&server_toml(), field, &value);
+            let error = ServerCfg::from_toml_str(&input).expect_err("invalid secret format");
+            assert!(matches!(error, CoreError::InvalidConfig(_)));
+            assert!(!format!("{error} {error:?}").contains(FAKE_SECRET));
+            assert!(error.source().is_none());
+        }
+        for field in ["public_key", "mldsa_verify", "short_id"] {
+            let input = replace_field(&client_toml(), field, &format!("\"{FAKE_SECRET}\""));
+            let error = ClientCfg::from_toml_str(&input).expect_err("invalid secret format");
+            assert!(matches!(error, CoreError::InvalidConfig(_)));
+            assert!(!format!("{error} {error:?}").contains(FAKE_SECRET));
+            assert!(error.source().is_none());
+        }
+    }
+
+    #[test]
+    fn geneva_is_rejected_in_file_values_and_cli_overrides() {
+        for strategy in [
+            "geneva:",
+            "geneva:fragment{tcp}",
+            "geneva:SYNTHETIC_PRIVATE_KEY_SEED_SHORT_ID",
+        ] {
+            let server = format!("{}\ntcp_evasion = \"{strategy}\"", server_toml());
+            let client = format!("{}\ntcp_evasion = \"{strategy}\"", client_toml());
+            assert_unsupported_geneva(&ServerCfg::from_toml_str(&server).expect_err("unsupported"));
+            assert_unsupported_geneva(&ClientCfg::from_toml_str(&client).expect_err("unsupported"));
+            assert_unsupported_geneva(
+                &ServerCfg::from_toml_str_with_overrides(
+                    &format!("{}\ntcp_evasion = \"off\"", server_toml()),
+                    ServerConfigOverrides {
+                        tcp_evasion: Some(strategy.to_owned()),
+                        ..Default::default()
+                    },
+                )
+                .expect_err("unsupported override"),
+            );
+            assert_unsupported_geneva(
+                &ClientCfg::from_toml_str_with_overrides(
+                    &format!("{}\ntcp_evasion = \"segment\"", client_toml()),
+                    ClientConfigOverrides {
+                        tcp_evasion: Some(strategy.to_owned()),
+                        ..Default::default()
+                    },
+                )
+                .expect_err("unsupported override"),
+            );
+
+            // Validation applies to the effective merged value, not the discarded file value.
+            let server = ServerCfg::from_toml_str_with_overrides(
+                &server,
+                ServerConfigOverrides {
+                    tcp_evasion: Some("off".to_owned()),
+                    ..Default::default()
+                },
+            )
+            .expect("implemented override replaces unsupported file value");
+            assert!(server.tcp_evasion.is_off());
+            let client = ClientCfg::from_toml_str_with_overrides(
+                &client,
+                ClientConfigOverrides {
+                    tcp_evasion: Some("segment".to_owned()),
+                    ..Default::default()
+                },
+            )
+            .expect("implemented override replaces unsupported file value");
+            assert!(matches!(
+                client.tcp_evasion,
+                TcpEvasionPolicy::Segment { .. }
+            ));
+        }
+    }
+
+    fn assert_safe_parse_error(error: &CoreError) {
+        let CoreError::ConfigParse(message) = error else {
+            panic!("expected a parse error")
+        };
+        let location = message
+            .strip_prefix("invalid TOML syntax or type at line 2, column ")
+            .expect("safe category and line number");
+        assert!(location.parse::<usize>().expect("numeric column only") > 0);
+        assert!(error.source().is_none());
+        for value in [FAKE_SECRET, "cafebabedeadbeef", "synthetic fixture"] {
+            assert!(!format!("{error} {error:?} {error:#?}").contains(value));
+        }
+    }
+
+    fn assert_unsupported_geneva(error: &CoreError) {
+        assert!(matches!(
+            error,
+            CoreError::Transport(umbra_transport::TransportError::InvalidEvasionStrategy(_))
+        ));
+        assert_eq!(
+            error.to_string(),
+            "invalid TCP evasion strategy: unsupported Geneva strategy: sender unavailable"
+        );
+        assert!(!format!("{error:?}").contains(FAKE_SECRET));
+        assert!(error.source().is_none());
+    }
+
+    fn replace_field(input: &str, field: &str, value: &str) -> String {
+        input
+            .lines()
+            .map(|line| {
+                if line.starts_with(&format!("{field} =")) {
+                    format!("{field} = {value}")
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn server_toml() -> String {
+        format!(
+            r#"listen = "127.0.0.1:0"
+private_key = "{}"
+short_ids = ["cafebabedeadbeef"]
+dest = "localhost:443"
+server_names = ["example.test"]
+max_time_diff = "120s"
+mldsa_seed = "{}""#,
+            STANDARD.encode([1_u8; 32]),
+            STANDARD.encode([2_u8; 32])
+        )
+    }
+
+    fn client_toml() -> String {
+        format!(
+            r#"server = "localhost:443"
+transport = "tcp"
+public_key = "{}"
+short_id = "cafebabedeadbeef"
+server_name = "example.test"
+fingerprint = "chrome-latest"
+mldsa_verify = "{}"
+socks_listen = "127.0.0.1:0""#,
+            STANDARD.encode([1_u8; 32]),
+            STANDARD.encode([2_u8; 32])
+        )
     }
 }

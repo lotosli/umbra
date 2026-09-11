@@ -27,8 +27,30 @@ The system SHALL validate version, reserved zero bytes, timestamp window, allowe
 - **THEN** opening returns an authentication failure
 
 ### Requirement: Bounded replay cache
-The system SHALL bound replay cache memory by capacity and TTL.
+The system SHALL bound replay cache memory by capacity and expiry. Cache expiry SHALL NOT grant authentication independently of token timestamp validation.
 
-#### Scenario: Expired entry can be accepted again
-- **WHEN** a replay entry expires beyond TTL and cleanup runs
-- **THEN** a later insert for the same key is not rejected as an active replay
+#### Scenario: Expired cache entry releases capacity
+- **WHEN** a replay entry passes its authentication-validity deadline and cleanup runs
+- **THEN** its capacity is reclaimed, while presenting the expired token still fails timestamp validation
+
+### Requirement: Replay retention covers token validity
+The authentication runtime SHALL retain accepted tokens through the inclusive end of their timestamp acceptance window, including tokens first accepted with future timestamps. Capacity exhaustion SHALL reject new local authentication rather than evict still-valid replay entries; dispatch SHALL use its ordinary fallback path.
+
+#### Scenario: Future token remains replay-protected
+- **WHEN** a token with timestamp 220 and maximum skew 120 is first accepted at time 100 and replayed at time 221 or 340
+- **THEN** authentication rejects the replay even though more than 120 seconds have passed since first acceptance
+
+#### Scenario: Expired token cannot regain authentication
+- **WHEN** the same token is presented at time 341 after cache cleanup
+- **THEN** timestamp validation rejects it regardless of cache membership
+
+#### Scenario: Replay cache reaches capacity
+- **WHEN** all replay entries remain valid and a new authenticated token would exceed capacity
+- **THEN** local authentication is rejected without removing an existing valid entry or exceeding the memory bound
+
+### Requirement: Canonical ClientHello associated data
+TCP HELLO0 SHALL be the complete ClientHello handshake message with its 32-byte session id zeroed, excluding TLS record headers. Refragmenting unchanged handshake bytes SHALL NOT change authentication. QUIC SHALL retain its separate transport-parameter carrier canonicalization.
+
+#### Scenario: TLS record reframing preserves authentication
+- **WHEN** an authenticated TCP ClientHello is split across different TLS record boundaries without modifying handshake bytes
+- **THEN** the server reconstructs the same HELLO0 and validates the token

@@ -3,6 +3,7 @@
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256, Sha384};
+use zeroize::Zeroizing;
 
 use crate::{
     clienthello::{TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256},
@@ -17,7 +18,7 @@ pub const TLS13_IV_LEN: usize = 12;
 const TLS13_LABEL_PREFIX: &[u8] = b"tls13 ";
 
 /// Traffic secrets and master-level secrets derived from one TLS 1.3 schedule.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct Tls13Secrets {
     /// Early secret.
     pub early_secret: [u8; HASH_LEN],
@@ -40,7 +41,7 @@ pub struct Tls13Secrets {
 }
 
 /// Traffic secrets and master-level secrets for a negotiated TLS 1.3 cipher suite.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct SuiteSecrets {
     /// Early secret.
     pub early_secret: Vec<u8>,
@@ -63,12 +64,30 @@ pub struct SuiteSecrets {
 }
 
 /// AEAD key and IV derived from a TLS traffic secret.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct TrafficKeys {
     /// AEAD key.
     pub key: Vec<u8>,
     /// Static IV used with sequence-number nonce XOR.
     pub iv: [u8; TLS13_IV_LEN],
+}
+
+impl core::fmt::Debug for Tls13Secrets {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Tls13Secrets(<redacted>)")
+    }
+}
+
+impl core::fmt::Debug for SuiteSecrets {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SuiteSecrets(<redacted>)")
+    }
+}
+
+impl core::fmt::Debug for TrafficKeys {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("TrafficKeys(<redacted>)")
+    }
 }
 
 /// SHA-256 transcript hash.
@@ -147,124 +166,124 @@ pub fn derive_secret_with_hash(
     label: &str,
     transcript_hash: &[u8; HASH_LEN],
 ) -> Result<[u8; HASH_LEN], TlsError> {
-    let out = hkdf_expand_label(secret, label, transcript_hash, HASH_LEN)?;
+    let out = Zeroizing::new(hkdf_expand_label(secret, label, transcript_hash, HASH_LEN)?);
     array32(&out)
 }
 
 /// Derive the full TLS 1.3 secret tree for SHA-256 cipher suites.
+///
+/// Transcripts contain bare handshake messages through ServerHello, server
+/// Finished, and client Finished respectively. Application/exporter secrets use
+/// the server-Finished boundary; only resumption uses client Finished.
 pub fn derive_tls13_secrets(
     ecdhe_secret: &[u8],
     handshake_transcript: &[u8],
-    application_transcript: &[u8],
+    server_finished_transcript: &[u8],
+    client_finished_transcript: &[u8],
 ) -> Result<Tls13Secrets, TlsError> {
-    let zeros = [0_u8; HASH_LEN];
-    let early_secret = hkdf_extract(&zeros, &zeros);
-    let derived_for_handshake = derive_secret_with_hash(&early_secret, "derived", &empty_hash())?;
-    let handshake_secret = hkdf_extract(&derived_for_handshake, ecdhe_secret);
-
-    let handshake_hash = transcript_hash(handshake_transcript);
-    let client_handshake_traffic_secret =
-        derive_secret_with_hash(&handshake_secret, "c hs traffic", &handshake_hash)?;
-    let server_handshake_traffic_secret =
-        derive_secret_with_hash(&handshake_secret, "s hs traffic", &handshake_hash)?;
-
-    let derived_for_master = derive_secret_with_hash(&handshake_secret, "derived", &empty_hash())?;
-    let master_secret = hkdf_extract(&derived_for_master, &zeros);
-
-    let application_hash = transcript_hash(application_transcript);
-    let client_application_traffic_secret =
-        derive_secret_with_hash(&master_secret, "c ap traffic", &application_hash)?;
-    let server_application_traffic_secret =
-        derive_secret_with_hash(&master_secret, "s ap traffic", &application_hash)?;
-    let exporter_master_secret =
-        derive_secret_with_hash(&master_secret, "exp master", &application_hash)?;
-    let resumption_master_secret =
-        derive_secret_with_hash(&master_secret, "res master", &application_hash)?;
-
+    let secrets = derive_tls13_secrets_for_suite(
+        TLS_AES_128_GCM_SHA256,
+        ecdhe_secret,
+        handshake_transcript,
+        server_finished_transcript,
+        client_finished_transcript,
+    )?;
     Ok(Tls13Secrets {
-        early_secret,
-        handshake_secret,
-        client_handshake_traffic_secret,
-        server_handshake_traffic_secret,
-        master_secret,
-        client_application_traffic_secret,
-        server_application_traffic_secret,
-        exporter_master_secret,
-        resumption_master_secret,
+        early_secret: array32(&secrets.early_secret)?,
+        handshake_secret: array32(&secrets.handshake_secret)?,
+        client_handshake_traffic_secret: array32(&secrets.client_handshake_traffic_secret)?,
+        server_handshake_traffic_secret: array32(&secrets.server_handshake_traffic_secret)?,
+        master_secret: array32(&secrets.master_secret)?,
+        client_application_traffic_secret: array32(&secrets.client_application_traffic_secret)?,
+        server_application_traffic_secret: array32(&secrets.server_application_traffic_secret)?,
+        exporter_master_secret: array32(&secrets.exporter_master_secret)?,
+        resumption_master_secret: array32(&secrets.resumption_master_secret)?,
     })
 }
 
 /// Derive the full TLS 1.3 secret tree for the negotiated cipher suite.
+///
+/// Transcripts contain bare handshake messages through ServerHello, server
+/// Finished, and client Finished respectively. Application/exporter secrets use
+/// the server-Finished boundary; only resumption uses client Finished.
 pub fn derive_tls13_secrets_for_suite(
     cipher_suite: u16,
     ecdhe_secret: &[u8],
     handshake_transcript: &[u8],
-    application_transcript: &[u8],
+    server_finished_transcript: &[u8],
+    client_finished_transcript: &[u8],
 ) -> Result<SuiteSecrets, TlsError> {
     let hash_len = hash_len_for_suite(cipher_suite)?;
     let zeros = vec![0_u8; hash_len];
-    let early_secret = hkdf_extract_for_suite(cipher_suite, &zeros, &zeros)?;
+    let mut secrets = SuiteSecrets {
+        early_secret: hkdf_extract_for_suite(cipher_suite, &zeros, &zeros)?,
+        handshake_secret: Vec::new(),
+        client_handshake_traffic_secret: Vec::new(),
+        server_handshake_traffic_secret: Vec::new(),
+        master_secret: Vec::new(),
+        client_application_traffic_secret: Vec::new(),
+        server_application_traffic_secret: Vec::new(),
+        exporter_master_secret: Vec::new(),
+        resumption_master_secret: Vec::new(),
+    };
     let empty_hash = empty_hash_for_suite(cipher_suite)?;
-    let derived_for_handshake =
-        derive_secret_with_hash_for_suite(cipher_suite, &early_secret, "derived", &empty_hash)?;
-    let handshake_secret =
+    let derived_for_handshake = Zeroizing::new(derive_secret_with_hash_for_suite(
+        cipher_suite,
+        &secrets.early_secret,
+        "derived",
+        &empty_hash,
+    )?);
+    secrets.handshake_secret =
         hkdf_extract_for_suite(cipher_suite, &derived_for_handshake, ecdhe_secret)?;
 
     let handshake_hash = transcript_hash_for_suite(cipher_suite, handshake_transcript)?;
-    let client_handshake_traffic_secret = derive_secret_with_hash_for_suite(
+    secrets.client_handshake_traffic_secret = derive_secret_with_hash_for_suite(
         cipher_suite,
-        &handshake_secret,
+        &secrets.handshake_secret,
         "c hs traffic",
         &handshake_hash,
     )?;
-    let server_handshake_traffic_secret = derive_secret_with_hash_for_suite(
+    secrets.server_handshake_traffic_secret = derive_secret_with_hash_for_suite(
         cipher_suite,
-        &handshake_secret,
+        &secrets.handshake_secret,
         "s hs traffic",
         &handshake_hash,
     )?;
 
-    let derived_for_master =
-        derive_secret_with_hash_for_suite(cipher_suite, &handshake_secret, "derived", &empty_hash)?;
-    let master_secret = hkdf_extract_for_suite(cipher_suite, &derived_for_master, &zeros)?;
-
-    let application_hash = transcript_hash_for_suite(cipher_suite, application_transcript)?;
-    let client_application_traffic_secret = derive_secret_with_hash_for_suite(
+    let derived_for_master = Zeroizing::new(derive_secret_with_hash_for_suite(
         cipher_suite,
-        &master_secret,
+        &secrets.handshake_secret,
+        "derived",
+        &empty_hash,
+    )?);
+    secrets.master_secret = hkdf_extract_for_suite(cipher_suite, &derived_for_master, &zeros)?;
+
+    let application_hash = transcript_hash_for_suite(cipher_suite, server_finished_transcript)?;
+    secrets.client_application_traffic_secret = derive_secret_with_hash_for_suite(
+        cipher_suite,
+        &secrets.master_secret,
         "c ap traffic",
         &application_hash,
     )?;
-    let server_application_traffic_secret = derive_secret_with_hash_for_suite(
+    secrets.server_application_traffic_secret = derive_secret_with_hash_for_suite(
         cipher_suite,
-        &master_secret,
+        &secrets.master_secret,
         "s ap traffic",
         &application_hash,
     )?;
-    let exporter_master_secret = derive_secret_with_hash_for_suite(
+    secrets.exporter_master_secret = derive_secret_with_hash_for_suite(
         cipher_suite,
-        &master_secret,
+        &secrets.master_secret,
         "exp master",
         &application_hash,
     )?;
-    let resumption_master_secret = derive_secret_with_hash_for_suite(
+    secrets.resumption_master_secret = derive_secret_with_hash_for_suite(
         cipher_suite,
-        &master_secret,
+        &secrets.master_secret,
         "res master",
-        &application_hash,
+        &transcript_hash_for_suite(cipher_suite, client_finished_transcript)?,
     )?;
-
-    Ok(SuiteSecrets {
-        early_secret,
-        handshake_secret,
-        client_handshake_traffic_secret,
-        server_handshake_traffic_secret,
-        master_secret,
-        client_application_traffic_secret,
-        server_application_traffic_secret,
-        exporter_master_secret,
-        resumption_master_secret,
-    })
+    Ok(secrets)
 }
 
 /// Derive an AEAD key and static IV from a traffic secret.
@@ -277,25 +296,30 @@ pub fn derive_traffic_keys(
         TLS_AES_256_GCM_SHA384 | TLS_CHACHA20_POLY1305_SHA256 => 32,
         other => return Err(TlsError::UnsupportedCipherSuite(other)),
     };
-    let key = hkdf_expand_label_for_suite(cipher_suite, traffic_secret, "key", &[], key_len)?;
-    let iv = array12(&hkdf_expand_label_for_suite(
+    let mut keys = TrafficKeys {
+        key: hkdf_expand_label_for_suite(cipher_suite, traffic_secret, "key", &[], key_len)?,
+        iv: [0; TLS13_IV_LEN],
+    };
+    let iv = Zeroizing::new(hkdf_expand_label_for_suite(
         cipher_suite,
         traffic_secret,
         "iv",
         &[],
         TLS13_IV_LEN,
-    )?)?;
-    Ok(TrafficKeys { key, iv })
+    )?);
+    keys.iv = array12(&iv)?;
+    Ok(keys)
 }
 
 /// Derive the TLS 1.3 Finished key from a traffic secret.
 pub fn finished_key(traffic_secret: &[u8]) -> Result<[u8; HASH_LEN], TlsError> {
-    array32(&hkdf_expand_label(
+    let key = Zeroizing::new(hkdf_expand_label(
         traffic_secret,
         "finished",
         &[],
         HASH_LEN,
-    )?)
+    )?);
+    array32(&key)
 }
 
 /// Compute TLS 1.3 Finished verify_data.
@@ -303,8 +327,8 @@ pub fn finished_verify_data(
     traffic_secret: &[u8],
     transcript_hash: &[u8; HASH_LEN],
 ) -> Result<[u8; HASH_LEN], TlsError> {
-    let key = finished_key(traffic_secret)?;
-    umbra_crypto::mac::hmac_sha256(&key, transcript_hash)
+    let key = Zeroizing::new(finished_key(traffic_secret)?);
+    umbra_crypto::mac::hmac_sha256(key.as_ref(), transcript_hash)
         .map_err(|_| TlsError::InvalidInput("bad finished key"))
 }
 
@@ -347,7 +371,7 @@ pub fn finished_verify_data_for_suite(
     traffic_secret: &[u8],
     transcript_hash: &[u8],
 ) -> Result<Vec<u8>, TlsError> {
-    let key = finished_key_for_suite(cipher_suite, traffic_secret)?;
+    let key = Zeroizing::new(finished_key_for_suite(cipher_suite, traffic_secret)?);
     match hash_algorithm(cipher_suite)? {
         HashAlgorithm::Sha256 => {
             let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&key)

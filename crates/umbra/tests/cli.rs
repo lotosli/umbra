@@ -74,6 +74,43 @@ fn scenario_invalid_transport_exits_nonzero() {
     assert!(stderr.contains("unsupported transport"));
 }
 
+#[test]
+fn scenario_config_errors_omit_secret_values_from_cli_stderr() {
+    const SECRET: &str = "SYNTHETIC_PRIVATE_KEY_SEED_SHORT_ID";
+    for (command, fields) in [
+        ("server", ["private_key", "mldsa_seed", "short_ids"]),
+        ("client", ["public_key", "mldsa_verify", "short_id"]),
+    ] {
+        for field in fields {
+            for (case, value) in [
+                ("syntax", format!("[\"{SECRET}\" trailing]")),
+                ("type", format!("[[\"{SECRET}\", \"cafebabedeadbeef\"]]")),
+            ] {
+                let path = std::env::temp_dir().join(format!(
+                    "umbra-cli-redaction-{}-{command}-{field}-{case}.toml",
+                    std::process::id()
+                ));
+                std::fs::write(&path, format!("# synthetic fixture\n{field} = {value}"))
+                    .expect("write synthetic config");
+                let output = Command::new(env!("CARGO_BIN_EXE_umbra"))
+                    .args([command, "--config"])
+                    .arg(&path)
+                    .output();
+                std::fs::remove_file(&path).expect("remove synthetic config");
+                let output = output.expect("run invalid config");
+                assert!(!output.status.success());
+                assert!(output.stdout.is_empty());
+                let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+                assert!(stderr.contains("configuration parse failed"));
+                assert!(stderr.contains("line 2, column "));
+                for value in [SECRET, "cafebabedeadbeef", "synthetic fixture", "trailing"] {
+                    assert!(!stderr.contains(value), "stderr disclosed a config value");
+                }
+            }
+        }
+    }
+}
+
 fn parse_key_values(output: &str) -> HashMap<&str, &str> {
     output
         .lines()

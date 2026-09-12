@@ -41,6 +41,7 @@ const EXT_COMPRESS_CERTIFICATE: u16 = 0x001b;
 const EXT_APPLICATION_SETTINGS: u16 = 0x4469;
 const EXT_APPLICATION_SETTINGS_CHROME_150: u16 = 0x44cd;
 const EXT_PADDING: u16 = 0x0015;
+const EXT_ENCRYPTED_CLIENT_HELLO: u16 = 0xfe0d;
 
 /// Hybrid key-share bytes offered alongside the classic X25519 share.
 pub struct MlkemShare {
@@ -119,6 +120,12 @@ pub struct ClientHelloParams {
     pub quic_transport_parameters: Vec<ClientQuicTransportParameter>,
 }
 
+impl Drop for ClientHelloParams {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.x25519_priv);
+    }
+}
+
 impl core::fmt::Debug for ClientHelloParams {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ClientHelloParams")
@@ -174,10 +181,11 @@ pub fn build_client_hello(params: &ClientHelloParams) -> Result<Vec<u8>, TlsErro
 
 /// Build the HELLO0 associated-data value used by REALITY.
 ///
-/// The returned bytes have the same shape as `client_hello`, with the 32-byte
-/// legacy session id zeroed in place.
+/// Returns the full bare handshake message with its 32-byte session id zeroed.
+/// Input may be a bare message or bounded TLS handshake records; record framing
+/// never contributes to the associated data.
 pub fn hello0(client_hello: &[u8]) -> Result<Vec<u8>, TlsError> {
-    let mut out = client_hello.to_vec();
+    let mut out = canonical_client_hello(client_hello)?;
     let (handshake_offset, body_offset) = handshake_body_offsets(&out)?;
     let session_len_offset = body_offset
         .checked_add(34)
@@ -270,19 +278,36 @@ fn build_extensions(
     params: &ClientHelloParams,
     body_prefix_len: usize,
 ) -> Result<Vec<u8>, TlsError> {
-    let mut extensions = Vec::new();
-    for ext in &params.profile.extension_order {
+    let mut encoded = params
+        .profile
+        .extension_order
+        .iter()
+        .map(|ext| extension_data(*ext, params).map(|data| (*ext, data)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let unpadded_len = 5
+        + 4
+        + body_prefix_len
+        + 2
+        + encoded
+            .iter()
+            .map(|(_, data)| 4 + data.len())
+            .sum::<usize>();
+    let mut padded = false;
+    for (ext, data) in &mut encoded {
         if *ext == EXT_PADDING {
-            let record_len_with_empty_padding = 5 + 4 + body_prefix_len + 2 + extensions.len() + 4;
-            let padding_len = params
-                .profile
-                .padding_target
-                .saturating_sub(record_len_with_empty_padding);
-            push_extension(*ext, &vec![0_u8; padding_len], &mut extensions)?;
-        } else {
-            let data = extension_data(*ext, params)?;
-            push_extension(*ext, &data, &mut extensions)?;
+            if padded {
+                return Err(TlsError::InvalidInput("duplicate padding extension"));
+            }
+            data.resize(
+                params.profile.padding_target.saturating_sub(unpadded_len),
+                0,
+            );
+            padded = true;
         }
+    }
+    let mut extensions = Vec::new();
+    for (ext, data) in encoded {
+        push_extension(ext, &data, &mut extensions)?;
     }
     Ok(extensions)
 }
@@ -303,13 +328,42 @@ fn extension_data(ext: u16, params: &ClientHelloParams) -> Result<Vec<u8>, TlsEr
         EXT_KEY_SHARE => key_share(params),
         EXT_PSK_KEY_EXCHANGE_MODES => Ok(vec![1, 1]),
         EXT_SUPPORTED_VERSIONS => supported_versions(&params.profile),
-        EXT_COMPRESS_CERTIFICATE => vector_u16(&[2]),
+        EXT_COMPRESS_CERTIFICATE => Ok(vec![2, 0, 2]),
         EXT_APPLICATION_SETTINGS | EXT_APPLICATION_SETTINGS_CHROME_150 => {
             alpn_wire(&params.profile.alps)
         }
         EXT_QUIC_TRANSPORT_PARAMETERS => quic_transport_parameters(params),
+        EXT_ENCRYPTED_CLIENT_HELLO => ech_grease(params),
         _ => Ok(Vec::new()),
     }
+}
+
+fn ech_grease(params: &ClientHelloParams) -> Result<Vec<u8>, TlsError> {
+    use umbra_crypto::{kdf::hkdf_sha256, secret::Secret, x25519};
+
+    // Both REALITY construction passes must reuse identical GREASE bytes.
+    let material = SecretBytes::new(
+        hkdf_sha256(
+            &params.random,
+            &params.x25519_priv,
+            b"umbra ech grease",
+            161,
+        )
+        .map_err(|_| TlsError::LengthOutOfRange)?,
+    );
+    let bytes = material.expose_secret();
+    let private = Secret::new(
+        bytes[1..33]
+            .try_into()
+            .map_err(|_| TlsError::LengthOutOfRange)?,
+    );
+    let enc = x25519::public_from_private(&private);
+    let mut out = vec![0, 0, 1, 0, 1, bytes[0]];
+    push_u16_len(enc.as_bytes().len(), &mut out)?;
+    out.extend_from_slice(enc.as_bytes());
+    push_u16_len(bytes[33..].len(), &mut out)?;
+    out.extend_from_slice(&bytes[33..]);
+    Ok(out)
 }
 
 fn server_name(sni: &str) -> Result<Vec<u8>, TlsError> {
@@ -443,6 +497,40 @@ fn record(content_type: u8, payload: &[u8]) -> Result<Vec<u8>, TlsError> {
     out.extend_from_slice(&LEGACY_VERSION.to_be_bytes());
     push_u16_len(payload.len(), &mut out)?;
     out.extend_from_slice(payload);
+    Ok(out)
+}
+
+pub(crate) fn canonical_client_hello(input: &[u8]) -> Result<Vec<u8>, TlsError> {
+    const MAX_CLIENT_HELLO: usize = 128 * 1024;
+    if input.len() > MAX_CLIENT_HELLO {
+        return Err(TlsError::LengthOutOfRange);
+    }
+    let mut out = Vec::new();
+    if input.first() == Some(&RECORD_HANDSHAKE) {
+        let mut rest = input;
+        while !rest.is_empty() {
+            let (record, trailing) = crate::handshake::split_first_record(rest)?;
+            if record[0] != RECORD_HANDSHAKE
+                || record[1] != 3
+                || !matches!(record[2], 1..=3)
+                || record.len() <= 5
+                || record.len() > 5 + 16384
+            {
+                return Err(TlsError::InvalidInput("invalid ClientHello record"));
+            }
+            out.extend_from_slice(&record[5..]);
+            rest = trailing;
+        }
+    } else {
+        out.extend_from_slice(input);
+    }
+    if out.first() != Some(&HANDSHAKE_CLIENT_HELLO) {
+        return Err(TlsError::InvalidInput("not a ClientHello"));
+    }
+    if out.len() != 4 + declared_handshake_len(&out)? {
+        return Err(TlsError::InvalidInput("ClientHello length mismatch"));
+    }
+    crate::parse::parse_client_hello(&out)?;
     Ok(out)
 }
 
@@ -587,5 +675,93 @@ fn write_quic_varint(value: u64, out: &mut Vec<u8>) -> Result<(), TlsError> {
 impl From<FingerprintError> for TlsError {
     fn from(_: FingerprintError) -> Self {
         Self::InvalidInput("fingerprint profile error")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params() -> ClientHelloParams {
+        ClientHelloParams {
+            sni: "fixture.example".to_owned(),
+            session_id: vec![0; 32],
+            x25519_priv: [7; 32],
+            x25519_pub: [8; 32],
+            mlkem: MlkemShare::x25519_mlkem768(vec![9; 1216]),
+            profile: umbra_fingerprint::load_profile("chrome-latest").expect("profile"),
+            random: [10; 32],
+            quic_transport_parameters: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn scenario_ech_grease_has_valid_outer_structure_and_fresh_material() {
+        let mut input = params();
+        let grease = extension_data(EXT_ENCRYPTED_CLIENT_HELLO, &input).expect("ECH GREASE");
+        assert_eq!(&grease[..5], &[0, 0, 1, 0, 1]);
+        assert_eq!(u16::from_be_bytes([grease[6], grease[7]]), 32);
+        assert_eq!(grease.len(), 42 + 128);
+        assert_eq!(u16::from_be_bytes([grease[40], grease[41]]), 128);
+        assert!(grease[42..].iter().any(|byte| *byte != 0));
+        assert_eq!(grease[39] & 0x80, 0);
+        input.session_id.fill(11);
+        assert_eq!(ech_grease(&input).expect("second auth pass"), grease);
+        input.random[0] ^= 1;
+        let fresh = ech_grease(&input).expect("next handshake");
+        assert_ne!(&fresh[8..40], &grease[8..40]);
+        assert_ne!(&fresh[42..], &grease[42..]);
+        input.x25519_priv[0] ^= 1;
+        assert_ne!(ech_grease(&input).expect("new ephemeral key"), fresh);
+    }
+
+    #[test]
+    fn scenario_production_builder_preserves_aad_and_identifier_fields() {
+        let mut input = params();
+        let zero = build_client_hello(&input).expect("first pass");
+        input.session_id.fill(12);
+        let authenticated = build_client_hello(&input).expect("authenticated pass");
+        assert_eq!(
+            hello0(&zero).expect("zero AAD"),
+            hello0(&authenticated).expect("AAD")
+        );
+        let (ja3, ja4) = umbra_fingerprint::ja3_ja4(&authenticated).expect("fingerprints");
+        assert_eq!(ja3, input.profile.expected_ja3);
+        assert_eq!(ja4, input.profile.expected_ja4);
+        assert_eq!(
+            crate::parse::parse_client_hello(&authenticated)
+                .expect("parse")
+                .extensions,
+            input.profile.extension_order
+        );
+        assert!(!input.profile.extension_order.contains(&EXT_PADDING));
+        input.profile.padding_target = 3000;
+        assert_eq!(
+            build_client_hello(&input).expect("no implicit padding"),
+            authenticated
+        );
+    }
+
+    #[test]
+    fn scenario_padding_accounts_for_following_extensions_without_moving_them() {
+        for index in [0, 5, 18] {
+            let mut input = params();
+            input.profile.extension_order.insert(index, EXT_PADDING);
+            input.profile.padding_target = 3000;
+            let wire = build_client_hello(&input).expect("padded hello");
+            assert_eq!(wire.len(), 3000);
+            assert_eq!(
+                crate::parse::parse_client_hello(&wire)
+                    .expect("parse")
+                    .extensions,
+                input.profile.extension_order
+            );
+            input.profile.padding_target = 1;
+            let unpadded = build_client_hello(&input).expect("above target");
+            assert!(unpadded.len() > 1);
+            assert!(unpadded.len() < wire.len());
+            input.profile.extension_order.push(EXT_PADDING);
+            assert!(build_client_hello(&input).is_err());
+        }
     }
 }

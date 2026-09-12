@@ -28,7 +28,6 @@ use crate::{
 const HANDSHAKE_FINISHED: u8 = 0x14;
 
 /// Certificate material supplied by component E.
-#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ForgedCert {
     /// Leaf certificate DER.
     pub leaf_der: Vec<u8>,
@@ -37,6 +36,28 @@ pub struct ForgedCert {
     /// Ephemeral leaf private key DER used for TLS `CertificateVerify`.
     pub certificate_verify_key_der: Vec<u8>,
 }
+
+impl core::fmt::Debug for ForgedCert {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ForgedCert")
+            .field("certificate_verify_key_der", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
+impl zeroize::Zeroize for ForgedCert {
+    fn zeroize(&mut self) {
+        self.certificate_verify_key_der.zeroize();
+    }
+}
+
+impl Drop for ForgedCert {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self);
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for ForgedCert {}
 
 /// Parameters that influence the visible server flight.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -117,11 +138,6 @@ impl Tls13Server {
         leaf: ForgedCert,
         profile: &DestProfile,
     ) -> Result<(Self, Vec<u8>), TlsError> {
-        let ForgedCert {
-            leaf_der,
-            chain_der,
-            certificate_verify_key_der,
-        } = leaf;
         let ServerHandshakeStart {
             negotiated,
             server_hello_record,
@@ -132,13 +148,14 @@ impl Tls13Server {
         } = prepare_server_handshake(chello_raw, profile)?;
         let flight = build_server_flight(
             profile,
-            &leaf_der,
-            &chain_der,
-            &certificate_verify_key_der,
+            &leaf.leaf_der,
+            &leaf.chain_der,
+            &leaf.certificate_verify_key_der,
             &handshake_transcript,
             &hs_secrets,
             server_hs_keys,
         )?;
+        drop(leaf);
 
         let mut outbound = server_hello_record;
         outbound.extend_from_slice(&flight.encrypted_record);
@@ -149,10 +166,9 @@ impl Tls13Server {
                 shared_secret: negotiated.shared_secret,
                 handshake_transcript,
                 transcript_before_client_finished: flight.transcript_before_client_finished,
-                client_hs_read: RecordLayer::new(
+                client_hs_read: RecordLayer::from_traffic_keys(
                     profile.cipher_suite,
-                    client_hs_keys.key,
-                    client_hs_keys.iv,
+                    client_hs_keys,
                 ),
                 state: ServerState::ExpectClientFinished,
                 app_write: None,
@@ -190,6 +206,7 @@ impl Tls13Server {
                 self.shared_secret.expose_secret(),
                 &self.handshake_transcript,
                 &[],
+                &[],
             )?
             .client_handshake_traffic_secret,
             &transcript_hash_for_suite(self.cipher_suite, &self.transcript_before_client_finished)?,
@@ -204,6 +221,7 @@ impl Tls13Server {
             self.cipher_suite,
             self.shared_secret.expose_secret(),
             &self.handshake_transcript,
+            &self.transcript_before_client_finished,
             &transcript_after_client_finished,
         )?;
         let server_app = derive_traffic_keys(
@@ -214,15 +232,13 @@ impl Tls13Server {
             self.cipher_suite,
             &app_secrets.client_application_traffic_secret,
         )?;
-        self.app_write = Some(RecordLayer::new(
+        self.app_write = Some(RecordLayer::from_traffic_keys(
             self.cipher_suite,
-            server_app.key,
-            server_app.iv,
+            server_app,
         ));
-        self.app_read = Some(RecordLayer::new(
+        self.app_read = Some(RecordLayer::from_traffic_keys(
             self.cipher_suite,
-            client_app.key,
-            client_app.iv,
+            client_app,
         ));
         self.state = ServerState::Connected;
         Ok(DriveOut {
@@ -292,6 +308,7 @@ fn prepare_server_handshake(
         negotiated.shared_secret.expose_secret(),
         &handshake_transcript,
         &[],
+        &[],
     )?;
     let server_hs_keys = derive_traffic_keys(
         profile.cipher_suite,
@@ -349,9 +366,12 @@ fn build_server_flight(
     encrypted_flight.extend_from_slice(&certificate_verify);
     encrypted_flight.extend_from_slice(&server_finished);
 
-    let mut server_hs_write =
-        RecordLayer::new(profile.cipher_suite, server_hs_keys.key, server_hs_keys.iv);
-    let encrypted_record = server_hs_write.seal(CONTENT_TYPE_HANDSHAKE, &encrypted_flight)?;
+    let mut server_hs_write = RecordLayer::from_traffic_keys(profile.cipher_suite, server_hs_keys);
+    let mut encrypted_record = Vec::new();
+    for fragment in encrypted_flight.chunks(16384) {
+        encrypted_record
+            .extend_from_slice(&server_hs_write.seal(CONTENT_TYPE_HANDSHAKE, fragment)?);
+    }
 
     let mut transcript_before_client_finished = transcript_before_server_finished;
     transcript_before_client_finished.extend_from_slice(&server_finished);

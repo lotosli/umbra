@@ -98,3 +98,71 @@
 - [x] 12.3 Fix any code behavior that diverges from `docs/protocol-design.md` before marking implementation complete.
 - [x] 12.4 Confirm all optional config fields from section 16 are exposed as CLI flags.
 - [x] 12.5 Confirm no customer/user-visible logs reveal private keys, short ids, session ids, targets, or payload bytes.
+
+## 13. Review Remediation Approval And Protocol Baseline
+
+Sections 1–12 are historical implementation records. Their checked state does not certify the revised requirements below. The user approved implementation of this revision on 2026-09-12. The exact Vision wire amendment retains the separate approval prerequisite in 13.3; specification preparation is not a completed fix.
+
+- [x] 13.1 Obtain human approval of the revised proposal, design, and scenarios, including paired-endpoint upgrades, prebuild semantics, unsupported Geneva rejection, and the Vision protocol change.
+- [x] 13.2 Amend `docs/protocol-design.md` to match approved HELLO0, TLS secret boundaries, replay retention, RealSite authorization, probing/timing, fallback, and implemented sending-policy semantics before changing the corresponding code.
+- [ ] 13.3 Define and approve the exact Vision capability, envelope, directional switch/ack wire layouts, limits, state transitions, simultaneous-switch handling, and test vectors before implementing Vision framing or splice.
+- [x] 13.4 Map the verified findings and every revised scenario to a regression test; retain withdrawn review claims as exclusions rather than inventing fixes for them.
+
+## 14. Authentication, TLS Secrets, And Secret Handling
+
+- [x] 14.1 Gate QUIC application readiness and key release on UmbraTrusted; test valid RealSite and Invalid peers with no target, UDP, SOCKS success, or business bytes emitted.
+- [x] 14.2 Replace unconditional ordinary-certificate validity with chain, hostname, time, and proof-of-possession verification on TCP and QUIC, preserving private Umbra bindings for forged certificates.
+- [x] 14.3 Separate server-Finished application/exporter derivation from client-Finished resumption derivation in shared TLS, TCP client/server, and QUIC paths; add published or independently sourced vector expectations.
+- [x] 14.4 Canonicalize TCP HELLO0 over the complete bare handshake and add record-reframing, mutation, and paired-endpoint authentication tests; preserve QUIC carrier canonicalization.
+- [x] 14.5 Retain replay entries through token timestamp plus accepted skew, reject new authentication when valid entries fill capacity, and test inclusive boundaries, future timestamps, cleanup, and concurrent duplicate admission.
+- [x] 14.6 Sanitize TOML syntax/type diagnostics and their nested Display/Debug sources; test fake private keys, seeds, short ids, and arrays through library errors and CLI stderr.
+- [x] 14.7 Move owned certificate signing keys, record traffic keys, binding secrets, sensitive KDF temporaries, and probe key-log material to zeroizing storage with redacted formatting; avoid unnecessary secret copies and unsafe post-free tests.
+
+## 15. TLS Interoperability And Fingerprint Evidence
+
+- [x] 15.1 Correct RFC 8879 certificate-compression extension encoding and add bounded Brotli certificate decoding with correct transcript hashing and malformed/oversized input tests.
+- [x] 15.2 Validate ServerHello version, compression, selected cipher/group, echoed session id, unique extensions, and explicit unsupported HelloRetryRequest behavior.
+- [x] 15.3 Replace fixed-record-count handshake reads with bounded cross-record reassembly and permitted CCS handling; verify all advertised TLS-1.3-usable signatures using maintained libraries.
+- [x] 15.4 Exchange bidirectional application data with an independent loopback standard TLS peer, including ordinary certificate validation, fragmented server flights, and supported alternate signature algorithms.
+- [x] 15.5 Implement structured nonempty ECH GREASE and randomized profile fields using injectable fresh randomness; follow captured padding placement rather than forcing one historical ClientHello length.
+- [x] 15.6 Compare production ClientHello bytes against reviewed versioned Chrome evidence with explicit normalization masks and provenance; label unavailable full-extension or QUIC evidence unverified, without weakening existing checks.
+- [x] 15.7 Replace the custom JA4-style result with standards-conformant JA4 using a pinned authoritative definition and independent fixtures; cover transport context, GREASE, normalization, sorting, formatting, and stored profile expectations.
+
+## 16. Mux Driver And Shared Connection Runtime
+
+- [x] 16.1 Replace operation-local frame reads with a persistent session reader and serialized writer; test cancellation at every header/payload offset and during partial writes.
+- [x] 16.2 Dispatch all stream and UDP events to their owners during opens and credit waits; test DATA before WINDOW_UPDATE, concurrent SYN_ACK, RST during blocked writes, and exact-once ordering.
+- [x] 16.3 Enforce consumption-based receive credit, reserved bounded buffering, checked window arithmetic, stream limits, and fair progress for unrelated streams and control traffic.
+- [x] 16.4 Implement directional FIN, terminal RST, unknown-stream control rejection, and stream reclamation; test delayed responses after request half-close.
+- [x] 16.5 Reuse one healthy outer per compatible client configuration with coordinated concurrent establishment for TCP mux and QUIC; keep TCP solo and stream-zero UDP associations isolated.
+- [x] 16.6 Serve multiple target streams concurrently; acknowledge TCP mux opens only after target connection success and isolate target failures.
+- [ ] 16.7 Test idle cleanup, outer failure, future replacement connections, no automatic payload replay, and shutdown of all pending opens and owned tasks.
+
+## 17. Dispatch, QUIC Ownership, And Framed UDP
+
+- [x] 17.1 Retain every consumed ClientHello prefix across bounded reads, deadline expiry, oversized declarations, and EOF; transfer ownership to transparent fallback without a local pre-authentication reply.
+- [x] 17.2 Supervise the UDP listener independently of TCP accept/join selection; give the physical socket one receiver and route peer/CID datagrams to owned QUIC or fallback flows.
+- [x] 17.3 Preserve Initial fragment/retransmission checks and original fallback datagram boundaries; test interleaved clients, duplicate Initials, TCP activity, finite queue budgets, and graceful flow cleanup.
+- [x] 17.4 Make QUIC UDP-envelope decoding resumable across competing target replies and validate size bounds with fragmentation and cancellation tests.
+- [x] 17.5 Preserve TCP request half-close and reverse responses on ordinary and fallback relays; distinguish unavoidable transport failure from an Umbra-specific early close.
+
+## 18. Effective Configuration And Production Vision
+
+- [x] 18.1 Implement mandatory validated startup probing and prebuild-controlled periodic refresh, including explicit initial failure and last-known-good retention.
+- [x] 18.2 Remove blocking probe I/O from async executor threads, enforce an overall deadline and bounded concurrency, and test slow DNS/TLS/HTTP plus timeout cleanup without external networking.
+- [x] 18.3 Measure destination connection-to-first-TLS-response separately from HTTP latency, subtract comparable local preparation, and test nonnegative best-effort delay.
+- [x] 18.4 Reject programmatically configured unauthenticated early-close actions and reject unimplemented Geneva policies from file/CLI before startup; test byte-preserving segmentation and no resend after partial writes without adding new configuration fields.
+- [x] 18.5 Keep TCP RealSite requests compatible with negotiated HTTP protocols and prohibit proxy bytes; fail QUIC RealSite locally without downgrade or a fabricated HTTP/3 spider.
+- [ ] 18.6 After 13.3 approval, implement bounded bidirectional inner TLS reassembly and authenticated Vision envelopes with removable padding and controlled outer TLS record boundaries.
+- [ ] 18.7 Implement negotiated directional switch barriers, drain outer TLS output, transfer read-ahead bytes, and connect the real solo runtime to raw TCP handoff; do not treat `0x17` as verified Finished.
+- [ ] 18.8 Test actual on-wire raw handoff, simultaneous/failed negotiation, coalesced switch boundaries, non-TLS and ineligible TLS fallback, half-close, cancellation, and secret cleanup.
+
+## 19. Verification And Completion Evidence
+
+- [ ] 19.1 Add property/fuzz regressions for changed network parsers and state transitions, including mux, fragmented ClientHello, compressed certificates, Vision envelopes, and QUIC UDP framing.
+- [x] 19.2 Run `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings`.
+- [x] 19.3 Run `cargo nextest run --workspace --run-ignored all` and investigate any failure or leaky-test report without suppressing it.
+- [x] 19.4 Run `cargo xtask coverage`; keep measured line coverage >= 90% without lowering thresholds or excluding changed paths.
+- [x] 19.5 Replace the pre-existing archived `crypto-primitives` Purpose placeholder with an accurate capability description, then run `cargo deny check`, `cargo xtask fingerprint-check`, and OpenSpec `validate --all --strict`; distinguish passing available checks from missing capture evidence.
+- [ ] 19.6 Update the existing protocol review and user-facing configuration/support descriptions with actual verified behavior, paired-endpoint migration, and remaining evidence gaps; do not mark unsupported raw Geneva or unmeasured fingerprint parity complete.
+- [x] 19.7 Review diffs for secrets, unintended configuration/CI changes, and dependency graph violations; report fixes, exact verification commands/results, and any uncompleted tasks without committing or publishing unless requested.

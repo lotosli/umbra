@@ -19,10 +19,14 @@ use tokio::{
     sync::mpsc,
     task::{JoinHandle, JoinSet},
 };
-use umbra_crypto::{mlkem::mlkem_keygen, secret::SecretBytes, x25519};
+use umbra_crypto::{
+    mlkem::mlkem_keygen,
+    secret::{Secret, SecretBytes},
+    x25519,
+};
 use umbra_fingerprint::load_profile;
 use umbra_inner::{
-    mux::{MuxEvent, MuxSession, MuxStream},
+    mux::{MuxEvent, MuxSession},
     padding::PadScheme,
     spider::spider,
     vision::{read_solo_preface, send_solo_preface},
@@ -45,9 +49,9 @@ use umbra_transport::{
     evasion::TcpEvasionPolicy,
     quic::{
         build_quic_initial_crypto_packet, decrypt_quic_initial_crypto_frames,
-        parse_quic_initial_header, read_target_stream, read_udp_envelope_stream,
-        write_target_stream, write_udp_association_marker, write_udp_envelope_stream,
-        QuicCryptoFrame, QUIC_UDP_ASSOCIATE_MARKER,
+        parse_quic_initial_header, read_target_stream, write_target_stream,
+        write_udp_association_marker, write_udp_envelope_stream, QuicCryptoFrame,
+        QUIC_UDP_ASSOCIATE_MARKER,
     },
     tcp::{build_tcp_client_hello, tcp_connect_and_send, TcpClientHelloConfig},
 };
@@ -74,9 +78,14 @@ use crate::{
 const DEFAULT_REPLAY_CAPACITY: usize = 65_536;
 const DEFAULT_OUTER_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_SESSION_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
+const DEFAULT_PROFILE_REFRESH_INTERVAL: Duration = Duration::from_hours(1);
 const DEFAULT_QUIC_FALLBACK_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const QUIC_PREFETCH_MAX_DATAGRAMS: usize = 16;
 const QUIC_PREFETCH_MAX_CRYPTO_BYTES: usize = 64 * 1024;
+const QUIC_MAX_FLOWS: usize = 64;
+const QUIC_FLOW_QUEUE_CAPACITY: usize = 16;
+const QUIC_FLOW_MAX_CIDS: usize = 64;
+const QUIC_MAX_STREAMS: usize = 128;
 const TLS_HANDSHAKE_CLIENT_HELLO: u8 = 0x01;
 const EXT_PADDING: u16 = 0x0015;
 const MUX_OPENING_PREFIX_LEN: usize = 7;
@@ -89,7 +98,10 @@ pub struct ServerRuntime {
     tcp_listener: TcpListener,
     udp_socket: Option<QuicServerSocket>,
     dispatch_cfg: Arc<crate::dispatch::ServerCfg>,
-    profile: Arc<DestProfile>,
+    // Watch's short synchronous borrow is used only to clone an immutable snapshot.
+    profile: tokio::sync::watch::Sender<Arc<DestProfile>>,
+    // JoinSet aborts the worker if the runtime is dropped without explicit shutdown.
+    profile_refresh: Mutex<JoinSet<()>>,
     replay: Arc<ReplayCache>,
     probe_policy: ProbeResistancePolicy,
     padding_scheme: PadScheme,
@@ -99,16 +111,53 @@ pub struct ServerRuntime {
 
 struct QuicServerSocket {
     dispatch: Arc<UdpSocket>,
-    endpoint: StdUdpSocket,
+    // Only the listener polls this wrapper for receives. Flow wrappers use sends only.
+    send: Arc<dyn quinn::AsyncUdpSocket>,
+    receiver: tokio::sync::Mutex<()>,
 }
 
 impl ServerRuntime {
-    /// Bind configured listeners using an already-collected destination profile.
+    /// Bind configured listeners using an already-validated destination profile.
+    ///
+    /// When prebuild is enabled, refresh independently until shutdown or drop.
     pub async fn bind_with_profile(
         cfg: RuntimeServerCfg,
         profile: DestProfile,
         probe_policy: ProbeResistancePolicy,
     ) -> Result<Self, CoreError> {
+        Self::bind_with_refresh(cfg, profile, probe_policy, |active, dest| async move {
+            refresh_profiles(
+                active,
+                dest,
+                |dest: String| async move { umbra_reality::prebuild::probe_dest(&dest).await },
+                profile_refresh_interval(),
+            )
+            .await;
+        })
+        .await
+    }
+
+    async fn bind_with_probe<F>(
+        cfg: RuntimeServerCfg,
+        probe: impl FnOnce(String) -> F,
+    ) -> Result<Self, CoreError>
+    where
+        F: Future<Output = Result<DestProfile, umbra_reality::RealityError>>,
+    {
+        // Both prebuild modes must obtain a validated profile before binding listeners.
+        let profile = probe(cfg.dest.clone()).await?;
+        Self::bind_with_profile(cfg, profile, ProbeResistancePolicy::default()).await
+    }
+
+    async fn bind_with_refresh<F>(
+        cfg: RuntimeServerCfg,
+        profile: DestProfile,
+        probe_policy: ProbeResistancePolicy,
+        refresh: impl FnOnce(tokio::sync::watch::Sender<Arc<DestProfile>>, String) -> F,
+    ) -> Result<Self, CoreError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
         probe_policy.validate()?;
         let RuntimeServerCfg {
             listen,
@@ -129,9 +178,15 @@ impl ServerRuntime {
             Some(addr) => {
                 let std_socket = StdUdpSocket::bind(addr)?;
                 std_socket.set_nonblocking(true)?;
-                let endpoint = std_socket.try_clone()?;
+                let runtime = quinn::default_runtime()
+                    .ok_or_else(|| CoreError::Quic("no QUIC runtime".to_owned()))?;
+                let send = runtime.wrap_udp_socket(std_socket.try_clone()?)?;
                 let dispatch = Arc::new(UdpSocket::from_std(std_socket)?);
-                Some(QuicServerSocket { dispatch, endpoint })
+                Some(QuicServerSocket {
+                    dispatch,
+                    send,
+                    receiver: tokio::sync::Mutex::new(()),
+                })
             }
             None => None,
         };
@@ -152,12 +207,18 @@ impl ServerRuntime {
             mldsa_seed,
             hello_limits,
         };
+        let (profile, _) = tokio::sync::watch::channel(Arc::new(profile));
+        let mut profile_refresh = JoinSet::new();
+        if prebuild {
+            profile_refresh.spawn(refresh(profile.clone(), dispatch_cfg.dest.clone()));
+        }
 
         Ok(Self {
             tcp_listener,
             udp_socket,
             dispatch_cfg: Arc::new(dispatch_cfg),
-            profile: Arc::new(profile),
+            profile,
+            profile_refresh: Mutex::new(profile_refresh),
             replay,
             probe_policy,
             padding_scheme,
@@ -208,21 +269,37 @@ impl ServerRuntime {
         self.prebuild
     }
 
+    fn profile_snapshot(&self) -> Arc<DestProfile> {
+        Arc::clone(&self.profile.borrow())
+    }
+
+    async fn stop_profile_refresh(&self) {
+        // No lock survives the await. Moving the task set cannot poison its contents.
+        let mut tasks = std::mem::take(
+            &mut *self
+                .profile_refresh
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        abort_all(&mut tasks).await;
+    }
+
     /// Accept one TCP connection and dispatch it using an injected destination connector.
     pub async fn accept_one_with_connector<D, Connect, ConnectFuture>(
         &self,
         connect_dest: Connect,
     ) -> Result<AcceptedServerSession, CoreError>
     where
-        D: AsyncRead + AsyncWrite + Unpin,
-        Connect: FnOnce(String) -> ConnectFuture,
-        ConnectFuture: Future<Output = Result<D, std::io::Error>>,
+        D: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        Connect: FnMut(String) -> ConnectFuture + Send,
+        ConnectFuture: Future<Output = Result<D, std::io::Error>> + Send + 'static,
     {
         let (stream, peer) = self.tcp_listener.accept().await?;
+        let profile = self.profile_snapshot();
         let outcome = dispatch_runtime_with_connector(
             stream,
             self.dispatch_cfg.as_ref(),
-            self.profile.as_ref(),
+            profile.as_ref(),
             self.replay.as_ref(),
             current_unix_time()?,
             connect_dest,
@@ -233,46 +310,166 @@ impl ServerRuntime {
         Ok(AcceptedServerSession { peer, outcome })
     }
 
-    /// Accept one UDP datagram and dispatch it as a QUIC Initial.
+    /// Run the UDP supervisor until one flow completes, then stop and join other flows.
     pub async fn accept_one_quic_with_idle_timeout(
         &self,
         idle_timeout: Duration,
     ) -> Result<AcceptedQuicSession, CoreError> {
+        self.run_quic_listener(idle_timeout, true, std::future::pending())
+            .await?
+            .ok_or(CoreError::InvalidConfig(
+                "QUIC listener stopped before an outcome",
+            ))
+    }
+
+    async fn run_quic_listener<S>(
+        &self,
+        idle_timeout: Duration,
+        one_outcome: bool,
+        shutdown: S,
+    ) -> Result<Option<AcceptedQuicSession>, CoreError>
+    where
+        S: Future<Output = ()>,
+    {
         let socket = self
             .udp_socket
             .as_ref()
             .ok_or(CoreError::InvalidConfig("UDP listener is not configured"))?;
-        let mut buf = vec![0_u8; 65_535];
-        let (read, peer) = socket.dispatch.recv_from(&mut buf).await?;
-        let datagram = buf[..read].to_vec();
-        let outcome = Box::pin(dispatch_quic_runtime(
-            datagram,
-            QuicRuntimeDispatch {
-                client_socket: &socket.dispatch,
-                endpoint_socket: socket.endpoint.try_clone()?,
-                client_peer: peer,
-                cfg: self.dispatch_cfg.as_ref(),
-                profile: self.profile.as_ref(),
-                replay: self.replay.as_ref(),
-                now_unix: current_unix_time()?,
-                timing: self.probe_policy.timing,
-                idle_timeout,
-            },
-        ))
-        .await?;
-        Ok(AcceptedQuicSession { peer, outcome })
+        tokio::pin!(shutdown);
+        // Public convenience calls must not introduce another physical receiver.
+        let _receiver = tokio::select! {
+            () = &mut shutdown => return Ok(None),
+            receiver = socket.receiver.lock() => receiver,
+        };
+        let mut flows: JoinSet<Result<AcceptedQuicSession, CoreError>> = JoinSet::new();
+        let (stop_flows, stopping) = tokio::sync::watch::channel(false);
+        let mut routes = HashMap::new();
+        let mut buf = vec![0_u8; UDP_RELAY_BUF_LEN];
+        let result = loop {
+            tokio::select! {
+                () = &mut shutdown => break Ok(None),
+                joined = flows.join_next_with_id(), if !flows.is_empty() => {
+                    match joined {
+                        Some(Ok((id, outcome))) => {
+                            routes.remove(&id);
+                            if one_outcome {
+                                break outcome.map(Some);
+                            }
+                            report_session_result("server QUIC", Some(Ok(outcome)));
+                        }
+                        Some(Err(err)) => {
+                            routes.remove(&err.id());
+                            report_session_result::<AcceptedQuicSession>("server QUIC", Some(Err(err)));
+                        }
+                        None => {}
+                    }
+                }
+                received = receive_quic_datagrams(socket.send.as_ref(), &mut buf) => {
+                    let (meta, read) = match received {
+                        Ok(received) => received,
+                        Err(err) => break Err(err.into()),
+                    };
+                    let peer = meta.addr;
+                    let datagrams = buf[..read].chunks(meta.stride.max(1))
+                        .chain((read == 0).then_some(&buf[..0]));
+                    for datagram in datagrams {
+                        match route_quic_datagram(&routes, peer, datagram) {
+                            QuicRouteMatch::Existing(sender) => {
+                                // Never block unrelated peers on a saturated UDP queue.
+                                let _ = sender.try_send(datagram.to_vec());
+                            }
+                            QuicRouteMatch::New if routes.len() < QUIC_MAX_FLOWS => {
+                                let (route, inbox) = QuicFlowRoute::new(peer, datagram);
+                                let task = flows.spawn(self.quic_flow(
+                                    socket,
+                                    datagram.to_vec(),
+                                    inbox,
+                                    idle_timeout,
+                                    stopping.clone(),
+                                ));
+                                routes.insert(task.id(), route);
+                            }
+                            QuicRouteMatch::New | QuicRouteMatch::Ambiguous => {}
+                        }
+                    }
+                }
+            }
+        };
+        let _ = stop_flows.send(true);
+        routes.clear();
+        while flows.join_next().await.is_some() {}
+        result
     }
 
-    /// Accept and dispatch TCP sessions until shutdown resolves.
+    fn quic_flow(
+        &self,
+        socket: &QuicServerSocket,
+        datagram: Vec<u8>,
+        inbox: QuicFlowInbox,
+        idle_timeout: Duration,
+        mut stopping: tokio::sync::watch::Receiver<bool>,
+    ) -> impl Future<Output = Result<AcceptedQuicSession, CoreError>> + Send + 'static {
+        let cfg = Arc::clone(&self.dispatch_cfg);
+        let profile = self.profile_snapshot();
+        let replay = Arc::clone(&self.replay);
+        let client_socket = Arc::clone(&socket.dispatch);
+        let endpoint_socket = Arc::clone(&socket.send);
+        let timing = self.probe_policy.timing;
+        async move {
+            let peer = inbox.peer;
+            let mut streams = JoinSet::new();
+            let outcome = tokio::select! {
+                _ = stopping.changed() => Err(CoreError::Quic("listener stopped".to_owned())),
+                outcome = Box::pin(dispatch_quic_runtime(
+                    datagram,
+                    inbox,
+                    QuicRuntimeDispatch {
+                        client_socket: &client_socket,
+                        endpoint_socket,
+                        cfg: cfg.as_ref(),
+                        profile: profile.as_ref(),
+                        replay: replay.as_ref(),
+                        now_unix: current_unix_time()?,
+                        timing,
+                        idle_timeout,
+                    },
+                    &mut streams,
+                )) => outcome,
+            };
+            abort_all(&mut streams).await;
+            outcome.map(|outcome| AcceptedQuicSession { peer, outcome })
+        }
+    }
+
+    /// Accept and dispatch sessions until shutdown, then stop and join profile refresh.
     pub async fn run_until_shutdown<S>(&self, shutdown: S) -> Result<(), CoreError>
     where
         S: Future<Output = ()>,
     {
+        let result = self.run_accept_loops(shutdown).await;
+        self.stop_profile_refresh().await;
+        result
+    }
+
+    async fn run_accept_loops<S>(&self, shutdown: S) -> Result<(), CoreError>
+    where
+        S: Future<Output = ()>,
+    {
         tokio::pin!(shutdown);
+        let (quic_stop, quic_stopped) = tokio::sync::oneshot::channel();
+        let quic_listener =
+            self.run_quic_listener(DEFAULT_QUIC_FALLBACK_IDLE_TIMEOUT, false, async {
+                let _ = quic_stopped.await;
+            });
+        tokio::pin!(quic_listener);
         let mut tcp_sessions = JoinSet::new();
         loop {
             tokio::select! {
                 () = &mut shutdown => {
+                    let _ = quic_stop.send(());
+                    if self.udp_socket.is_some() {
+                        quic_listener.await?;
+                    }
                     abort_all(&mut tcp_sessions).await;
                     return Ok(());
                 }
@@ -280,9 +477,19 @@ impl ServerRuntime {
                     report_session_result("server TCP", joined);
                 }
                 accepted = self.tcp_listener.accept() => {
-                    let (stream, peer) = accepted?;
+                    let (stream, peer) = match accepted {
+                        Ok(accepted) => accepted,
+                        Err(err) => {
+                            let _ = quic_stop.send(());
+                            if self.udp_socket.is_some() {
+                                let _ = quic_listener.await;
+                            }
+                            abort_all(&mut tcp_sessions).await;
+                            return Err(err.into());
+                        }
+                    };
                     let cfg = Arc::clone(&self.dispatch_cfg);
-                    let profile = Arc::clone(&self.profile);
+                    let profile = self.profile_snapshot();
                     let replay = Arc::clone(&self.replay);
                     let timing = self.probe_policy.timing;
                     let padding_scheme = self.padding_scheme.clone();
@@ -301,8 +508,9 @@ impl ServerRuntime {
                         Ok::<_, CoreError>(AcceptedServerSession { peer, outcome })
                     });
                 }
-                accepted = self.accept_one_quic_with_idle_timeout(DEFAULT_QUIC_FALLBACK_IDLE_TIMEOUT), if self.udp_socket.is_some() => {
-                    let _ = accepted;
+                result = &mut quic_listener, if self.udp_socket.is_some() => {
+                    abort_all(&mut tcp_sessions).await;
+                    return result.map(|_| ());
                 }
             }
         }
@@ -352,6 +560,97 @@ pub enum QuicRuntimeOutcome {
 pub struct ClientRuntime {
     listener: TcpListener,
     cfg: Arc<ClientCfg>,
+    connections: Arc<ClientConnections>,
+}
+
+#[derive(Default)]
+struct ClientConnections {
+    quic: tokio::sync::Mutex<Option<QuicClientConnection>>,
+    mux: tokio::sync::Mutex<Option<(crate::mux_io::MuxDriver, crate::mux_io::ClientMux)>>,
+}
+
+impl ClientConnections {
+    async fn mux(&self, cfg: &ClientCfg) -> Result<crate::mux_io::ClientMux, CoreError> {
+        let mut active = self.mux.lock().await;
+        if let Some((_, handle)) = active.as_ref() {
+            if handle.is_healthy() {
+                return Ok(handle.clone());
+            }
+        }
+        if let Some((driver, _)) = active.take() {
+            driver.shutdown().await;
+        }
+        let outer = open_tcp_outer(cfg).await?;
+        let session = MuxSession::client(outer, &cfg.padding_scheme)?;
+        let (driver, handle) = crate::mux_io::start_client(session)?;
+        *active = Some((driver, handle.clone()));
+        Ok(handle)
+    }
+
+    async fn quic(&self, cfg: &ClientCfg) -> Result<quinn::Connection, CoreError> {
+        let mut active = self.quic.lock().await;
+        if let Some(outer) = active.as_ref() {
+            if outer.connection.close_reason().is_none() {
+                return Ok(outer.connection.clone());
+            }
+        }
+        active.take();
+        let outer = QuicClientConnection::connect(cfg).await?;
+        let connection = outer.connection.clone();
+        *active = Some(outer);
+        Ok(connection)
+    }
+
+    async fn shutdown(&self) {
+        if let Some((driver, _)) = self.mux.lock().await.take() {
+            driver.shutdown().await;
+        }
+        if let Some(outer) = self.quic.lock().await.take() {
+            outer.endpoint.close(0_u32.into(), b"");
+            let _ = tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, outer.endpoint.wait_idle())
+                .await;
+        }
+    }
+}
+
+struct QuicClientConnection {
+    endpoint: quinn::Endpoint,
+    connection: quinn::Connection,
+}
+
+impl QuicClientConnection {
+    async fn connect(cfg: &ClientCfg) -> Result<Self, CoreError> {
+        tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, Self::connect_inner(cfg))
+            .await
+            .map_err(|_| CoreError::IdleTimeout("outer QUIC connection setup"))?
+    }
+
+    async fn connect_inner(cfg: &ClientCfg) -> Result<Self, CoreError> {
+        let server_addr = resolve_server_addr(&cfg.server).await?;
+        let bind_ip = if server_addr.is_ipv6() {
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        };
+        let mut endpoint =
+            quinn::Endpoint::client(SocketAddr::new(bind_ip, 0)).map_err(quic_error)?;
+        endpoint.set_default_client_config(quic_crypto::client_config(cfg)?);
+        let connection = endpoint
+            .connect(server_addr, &cfg.server_name)
+            .map_err(quic_error)?
+            .await
+            .map_err(quic_error)?;
+        Ok(Self {
+            endpoint,
+            connection,
+        })
+    }
+}
+
+impl Drop for QuicClientConnection {
+    fn drop(&mut self) {
+        self.endpoint.close(0_u32.into(), b"");
+    }
 }
 
 impl ClientRuntime {
@@ -361,6 +660,7 @@ impl ClientRuntime {
         Ok(Self {
             listener,
             cfg: Arc::new(cfg),
+            connections: Arc::new(ClientConnections::default()),
         })
     }
 
@@ -375,7 +675,7 @@ impl ClientRuntime {
         open_outer: Open,
     ) -> Result<ClientSessionOutcome, CoreError>
     where
-        Outer: AsyncRead + AsyncWrite + Unpin,
+        Outer: AsyncRead + AsyncWrite + Unpin + Send + 'static,
         Open: FnOnce(ClientConnectPlan) -> OpenFuture,
         OpenFuture: Future<Output = Result<Outer, CoreError>>,
     {
@@ -390,30 +690,41 @@ impl ClientRuntime {
     {
         tokio::pin!(shutdown);
         let mut sessions = JoinSet::new();
-        loop {
+        let result = loop {
             tokio::select! {
-                () = &mut shutdown => {
-                    abort_all(&mut sessions).await;
-                    return Ok(());
-                }
+                () = &mut shutdown => break Ok(()),
                 joined = sessions.join_next(), if !sessions.is_empty() => {
                     report_session_result("client SOCKS", joined);
                 }
                 accepted = self.listener.accept() => {
-                    let (mut socks, _peer) = accepted?;
+                    let (mut socks, _peer) = match accepted {
+                        Ok(accepted) => accepted,
+                        Err(error) => break Err(error.into()),
+                    };
                     let cfg = Arc::clone(&self.cfg);
+                    let connections = Arc::clone(&self.connections);
                     sessions.spawn(async move {
-                        Box::pin(client_session_from_config(cfg.as_ref(), &mut socks)).await
+                        Box::pin(client_session_with_connections(
+                            cfg.as_ref(), &mut socks, &connections,
+                        )).await
                     });
                 }
             }
-        }
+        };
+        abort_all(&mut sessions).await;
+        self.connections.shutdown().await;
+        result
     }
 
     /// Accept one SOCKS request and open the configured outer transport.
     pub async fn accept_one_from_config(&self) -> Result<ClientSessionOutcome, CoreError> {
         let (mut socks, _) = self.listener.accept().await?;
-        Box::pin(client_session_from_config(self.cfg.as_ref(), &mut socks)).await
+        Box::pin(client_session_with_connections(
+            self.cfg.as_ref(),
+            &mut socks,
+            &self.connections,
+        ))
+        .await
     }
 }
 
@@ -493,7 +804,7 @@ pub async fn client_session_with_outer<S, Outer, Open, OpenFuture>(
 ) -> Result<ClientSessionOutcome, CoreError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
-    Outer: AsyncRead + AsyncWrite + Unpin,
+    Outer: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     Open: FnOnce(ClientConnectPlan) -> OpenFuture,
     OpenFuture: Future<Output = Result<Outer, CoreError>>,
 {
@@ -556,6 +867,20 @@ pub async fn client_session_from_config<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let connections = ClientConnections::default();
+    let result = client_session_with_connections(cfg, socks, &connections).await;
+    connections.shutdown().await;
+    result
+}
+
+async fn client_session_with_connections<S>(
+    cfg: &ClientCfg,
+    socks: &mut S,
+    connections: &ClientConnections,
+) -> Result<ClientSessionOutcome, CoreError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     negotiate_no_auth(socks).await?;
     let request = match read_request(socks).await {
         Ok(request) => request,
@@ -590,6 +915,16 @@ where
     };
     let mode = selected_client_inner_mode(cfg);
     match cfg.transport {
+        TransportKind::Tcp if mode == ClientInnerMode::Mux => {
+            let mux = connections.mux(cfg).await?;
+            let mut stream =
+                tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, mux.open(target.clone()))
+                    .await
+                    .map_err(|_| CoreError::IdleTimeout("mux target setup"))??;
+            write_success_reply(socks).await?;
+            relay_bidirectional_until_idle(socks, &mut stream, DEFAULT_SESSION_IDLE_TIMEOUT)
+                .await?;
+        }
         TransportKind::Tcp => {
             let plan = ClientConnectPlan {
                 target: target.clone(),
@@ -602,7 +937,8 @@ where
             Box::pin(client_stream_over_outer(cfg, socks, &target, mode, outer)).await?;
         }
         TransportKind::Quic => {
-            Box::pin(client_quic_stream_session(cfg, socks, &target)).await?;
+            let connection = connections.quic(cfg).await?;
+            Box::pin(client_quic_stream_session(&connection, socks, &target)).await?;
         }
     }
     Ok(ClientSessionOutcome {
@@ -621,14 +957,22 @@ async fn client_stream_over_outer<S, Outer>(
 ) -> Result<(), CoreError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
-    Outer: AsyncRead + AsyncWrite + Unpin,
+    Outer: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     match mode {
         ClientInnerMode::Mux => {
-            let mut mux = MuxSession::client(outer, &cfg.padding_scheme)?;
-            let stream = mux.open(target).await?;
-            write_success_reply(socks).await?;
-            relay_mux_client_stream(socks, mux, stream, DEFAULT_SESSION_IDLE_TIMEOUT).await?;
+            let mux = MuxSession::client(outer, &cfg.padding_scheme)?;
+            let (driver, handle) = crate::mux_io::start_client(mux)?;
+            let result = async {
+                let mut stream = handle.open(target.clone()).await?;
+                write_success_reply(socks).await?;
+                relay_bidirectional_until_idle(socks, &mut stream, DEFAULT_SESSION_IDLE_TIMEOUT)
+                    .await?;
+                Ok::<(), CoreError>(())
+            }
+            .await;
+            driver.shutdown().await;
+            result?;
         }
         ClientInnerMode::VisionSolo => {
             let mut outer = outer;
@@ -657,7 +1001,7 @@ async fn client_udp_association_over_tcp_outer<S, Outer>(
 ) -> Result<(), CoreError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
-    Outer: AsyncRead + AsyncWrite + Unpin,
+    Outer: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let udp = bind_socks_udp_relay(cfg).await?;
     let bound = udp.local_addr()?;
@@ -743,30 +1087,13 @@ fn selected_client_inner_mode(cfg: &ClientCfg) -> ClientInnerMode {
 }
 
 async fn client_quic_stream_session<S>(
-    cfg: &ClientCfg,
+    connection: &quinn::Connection,
     socks: &mut S,
     target: &TargetAddr,
 ) -> Result<(), CoreError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let server_addr = resolve_server_addr(&cfg.server).await?;
-    let bind_addr: SocketAddr = if server_addr.is_ipv6() {
-        "[::]:0"
-            .parse()
-            .map_err(|_| CoreError::InvalidConfig("invalid QUIC IPv6 bind address"))?
-    } else {
-        "0.0.0.0:0"
-            .parse()
-            .map_err(|_| CoreError::InvalidConfig("invalid QUIC IPv4 bind address"))?
-    };
-    let mut endpoint = quinn::Endpoint::client(bind_addr).map_err(quic_error)?;
-    endpoint.set_default_client_config(quic_crypto::client_config(cfg)?);
-    let connection = endpoint
-        .connect(server_addr, &cfg.server_name)
-        .map_err(quic_error)?
-        .await
-        .map_err(quic_error)?;
     let (mut send, mut recv) = connection.open_bi().await.map_err(quic_error)?;
     write_target_stream(&mut send, target, &[]).await?;
     write_success_reply(socks).await?;
@@ -792,8 +1119,6 @@ where
         Ok::<(), CoreError>(())
     };
     let _ = tokio::try_join!(client_to_server, server_to_client)?;
-    connection.close(0_u32.into(), b"");
-    endpoint.close(0_u32.into(), b"");
     Ok(())
 }
 
@@ -803,7 +1128,6 @@ where
 {
     let udp = bind_socks_udp_relay(cfg).await?;
     let bound = udp.local_addr()?;
-    write_bound_success_reply(control, bound).await?;
     let server_addr = resolve_server_addr(&cfg.server).await?;
     let bind_addr: SocketAddr = if server_addr.is_ipv6() {
         "[::]:0"
@@ -823,6 +1147,8 @@ where
         .map_err(quic_error)?;
     let (mut send, mut recv) = connection.open_bi().await.map_err(quic_error)?;
     write_udp_association_marker(&mut send).await?;
+    write_bound_success_reply(control, bound).await?;
+    let mut envelope_reader = umbra_transport::quic::UdpEnvelopeReader::default();
 
     let mut reassembler = SocksUdpReassembler::default();
     let mut client_peer = None;
@@ -862,7 +1188,7 @@ where
                     write_udp_envelope_stream(&mut send, &payload.target, &payload.payload).await?;
                 }
             }
-            envelope = read_udp_envelope_stream(&mut recv) => {
+            envelope = envelope_reader.read_next(&mut recv) => {
                 let envelope = match envelope {
                     Ok(envelope) => envelope,
                     Err(umbra_transport::TransportError::Io(err))
@@ -946,12 +1272,51 @@ pub fn build_quic_client_initial(cfg: &ClientCfg) -> Result<QuicClientInitial, C
     )
 }
 
+fn profile_refresh_interval() -> tokio::time::Interval {
+    let mut interval = tokio::time::interval_at(
+        tokio::time::Instant::now() + DEFAULT_PROFILE_REFRESH_INTERVAL,
+        DEFAULT_PROFILE_REFRESH_INTERVAL,
+    );
+    // Never burst stale scheduled probes after a slow probe or executor pause.
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    interval
+}
+
+trait ProfileRefreshClock: Send {
+    fn tick(&mut self) -> impl Future<Output = ()> + Send;
+}
+
+impl ProfileRefreshClock for tokio::time::Interval {
+    async fn tick(&mut self) {
+        self.tick().await;
+    }
+}
+
+async fn refresh_profiles<F>(
+    active: tokio::sync::watch::Sender<Arc<DestProfile>>,
+    dest: String,
+    mut probe: impl FnMut(String) -> F + Send,
+    mut clock: impl ProfileRefreshClock,
+) where
+    F: Future<Output = Result<DestProfile, umbra_reality::RealityError>> + Send,
+{
+    loop {
+        clock.tick().await;
+        // Sequential awaits allow only one in-flight probe. The backend already
+        // bounds blocking workers and enforces a total deadline.
+        if let Ok(profile) = probe(dest.clone()).await {
+            active.send_replace(Arc::new(profile));
+        }
+        // Retain the last good value on failure; do not log destinations or errors.
+    }
+}
+
 /// Run a server until Ctrl-C after probing the configured destination.
 pub async fn run_server(cfg: RuntimeServerCfg) -> Result<(), CoreError> {
-    let dest = cfg.dest.clone();
-    let profile = umbra_reality::prebuild::probe_dest(&dest).await?;
-    let runtime =
-        ServerRuntime::bind_with_profile(cfg, profile, ProbeResistancePolicy::default()).await?;
+    let runtime = ServerRuntime::bind_with_probe(cfg, |dest: String| async move {
+        umbra_reality::prebuild::probe_dest(&dest).await
+    })
+    .await?;
     Box::pin(runtime.run_until_shutdown(shutdown_on_ctrl_c())).await
 }
 
@@ -967,6 +1332,16 @@ where
     IO: AsyncRead + AsyncWrite + Unpin,
 {
     spider(io, spider_path).await.map_err(CoreError::from)
+}
+
+fn require_http1_spider(alpn: Option<&[u8]>) -> Result<(), CoreError> {
+    if alpn.is_none_or(|protocol| protocol == b"http/1.1") {
+        Ok(())
+    } else {
+        Err(CoreError::InvalidConfig(
+            "RealSite negotiated unsupported spider protocol",
+        ))
+    }
 }
 
 async fn open_tcp_outer(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream, CoreError> {
@@ -1006,22 +1381,29 @@ async fn open_tcp_outer_inner(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream
         .write_all(&Tls13Client::dummy_change_cipher_spec())
         .await?;
     stream.flush().await?;
-    let mut server_flight = read_required_tls_record(&mut stream).await?;
-    server_flight.extend_from_slice(&read_required_tls_record(&mut stream).await?);
     let verifier = RealityCertVerifier {
-        shared: *shared.expose_secret(),
+        shared,
         session_id,
         mldsa_verify: cfg.mldsa_verify.clone(),
+        server_name: cfg.server_name.clone(),
     };
-    let out = tls_client.drive(&server_flight, &verifier)?;
+    let out = loop {
+        let record = read_required_tls_record(&mut stream).await?;
+        let out = tls_client.drive(&record, &verifier)?;
+        if out.complete {
+            break out;
+        }
+    };
     stream.write_all(&out.outbound).await?;
     stream.flush().await?;
     match out.peer_kind {
-        Some(TlsPeerKind::UmbraTrusted) => {
-            Ok(spawn_tls_app_io(stream, TlsAppEndpoint::Client(tls_client)))
-        }
+        Some(TlsPeerKind::UmbraTrusted) => Ok(spawn_tls_app_io(
+            stream,
+            TlsAppEndpoint::Client(Box::new(tls_client)),
+        )),
         Some(TlsPeerKind::RealSite) => {
-            let tls_io = spawn_tls_app_io(stream, TlsAppEndpoint::Client(tls_client));
+            require_http1_spider(tls_client.negotiated_alpn())?;
+            let tls_io = spawn_tls_app_io(stream, TlsAppEndpoint::Client(Box::new(tls_client)));
             run_realsite_spider(tls_io, &cfg.spider_path).await?;
             Err(CoreError::InvalidConfig("peer is real site"))
         }
@@ -1219,23 +1601,32 @@ async fn shutdown_on_ctrl_c() {
 
 /// Certificate verifier used by the TCP outer runtime after REALITY auth.
 struct RealityCertVerifier {
-    shared: [u8; 32],
+    shared: Secret<32>,
     session_id: [u8; 32],
     mldsa_verify: Vec<u8>,
+    server_name: String,
 }
 
 impl CertVerify for RealityCertVerifier {
-    fn verify(&self, leaf_der: &[u8], _chain: &[Vec<u8>]) -> TlsPeerKind {
+    fn verify(&self, leaf_der: &[u8], chain: &[Vec<u8>]) -> TlsPeerKind {
         match classify_peer_certificate(
             leaf_der,
-            &self.shared,
+            self.shared.expose_secret(),
             &self.session_id,
             &self.mldsa_verify,
             true,
         ) {
             RealityPeerKind::UmbraTrusted => TlsPeerKind::UmbraTrusted,
-            RealityPeerKind::RealSite => TlsPeerKind::RealSite,
-            RealityPeerKind::Invalid => TlsPeerKind::Invalid,
+            RealityPeerKind::RealSite
+                if umbra_reality::cert::verify_site_certificate(
+                    leaf_der,
+                    chain,
+                    &self.server_name,
+                ) =>
+            {
+                TlsPeerKind::RealSite
+            }
+            RealityPeerKind::RealSite | RealityPeerKind::Invalid => TlsPeerKind::Invalid,
         }
     }
 }
@@ -1246,18 +1637,18 @@ async fn dispatch_runtime_with_connector<C, D, Connect, ConnectFuture>(
     profile: &DestProfile,
     replay: &ReplayCache,
     now_unix: u64,
-    connect_dest_or_target: Connect,
+    mut connect_dest_or_target: Connect,
     timing: crate::probe::TimingAlignment,
     padding_scheme: &PadScheme,
 ) -> Result<DispatchOutcome, CoreError>
 where
     C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    D: AsyncRead + AsyncWrite + Unpin,
-    Connect: FnOnce(String) -> ConnectFuture,
-    ConnectFuture: Future<Output = Result<D, std::io::Error>>,
+    D: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    Connect: FnMut(String) -> ConnectFuture + Send,
+    ConnectFuture: Future<Output = Result<D, std::io::Error>> + Send + 'static,
 {
-    let started_at = tokio::time::Instant::now();
     let chello_raw = read_client_hello_raw(&mut conn, cfg.hello_limits).await?;
+    let started_at = tokio::time::Instant::now();
     match classify_client_hello(
         chello_raw,
         DispatchContext {
@@ -1273,7 +1664,10 @@ where
             conn.flush().await?;
             let client_finished = read_required_non_ccs_tls_record(&mut conn).await?;
             authenticated.tls_server.drive(&client_finished)?;
-            let tls_io = spawn_tls_app_io(conn, TlsAppEndpoint::Server(authenticated.tls_server));
+            let tls_io = spawn_tls_app_io(
+                conn,
+                TlsAppEndpoint::Server(Box::new(authenticated.tls_server)),
+            );
             let server_flight_len = authenticated.server_flight.len();
             relay_one_server_inner_stream(
                 tls_io,
@@ -1305,11 +1699,185 @@ where
     }
 }
 
+/// Receive one kernel batch while retaining the datagram stride (UDP GRO).
+async fn receive_quic_datagrams(
+    socket: &dyn quinn::AsyncUdpSocket,
+    buf: &mut [u8],
+) -> io::Result<(quinn::udp::RecvMeta, usize)> {
+    let mut meta = [quinn::udp::RecvMeta::default()];
+    std::future::poll_fn(|cx| socket.poll_recv(cx, &mut [IoSliceMut::new(buf)], &mut meta)).await?;
+    Ok((meta[0], meta[0].len))
+}
+
+/// CID aliases have a fixed lifetime (the flow) and a fixed storage budget.
+#[derive(Default)]
+struct QuicFlowCids {
+    values: Mutex<Vec<Vec<u8>>>,
+    exhausted: tokio::sync::Notify,
+    fallback: std::sync::atomic::AtomicBool,
+}
+
+impl QuicFlowCids {
+    fn register(&self, cid: &[u8]) -> bool {
+        let Ok(mut values) = self.values.lock() else {
+            return false;
+        };
+        if values.iter().any(|known| known == cid) {
+            return true;
+        }
+        if cid.len() > 20 || values.len() == QUIC_FLOW_MAX_CIDS {
+            return false;
+        }
+        values.push(cid.to_vec());
+        true
+    }
+}
+
+struct QuicFlowRoute {
+    peer: SocketAddr,
+    original: Option<Vec<u8>>,
+    cids: Arc<QuicFlowCids>,
+    sender: mpsc::Sender<Vec<u8>>,
+}
+
+struct QuicFlowInbox {
+    peer: SocketAddr,
+    receiver: mpsc::Receiver<Vec<u8>>,
+    cids: Arc<QuicFlowCids>,
+}
+
+impl QuicFlowRoute {
+    fn new(peer: SocketAddr, datagram: &[u8]) -> (Self, QuicFlowInbox) {
+        let (sender, receiver) = mpsc::channel(QUIC_FLOW_QUEUE_CAPACITY);
+        let cids = Arc::new(QuicFlowCids::default());
+        let original = quic_long_header_cids(datagram).map(|(dcid, _)| dcid.to_vec());
+        if let Some(cid) = &original {
+            cids.register(cid);
+        }
+        (
+            Self {
+                peer,
+                original,
+                cids: Arc::clone(&cids),
+                sender,
+            },
+            QuicFlowInbox {
+                peer,
+                receiver,
+                cids,
+            },
+        )
+    }
+}
+
+enum QuicRouteMatch<'a> {
+    Existing(&'a mpsc::Sender<Vec<u8>>),
+    New,
+    Ambiguous,
+}
+
+// Only inspect invariant long-header fields; malformed bytes still enter fallback.
+fn quic_long_header_cids(datagram: &[u8]) -> Option<(&[u8], &[u8])> {
+    if datagram.first()? & 0x80 == 0 {
+        return None;
+    }
+    let dcid_len = usize::from(*datagram.get(5)?);
+    if dcid_len > 20 {
+        return None;
+    }
+    let dcid = datagram.get(6..6 + dcid_len)?;
+    let scid_len = usize::from(*datagram.get(6 + dcid_len)?);
+    if scid_len > 20 {
+        return None;
+    }
+    Some((dcid, datagram.get(7 + dcid_len..7 + dcid_len + scid_len)?))
+}
+
+fn route_quic_datagram<'a>(
+    routes: &'a HashMap<tokio::task::Id, QuicFlowRoute>,
+    peer: SocketAddr,
+    datagram: &[u8],
+) -> QuicRouteMatch<'a> {
+    let long = quic_long_header_cids(datagram);
+    let short = datagram.first().is_some_and(|byte| byte & 0x80 == 0);
+    let mut matched = None;
+    let mut opaque = None;
+    let mut fallback = None;
+    let mut peer_flows = 0;
+    for route in routes.values().filter(|route| route.peer == peer) {
+        peer_flows += 1;
+        if route
+            .cids
+            .fallback
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            fallback = Some(&route.sender);
+        }
+        let Ok(cids) = route.cids.values.lock() else {
+            return QuicRouteMatch::Ambiguous;
+        };
+        let owns_cid = cids.iter().any(|cid| match long {
+            Some((dcid, _)) => cid == dcid,
+            None => short && !cid.is_empty() && datagram[1..].starts_with(cid),
+        });
+        if owns_cid {
+            if matched.is_some() {
+                return QuicRouteMatch::Ambiguous;
+            }
+            matched = Some(&route.sender);
+        }
+        if route.original.is_none() {
+            opaque = Some(&route.sender);
+        }
+    }
+    if let Some(sender) = matched {
+        return QuicRouteMatch::Existing(sender);
+    }
+    if long.is_none() {
+        // Upstream NEW_CONNECTION_ID frames are encrypted in fallback. A sole
+        // fallback flow can retain peer routing; never guess between flows.
+        if peer_flows == 1 {
+            if let Some(sender) = opaque.or(if short { fallback } else { None }) {
+                return QuicRouteMatch::Existing(sender);
+            }
+        }
+        // No address migration or rebinding is inferred from CID ownership.
+        if short && peer_flows > 0 || opaque.is_some() {
+            return QuicRouteMatch::Ambiguous;
+        }
+    }
+    QuicRouteMatch::New
+}
+
+/// Register every randomly issued CID before Quinn can transmit it. Retain aliases
+/// until flow exit; close an authenticated connection if the finite budget fills.
+struct RoutedCidGenerator {
+    inner: quinn_proto::RandomConnectionIdGenerator,
+    cids: Arc<QuicFlowCids>,
+}
+
+impl quinn_proto::ConnectionIdGenerator for RoutedCidGenerator {
+    fn generate_cid(&mut self) -> quinn_proto::ConnectionId {
+        let cid = self.inner.generate_cid();
+        if !self.cids.register(&cid) {
+            self.cids.exhausted.notify_one();
+        }
+        cid
+    }
+
+    fn cid_len(&self) -> usize {
+        self.inner.cid_len()
+    }
+
+    fn cid_lifetime(&self) -> Option<Duration> {
+        None
+    }
+}
+
 /// Context kept together while dispatching one server-side QUIC flow.
 struct QuicRuntimeDispatch<'a> {
     client_socket: &'a UdpSocket,
-    endpoint_socket: StdUdpSocket,
-    client_peer: SocketAddr,
+    endpoint_socket: Arc<dyn quinn::AsyncUdpSocket>,
     cfg: &'a crate::dispatch::ServerCfg,
     profile: &'a DestProfile,
     replay: &'a ReplayCache,
@@ -1337,22 +1905,19 @@ enum QuicPrefetchOutcome {
 
 async fn dispatch_quic_runtime(
     datagram: Vec<u8>,
+    mut inbox: QuicFlowInbox,
     ctx: QuicRuntimeDispatch<'_>,
+    streams: &mut JoinSet<Result<(), CoreError>>,
 ) -> Result<QuicRuntimeOutcome, CoreError> {
     let started_at = tokio::time::Instant::now();
-    let prefetched = prefetch_quic_client_hello(
-        datagram,
-        ctx.client_socket,
-        ctx.client_peer,
-        ctx.idle_timeout,
-    )
-    .await?;
+    let prefetched =
+        prefetch_quic_client_hello(datagram, &mut inbox.receiver, ctx.idle_timeout).await;
     let prefetched = match prefetched {
         QuicPrefetchOutcome::Complete(prefetched) => prefetched,
         QuicPrefetchOutcome::Fallback { reason, datagrams } => {
             let (client_to_dest, dest_to_client) = relay_quic_fallback_until_idle(
                 ctx.client_socket,
-                ctx.client_peer,
+                &mut inbox,
                 datagrams,
                 &ctx.cfg.dest,
                 ctx.idle_timeout,
@@ -1389,18 +1954,19 @@ async fn dispatch_quic_runtime(
             let sni = authenticated.sni.clone();
             Box::pin(run_authenticated_quic_stream(
                 ctx.endpoint_socket,
-                ctx.client_peer,
+                inbox,
                 prefetched.datagrams,
                 prefetched.dcid_len,
                 ctx.idle_timeout,
                 AuthenticatedQuicRuntime {
                     sni: authenticated.sni,
                     session_id: authenticated.session_id,
-                    shared_secret: authenticated.shared_secret.into_inner(),
+                    shared_secret: authenticated.shared_secret,
                     client_hello: authenticated.client_hello,
                     profile: ctx.profile.clone(),
-                    mldsa_seed: *ctx.cfg.mldsa_seed.expose_secret(),
+                    mldsa_seed: Secret::new(*ctx.cfg.mldsa_seed.expose_secret()),
                 },
+                streams,
             ))
             .await?;
             Ok(QuicRuntimeOutcome::Authenticated {
@@ -1416,7 +1982,7 @@ async fn dispatch_quic_runtime(
             };
             let (client_to_dest, dest_to_client) = relay_quic_fallback_until_idle(
                 ctx.client_socket,
-                ctx.client_peer,
+                &mut inbox,
                 datagrams,
                 &ctx.cfg.dest,
                 ctx.idle_timeout,
@@ -1433,72 +1999,47 @@ async fn dispatch_quic_runtime(
 
 async fn prefetch_quic_client_hello(
     first_datagram: Vec<u8>,
-    client_socket: &UdpSocket,
-    client_peer: SocketAddr,
+    receiver: &mut mpsc::Receiver<Vec<u8>>,
     idle_timeout: Duration,
-) -> Result<QuicPrefetchOutcome, CoreError> {
-    let Ok(header) = parse_quic_initial_header(&first_datagram) else {
-        return Ok(QuicPrefetchOutcome::Fallback {
-            reason: FallbackReason::MalformedClientHello,
-            datagrams: vec![first_datagram],
-        });
-    };
+) -> QuicPrefetchOutcome {
+    let header = parse_quic_initial_header(&first_datagram);
     let mut datagrams = vec![first_datagram];
-    let scid = header.scid;
-    let dcid_len = header.dcid.len();
     let mut frames = BTreeMap::new();
-    if collect_quic_crypto_datagram(&mut frames, &datagrams[0]).is_err() {
-        return Ok(QuicPrefetchOutcome::Fallback {
-            reason: FallbackReason::MalformedClientHello,
-            datagrams,
-        });
-    }
-    if let Some(client_hello) = complete_prefetched_quic_client_hello(&frames)? {
-        return Ok(QuicPrefetchOutcome::Complete(QuicPrefetchedClientHello {
-            datagrams,
-            client_hello,
-            scid,
-            dcid_len,
-        }));
-    }
-
-    let mut buf = vec![0_u8; 65_535];
-    while datagrams.len() < QUIC_PREFETCH_MAX_DATAGRAMS {
-        let received = tokio::time::timeout(idle_timeout, client_socket.recv_from(&mut buf)).await;
-        let Ok(received) = received else {
-            return Ok(QuicPrefetchOutcome::Fallback {
-                reason: FallbackReason::MalformedClientHello,
-                datagrams,
-            });
-        };
-        let (read, peer) = received?;
-        if peer != client_peer {
-            continue;
-        }
-        datagrams.push(buf[..read].to_vec());
-        let last = datagrams
-            .last()
-            .ok_or(CoreError::InvalidConfig("QUIC datagram prefetch failed"))?;
-        if collect_quic_crypto_datagram(&mut frames, last).is_err() {
-            return Ok(QuicPrefetchOutcome::Fallback {
-                reason: FallbackReason::MalformedClientHello,
-                datagrams,
-            });
-        }
-        if let Some(client_hello) = complete_prefetched_quic_client_hello(&frames)? {
-            return Ok(QuicPrefetchOutcome::Complete(QuicPrefetchedClientHello {
-                datagrams,
-                client_hello,
-                scid,
-                dcid_len,
-            }));
+    // A total classification deadline prevents slow fragment trickles from
+    // retaining pre-authentication state indefinitely.
+    let deadline = tokio::time::Instant::now() + idle_timeout;
+    if let Ok(header) = header {
+        while let Some(last) = datagrams.last() {
+            if collect_quic_crypto_datagram(&mut frames, last).is_err() {
+                break;
+            }
+            match complete_prefetched_quic_client_hello(&frames) {
+                Ok(Some(client_hello)) => {
+                    return QuicPrefetchOutcome::Complete(QuicPrefetchedClientHello {
+                        datagrams,
+                        client_hello,
+                        scid: header.scid,
+                        dcid_len: header.dcid.len(),
+                    });
+                }
+                Ok(None) => {}
+                // Conflicting overlaps, bad handshake types and oversize
+                // declarations must retain bytes for transparent forwarding.
+                Err(_) => break,
+            }
+            if datagrams.len() == QUIC_PREFETCH_MAX_DATAGRAMS {
+                break;
+            }
+            match tokio::time::timeout_at(deadline, receiver.recv()).await {
+                Ok(Some(datagram)) => datagrams.push(datagram),
+                Ok(None) | Err(_) => break,
+            }
         }
     }
-
-    Ok(QuicPrefetchOutcome::Fallback {
+    QuicPrefetchOutcome::Fallback {
         reason: FallbackReason::MalformedClientHello,
         datagrams,
-    })
+    }
 }
 
 fn collect_quic_crypto_datagram(
@@ -1599,37 +2140,33 @@ fn read_quic_u24(input: &[u8]) -> Result<usize, CoreError> {
 struct AuthenticatedQuicRuntime {
     sni: String,
     session_id: [u8; 32],
-    shared_secret: [u8; 32],
+    shared_secret: Secret<32>,
     client_hello: Vec<u8>,
     profile: DestProfile,
-    mldsa_seed: [u8; 32],
+    mldsa_seed: Secret<32>,
 }
 
 async fn run_authenticated_quic_stream(
-    endpoint_socket: StdUdpSocket,
-    client_peer: SocketAddr,
+    endpoint_socket: Arc<dyn quinn::AsyncUdpSocket>,
+    inbox: QuicFlowInbox,
     initial_datagrams: Vec<Vec<u8>>,
     local_cid_len: usize,
     drain_timeout: Duration,
     authenticated: AuthenticatedQuicRuntime,
+    streams: &mut JoinSet<Result<(), CoreError>>,
 ) -> Result<(), CoreError> {
     let runtime = quinn::default_runtime()
         .ok_or_else(|| CoreError::Quic("no async runtime available for QUIC".to_owned()))?;
-    let inner = runtime
-        .wrap_udp_socket(endpoint_socket)
-        .map_err(quic_error)?;
-    let pending = initial_datagrams
-        .into_iter()
-        .map(|bytes| PrefetchedDatagram {
-            bytes,
-            peer: client_peer,
-        })
-        .collect();
+    let cids = Arc::clone(&inbox.cids);
     let socket = Arc::new(PrefetchedUdpSocket {
-        inner,
-        pending: Mutex::new(pending),
+        inner: endpoint_socket,
+        peer: inbox.peer,
+        pending: Mutex::new(QuicSocketQueue {
+            prefetched: initial_datagrams.into(),
+            receiver: inbox.receiver,
+        }),
     });
-    let server_config = quic_crypto::server_config(quic_crypto::AuthenticatedServerCrypto {
+    let mut server_config = quic_crypto::server_config(quic_crypto::AuthenticatedServerCrypto {
         sni: authenticated.sni,
         session_id: authenticated.session_id,
         shared_secret: authenticated.shared_secret,
@@ -1637,29 +2174,62 @@ async fn run_authenticated_quic_stream(
         profile: authenticated.profile,
         mldsa_seed: authenticated.mldsa_seed,
     });
+    server_config.migration(false);
     let mut endpoint_config = quinn::EndpointConfig::default();
+    let issued_cids = Arc::clone(&cids);
     endpoint_config.cid_generator(move || {
-        Box::new(quinn_proto::RandomConnectionIdGenerator::new(
-            local_cid_len.max(1),
-        ))
+        Box::new(RoutedCidGenerator {
+            inner: quinn_proto::RandomConnectionIdGenerator::new(local_cid_len.max(8)),
+            cids: Arc::clone(&issued_cids),
+        })
     });
-    let endpoint = quinn::Endpoint::new_with_abstract_socket(
-        endpoint_config,
-        Some(server_config),
-        socket,
-        runtime,
-    )
-    .map_err(quic_error)?;
-    let incoming = endpoint
-        .accept()
-        .await
-        .ok_or_else(|| CoreError::Quic("QUIC endpoint closed before accept".to_owned()))?;
-    let connection = incoming.await.map_err(quic_error)?;
-    let (send, recv) = connection.accept_bi().await.map_err(quic_error)?;
-    Box::pin(run_quic_accepted_bi_stream(send, recv, drain_timeout)).await?;
-    let _ = tokio::time::timeout(drain_timeout, connection.closed()).await;
-    endpoint.close(0_u32.into(), b"");
+    let endpoint = QuicEndpointGuard(
+        quinn::Endpoint::new_with_abstract_socket(
+            endpoint_config,
+            Some(server_config),
+            socket,
+            runtime,
+        )
+        .map_err(quic_error)?,
+    );
+    let connection = tokio::time::timeout(drain_timeout, async {
+        let incoming = endpoint
+            .0
+            .accept()
+            .await
+            .ok_or_else(|| CoreError::Quic("QUIC endpoint closed before accept".to_owned()))?;
+        incoming.await.map_err(quic_error)
+    })
+    .await
+    .map_err(|_| CoreError::IdleTimeout("server QUIC handshake"))??;
+    loop {
+        tokio::select! {
+            () = cids.exhausted.notified() => {
+                return Err(CoreError::Quic("QUIC CID budget exhausted".to_owned()));
+            }
+            _ = connection.closed() => break,
+            joined = streams.join_next(), if !streams.is_empty() => {
+                // One failed target must not terminate other streams or associations.
+                report_session_result("server QUIC stream", joined);
+            }
+            accepted = connection.accept_bi(), if streams.len() < QUIC_MAX_STREAMS => {
+                let Ok((send, recv)) = accepted else { break };
+                streams.spawn(async move {
+                    Box::pin(run_quic_accepted_bi_stream(send, recv, drain_timeout)).await
+                });
+            }
+        }
+    }
     Ok(())
+}
+
+// Quinn spawns its own driver: close explicitly even when dispatch is cancelled.
+struct QuicEndpointGuard(quinn::Endpoint);
+
+impl Drop for QuicEndpointGuard {
+    fn drop(&mut self) {
+        self.0.close(0_u32.into(), b"");
+    }
 }
 
 async fn run_quic_accepted_bi_stream(
@@ -1668,13 +2238,25 @@ async fn run_quic_accepted_bi_stream(
     drain_timeout: Duration,
 ) -> Result<(), CoreError> {
     let mut first = [0_u8; 1];
-    AsyncReadExt::read_exact(&mut recv, &mut first).await?;
+    tokio::time::timeout(
+        drain_timeout,
+        AsyncReadExt::read_exact(&mut recv, &mut first),
+    )
+    .await
+    .map_err(|_| CoreError::IdleTimeout("server QUIC stream opening"))??;
     if first[0] == QUIC_UDP_ASSOCIATE_MARKER {
         Box::pin(relay_quic_server_udp_association(send, recv, drain_timeout)).await?;
     } else {
         let mut recv = PrefixedStream::new(vec![first[0]], recv);
-        let target = read_target_stream(&mut recv).await?;
-        let target_io = TcpStream::connect(target_to_host_port(&target)).await?;
+        let target = tokio::time::timeout(drain_timeout, read_target_stream(&mut recv))
+            .await
+            .map_err(|_| CoreError::IdleTimeout("server QUIC target header"))??;
+        let target_io = tokio::time::timeout(
+            DEFAULT_OUTER_CONNECT_TIMEOUT,
+            TcpStream::connect(target_to_host_port(&target)),
+        )
+        .await
+        .map_err(|_| CoreError::IdleTimeout("server QUIC target connect"))??;
         Box::pin(relay_quic_server_stream(target_io, send, recv)).await?;
     }
     Ok(())
@@ -1717,13 +2299,14 @@ async fn relay_quic_server_udp_association(
 ) -> Result<(), CoreError> {
     let (tx, mut rx) = mpsc::channel(UDP_RELAY_CHANNEL_CAPACITY);
     let mut targets = HashMap::new();
+    let mut envelopes = umbra_transport::quic::UdpEnvelopeReader::default();
 
     loop {
         let idle = tokio::time::sleep(idle_timeout);
         tokio::pin!(idle);
         tokio::select! {
             () = &mut idle => return Err(CoreError::IdleTimeout("server QUIC UDP association")),
-            envelope = read_udp_envelope_stream(&mut recv) => {
+            envelope = envelopes.read_next(&mut recv) => {
                 let envelope = match envelope {
                     Ok(envelope) => envelope,
                     Err(umbra_transport::TransportError::Io(err))
@@ -1853,16 +2436,17 @@ fn add_io_byte_count(total: u64, increment: usize) -> Result<u64, CoreError> {
         .ok_or(CoreError::InvalidConfig("relay byte count overflows"))
 }
 
-#[derive(Debug)]
-struct PrefetchedDatagram {
-    bytes: Vec<u8>,
-    peer: SocketAddr,
+struct QuicSocketQueue {
+    prefetched: VecDeque<Vec<u8>>,
+    receiver: mpsc::Receiver<Vec<u8>>,
 }
 
-/// Quinn UDP socket wrapper that replays datagrams consumed during prefetch.
+/// Quinn receives only replayed datagrams and its bounded per-flow queue.
+/// The physical socket wrapper delegates sends, never receives.
 struct PrefetchedUdpSocket {
     inner: Arc<dyn quinn::AsyncUdpSocket>,
-    pending: Mutex<VecDeque<PrefetchedDatagram>>,
+    peer: SocketAddr,
+    pending: Mutex<QuicSocketQueue>,
 }
 
 impl fmt::Debug for PrefetchedUdpSocket {
@@ -1887,37 +2471,40 @@ impl quinn::AsyncUdpSocket for PrefetchedUdpSocket {
         bufs: &mut [IoSliceMut<'_>],
         meta: &mut [quinn::udp::RecvMeta],
     ) -> Poll<io::Result<usize>> {
-        let pending = match self.pending.lock() {
-            Ok(mut guard) => guard.pop_front(),
-            Err(_) => {
-                return Poll::Ready(Err(io::Error::other(
-                    "prefetched QUIC datagram lock poisoned",
-                )))
-            }
+        let Some(buf) = bufs.first_mut() else {
+            return Poll::Ready(Err(io::Error::other("QUIC receive buffer missing")));
         };
-        if let Some(datagram) = pending {
-            let Some(buf) = bufs.first_mut() else {
-                return Poll::Ready(Err(io::Error::other("QUIC receive buffer missing")));
-            };
-            let Some(meta) = meta.first_mut() else {
-                return Poll::Ready(Err(io::Error::other("QUIC receive metadata missing")));
-            };
-            if buf.len() < datagram.bytes.len() {
-                return Poll::Ready(Err(io::Error::other(
-                    "prefetched QUIC datagram buffer too small",
-                )));
-            }
-            buf[..datagram.bytes.len()].copy_from_slice(&datagram.bytes);
-            *meta = quinn::udp::RecvMeta {
-                addr: datagram.peer,
-                len: datagram.bytes.len(),
-                stride: datagram.bytes.len(),
-                ecn: None,
-                dst_ip: None,
-            };
-            return Poll::Ready(Ok(1));
+        let Some(meta) = meta.first_mut() else {
+            return Poll::Ready(Err(io::Error::other("QUIC receive metadata missing")));
+        };
+        let datagram = match self.pending.lock() {
+            Ok(mut queue) => match queue.prefetched.pop_front() {
+                Some(datagram) => datagram,
+                None => match queue.receiver.poll_recv(cx) {
+                    Poll::Ready(Some(datagram)) => datagram,
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(None) => {
+                        return Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::ConnectionAborted,
+                            "QUIC flow queue closed",
+                        )));
+                    }
+                },
+            },
+            Err(_) => return Poll::Ready(Err(io::Error::other("QUIC queue lock poisoned"))),
+        };
+        if buf.len() < datagram.len() {
+            return Poll::Ready(Err(io::Error::other("QUIC datagram buffer too small")));
         }
-        self.inner.poll_recv(cx, bufs, meta)
+        buf[..datagram.len()].copy_from_slice(&datagram);
+        *meta = quinn::udp::RecvMeta {
+            addr: self.peer,
+            len: datagram.len(),
+            stride: datagram.len(),
+            ecn: None,
+            dst_ip: None,
+        };
+        Poll::Ready(Ok(1))
     }
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -1929,7 +2516,7 @@ impl quinn::AsyncUdpSocket for PrefetchedUdpSocket {
     }
 
     fn max_receive_segments(&self) -> usize {
-        self.inner.max_receive_segments()
+        1
     }
 
     fn may_fragment(&self) -> bool {
@@ -1939,7 +2526,7 @@ impl quinn::AsyncUdpSocket for PrefetchedUdpSocket {
 
 async fn relay_quic_fallback_until_idle(
     client_socket: &UdpSocket,
-    client_peer: SocketAddr,
+    inbox: &mut QuicFlowInbox,
     initial_datagrams: Vec<Vec<u8>>,
     dest: &str,
     idle_timeout: Duration,
@@ -1949,7 +2536,21 @@ async fn relay_quic_fallback_until_idle(
             "QUIC fallback requires at least one datagram",
         ));
     }
-    let upstream = UdpSocket::bind("0.0.0.0:0").await?;
+    inbox
+        .cids
+        .fallback
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let dest = tokio::time::timeout(idle_timeout, tokio::net::lookup_host(dest))
+        .await
+        .map_err(|_| CoreError::IdleTimeout("QUIC fallback resolution"))??
+        .next()
+        .ok_or(CoreError::InvalidConfig("QUIC destination did not resolve"))?;
+    let bind = if dest.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
+    let upstream = UdpSocket::bind(bind).await?;
     upstream.connect(dest).await?;
     let mut client_to_dest = 0_u64;
     for datagram in initial_datagrams {
@@ -1957,7 +2558,6 @@ async fn relay_quic_fallback_until_idle(
         client_to_dest = add_quic_byte_count(client_to_dest, datagram.len())?;
     }
     let mut dest_to_client = 0_u64;
-    let mut client_buf = vec![0_u8; 65_535];
     let mut upstream_buf = vec![0_u8; 65_535];
 
     loop {
@@ -1965,16 +2565,22 @@ async fn relay_quic_fallback_until_idle(
         tokio::pin!(idle);
         tokio::select! {
             () = &mut idle => return Ok((client_to_dest, dest_to_client)),
-            received = client_socket.recv_from(&mut client_buf) => {
-                let (read, peer) = received?;
-                if peer == client_peer {
-                    upstream.send(&client_buf[..read]).await?;
-                    client_to_dest = add_quic_byte_count(client_to_dest, read)?;
-                }
+            received = inbox.receiver.recv() => {
+                let Some(datagram) = received else {
+                    return Ok((client_to_dest, dest_to_client));
+                };
+                upstream.send(&datagram).await?;
+                client_to_dest = add_quic_byte_count(client_to_dest, datagram.len())?;
             }
             received = upstream.recv(&mut upstream_buf) => {
                 let read = received?;
-                client_socket.send_to(&upstream_buf[..read], client_peer).await?;
+                if let Some((_, scid)) = quic_long_header_cids(&upstream_buf[..read]) {
+                    // Learn cleartext upstream CIDs before forwarding the response.
+                    // Encrypted NEW_CONNECTION_ID cannot be inspected in fallback;
+                    // unknown/ambiguous CIDs must never select a different flow.
+                    inbox.cids.register(scid);
+                }
+                client_socket.send_to(&upstream_buf[..read], inbox.peer).await?;
                 dest_to_client = add_quic_byte_count(dest_to_client, read)?;
             }
         }
@@ -1992,14 +2598,14 @@ fn add_quic_byte_count(total: u64, increment: usize) -> Result<u64, CoreError> {
 
 async fn relay_one_server_inner_stream<D, Connect, ConnectFuture>(
     mut tls_io: tokio::io::DuplexStream,
-    connect_target: Connect,
+    mut connect_target: Connect,
     padding_scheme: &PadScheme,
     idle_timeout: Duration,
 ) -> Result<(), CoreError>
 where
-    D: AsyncRead + AsyncWrite + Unpin,
-    Connect: FnOnce(String) -> ConnectFuture,
-    ConnectFuture: Future<Output = Result<D, std::io::Error>>,
+    D: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    Connect: FnMut(String) -> ConnectFuture + Send,
+    ConnectFuture: Future<Output = Result<D, std::io::Error>> + Send + 'static,
 {
     let (mode, prefix) = read_inner_opening_mode(&mut tls_io).await?;
     let tls_io = PrefixedStream::new(prefix, tls_io);
@@ -2008,15 +2614,9 @@ where
             let mut mux = MuxSession::server(tls_io, padding_scheme)?;
             match mux.receive_next().await? {
                 MuxEvent::Syn { stream_id, target } => {
-                    let (stream, target) = mux.accept_syn(stream_id, target).await?;
-                    let mut target_io = connect_target(target_to_host_port(&target)).await?;
-                    Box::pin(relay_mux_server_stream(
-                        &mut target_io,
-                        mux,
-                        stream,
-                        idle_timeout,
-                    ))
-                    .await
+                    let (driver, incoming) =
+                        crate::mux_io::start_server_after_syn(mux, stream_id, target)?;
+                    relay_mux_targets(driver, incoming, connect_target, idle_timeout).await
                 }
                 MuxEvent::UdpDatagram { target, payload } => {
                     Box::pin(relay_mux_server_udp_association(
@@ -2044,6 +2644,55 @@ where
             Ok(())
         }
     }
+}
+
+async fn relay_mux_targets<D, Connect, ConnectFuture>(
+    driver: crate::mux_io::MuxDriver,
+    mut incoming: crate::mux_io::ServerMux,
+    mut connect_target: Connect,
+    idle_timeout: Duration,
+) -> Result<(), CoreError>
+where
+    D: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    Connect: FnMut(String) -> ConnectFuture + Send,
+    ConnectFuture: Future<Output = Result<D, io::Error>> + Send + 'static,
+{
+    let mut streams = JoinSet::new();
+    let result = loop {
+        tokio::select! {
+            () = tokio::time::sleep(idle_timeout), if streams.is_empty() => {
+                break Err(CoreError::IdleTimeout("server mux connection"));
+            }
+            joined = streams.join_next(), if !streams.is_empty() => {
+                report_session_result("server mux", joined);
+            }
+            pending = incoming.accept(), if streams.len() < umbra_inner::mux::MAX_STREAMS => {
+                let Ok(pending) = pending else {
+                    break Ok(());
+                };
+                let connect = connect_target(target_to_host_port(&pending.target));
+                streams.spawn(async move {
+                    let mut target = match tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, connect).await {
+                        Ok(Ok(target)) => target,
+                        Ok(Err(error)) => {
+                            pending.reject();
+                            return Err(CoreError::from(error));
+                        }
+                        Err(_) => {
+                            pending.reject();
+                            return Err(CoreError::IdleTimeout("mux target setup"));
+                        }
+                    };
+                    let mut stream = pending.accept().await?;
+                    relay_bidirectional_until_idle(&mut target, &mut stream, idle_timeout).await?;
+                    Ok(())
+                });
+            }
+        }
+    };
+    abort_all(&mut streams).await;
+    driver.shutdown().await;
+    result
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -2084,106 +2733,6 @@ fn looks_like_mux_opening_prefix(prefix: &[u8]) -> bool {
         Ok(MuxCommand::Padding | MuxCommand::UdpDatagram) => stream_id == 0,
         Ok(_) | Err(_) => false,
     }
-}
-
-async fn relay_mux_client_stream<S, IO>(
-    socks: &mut S,
-    mut mux: MuxSession<IO>,
-    mut stream: MuxStream,
-    idle_timeout: Duration,
-) -> Result<(), CoreError>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-    IO: AsyncRead + AsyncWrite + Unpin,
-{
-    let mut socks_open = true;
-    let mut peer_open = true;
-    let mut buf = vec![0_u8; 16 * 1024];
-    while socks_open || peer_open {
-        let idle = tokio::time::sleep(idle_timeout);
-        tokio::pin!(idle);
-        tokio::select! {
-            () = &mut idle => return Err(CoreError::IdleTimeout("client mux stream")),
-            read = socks.read(&mut buf), if socks_open => {
-                let read = read?;
-                if read == 0 {
-                    socks_open = false;
-                    finish_stream_best_effort(&mut mux, stream.stream_id).await?;
-                } else {
-                    mux.send_data_wait_window(&mut stream, &buf[..read]).await?;
-                }
-            }
-            event = mux.receive_next(), if peer_open => {
-                match event? {
-                    MuxEvent::Data { stream_id, payload } if stream_id == stream.stream_id => {
-                        socks.write_all(&payload).await?;
-                        let increment = u32::try_from(payload.len())
-                            .map_err(|_| CoreError::InvalidConfig("mux payload too large"))?;
-                        send_window_update_best_effort(&mut mux, stream_id, increment).await?;
-                    }
-                    MuxEvent::Fin { stream_id } if stream_id == stream.stream_id => {
-                        peer_open = false;
-                        socks.shutdown().await?;
-                    }
-                    MuxEvent::Rst { stream_id } if stream_id == stream.stream_id => {
-                        return Err(CoreError::InvalidConfig("mux stream reset"));
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn relay_mux_server_stream<T, IO>(
-    target: &mut T,
-    mut mux: MuxSession<IO>,
-    mut stream: MuxStream,
-    idle_timeout: Duration,
-) -> Result<(), CoreError>
-where
-    T: AsyncRead + AsyncWrite + Unpin,
-    IO: AsyncRead + AsyncWrite + Unpin,
-{
-    let mut target_open = true;
-    let mut peer_open = true;
-    let mut buf = vec![0_u8; 16 * 1024];
-    while target_open || peer_open {
-        let idle = tokio::time::sleep(idle_timeout);
-        tokio::pin!(idle);
-        tokio::select! {
-            () = &mut idle => return Err(CoreError::IdleTimeout("server mux stream")),
-            read = target.read(&mut buf), if target_open => {
-                let read = read?;
-                if read == 0 {
-                    target_open = false;
-                    finish_stream_best_effort(&mut mux, stream.stream_id).await?;
-                } else {
-                    mux.send_data_wait_window(&mut stream, &buf[..read]).await?;
-                }
-            }
-            event = mux.receive_next(), if peer_open => {
-                match event? {
-                    MuxEvent::Data { stream_id, payload } if stream_id == stream.stream_id => {
-                        target.write_all(&payload).await?;
-                        let increment = u32::try_from(payload.len())
-                            .map_err(|_| CoreError::InvalidConfig("mux payload too large"))?;
-                        send_window_update_best_effort(&mut mux, stream_id, increment).await?;
-                    }
-                    MuxEvent::Fin { stream_id } if stream_id == stream.stream_id => {
-                        peer_open = false;
-                        target.shutdown().await?;
-                    }
-                    MuxEvent::Rst { stream_id } if stream_id == stream.stream_id => {
-                        return Err(CoreError::InvalidConfig("mux stream reset"));
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -2340,39 +2889,6 @@ fn target_to_host_port(target: &TargetAddr) -> String {
     }
 }
 
-async fn finish_stream_best_effort<IO>(
-    mux: &mut MuxSession<IO>,
-    stream_id: u32,
-) -> Result<(), CoreError>
-where
-    IO: AsyncRead + AsyncWrite + Unpin,
-{
-    match mux.finish_stream(stream_id).await {
-        Ok(()) => Ok(()),
-        Err(umbra_inner::InnerError::Io(err)) if err.kind() == std::io::ErrorKind::BrokenPipe => {
-            Ok(())
-        }
-        Err(err) => Err(CoreError::from(err)),
-    }
-}
-
-async fn send_window_update_best_effort<IO>(
-    mux: &mut MuxSession<IO>,
-    stream_id: u32,
-    increment: u32,
-) -> Result<(), CoreError>
-where
-    IO: AsyncRead + AsyncWrite + Unpin,
-{
-    match mux.send_window_update(stream_id, increment).await {
-        Ok(()) => Ok(()),
-        Err(umbra_inner::InnerError::Io(err)) if err.kind() == std::io::ErrorKind::BrokenPipe => {
-            Ok(())
-        }
-        Err(err) => Err(CoreError::from(err)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
@@ -2383,6 +2899,622 @@ mod tests {
     };
 
     use super::*;
+
+    mod profile_refresh {
+        use super::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::sync::{mpsc, oneshot};
+        use umbra_reality::{prebuild::CertTemplate, RealityError};
+
+        const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+        type ProbeReply = oneshot::Sender<Result<DestProfile, RealityError>>;
+
+        struct ManualClock {
+            ticks: mpsc::UnboundedReceiver<()>,
+            waiting: mpsc::UnboundedSender<()>,
+        }
+
+        impl ProfileRefreshClock for ManualClock {
+            async fn tick(&mut self) {
+                self.waiting.send(()).expect("clock observed");
+                self.ticks.recv().await.expect("clock remains owned");
+            }
+        }
+
+        struct Control {
+            ticks: mpsc::UnboundedSender<()>,
+            waiting: mpsc::UnboundedReceiver<()>,
+            probes: mpsc::UnboundedReceiver<ProbeReply>,
+        }
+
+        impl Control {
+            async fn idle(&mut self) {
+                receive(&mut self.waiting).await;
+            }
+
+            async fn probe(&mut self) -> ProbeReply {
+                self.ticks.send(()).expect("advance clock");
+                receive(&mut self.probes).await
+            }
+        }
+
+        async fn receive<T>(receiver: &mut mpsc::UnboundedReceiver<T>) -> T {
+            timeout(TEST_TIMEOUT, receiver.recv())
+                .await
+                .expect("bounded notification")
+                .expect("sender alive")
+        }
+
+        fn config(prebuild: bool) -> RuntimeServerCfg {
+            RuntimeServerCfg {
+                listen: "127.0.0.1:0".parse().expect("loopback TCP"),
+                udp_listen: Some("127.0.0.1:0".parse().expect("loopback UDP")),
+                private_key: x25519::generate_keypair().private,
+                short_ids: vec![vec![1]],
+                dest: "127.0.0.1:9".to_owned(),
+                server_names: vec!["refresh.example".to_owned()],
+                max_time_diff: Duration::from_mins(2),
+                mldsa_seed: Secret::new([3; 32]),
+                prebuild,
+                padding_scheme: PadScheme::none(),
+                tcp_evasion: TcpEvasionPolicy::Off,
+            }
+        }
+
+        fn profile(dest: String, generation: u8) -> DestProfile {
+            DestProfile {
+                dest,
+                tls_ver: 0x0304,
+                cipher: 0x1301,
+                group: 0x001d,
+                alpn: vec![b"h2".to_vec()],
+                ee_exts: vec![0x0010],
+                leaf_template: CertTemplate {
+                    subject: "CN=refresh.example".to_owned(),
+                    issuer: "CN=Local Fixture".to_owned(),
+                    not_before_unix: 1_700_000_000,
+                    not_after_unix: 2_000_000_000,
+                    san_dns: vec!["refresh.example".to_owned()],
+                    sct: Vec::new(),
+                    signature_algorithm: "ecdsa-with-SHA256".to_owned(),
+                    leaf_der: Vec::new(),
+                },
+                ocsp: Some(vec![generation]),
+                rtt: Duration::from_millis(u64::from(generation)),
+            }
+        }
+
+        async fn controlled(cfg: RuntimeServerCfg) -> (Arc<ServerRuntime>, Control) {
+            let (ticks, tick_rx) = mpsc::unbounded_channel();
+            let (waiting, wait_rx) = mpsc::unbounded_channel();
+            let (probes, probe_rx) = mpsc::unbounded_channel();
+            let initial = profile(cfg.dest.clone(), 1);
+            let runtime = ServerRuntime::bind_with_refresh(
+                cfg,
+                initial,
+                ProbeResistancePolicy::default(),
+                move |active, dest| {
+                    let expected_dest = dest.clone();
+                    refresh_profiles(
+                        active,
+                        dest,
+                        move |dest| {
+                            assert_eq!(dest, expected_dest);
+                            let (reply, result) = oneshot::channel();
+                            probes.send(reply).expect("probe observed");
+                            async move { result.await.expect("probe result supplied") }
+                        },
+                        ManualClock {
+                            ticks: tick_rx,
+                            waiting,
+                        },
+                    )
+                },
+            )
+            .await
+            .expect("bind controlled runtime");
+            (
+                Arc::new(runtime),
+                Control {
+                    ticks,
+                    waiting: wait_rx,
+                    probes: probe_rx,
+                },
+            )
+        }
+
+        fn start(runtime: &Arc<ServerRuntime>) -> (oneshot::Sender<()>, JoinHandle<()>) {
+            let (stop, stopped) = oneshot::channel();
+            let runtime = Arc::clone(runtime);
+            let task = tokio::spawn(async move {
+                runtime
+                    .run_until_shutdown(async {
+                        let _ = stopped.await;
+                    })
+                    .await
+                    .expect("runtime shutdown");
+            });
+            (stop, task)
+        }
+
+        async fn stop(stop: oneshot::Sender<()>, task: JoinHandle<()>) {
+            stop.send(()).expect("signal shutdown");
+            timeout(TEST_TIMEOUT, task)
+                .await
+                .expect("bounded shutdown")
+                .expect("join runtime");
+        }
+
+        async fn wait_for_refs(profile: &Arc<DestProfile>, expected: usize) {
+            timeout(TEST_TIMEOUT, async {
+                while Arc::strong_count(profile) != expected {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("session captures profile");
+        }
+
+        #[tokio::test]
+        async fn startup_probe_failure_prevents_binding_in_both_modes() {
+            for enabled in [false, true] {
+                let listener = TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("occupied port");
+                let mut cfg = config(enabled);
+                cfg.listen = listener.local_addr().expect("local address");
+                let dest = cfg.dest.clone();
+                let calls = AtomicUsize::new(0);
+                let result = ServerRuntime::bind_with_probe(cfg, |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Err(RealityError::ProbeFailed("controlled startup failure")))
+                })
+                .await;
+                let Err(err) = result else {
+                    panic!("startup must fail");
+                };
+                assert!(matches!(
+                    err,
+                    CoreError::Reality(RealityError::ProbeFailed(_))
+                ));
+                assert!(!err.to_string().contains(&dest));
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+            }
+        }
+
+        #[tokio::test]
+        async fn run_server_rejects_local_failed_tls_probe() {
+            let upstream = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("local probe target");
+            let mut cfg = config(false);
+            cfg.dest = upstream.local_addr().expect("target address").to_string();
+            let target = tokio::spawn(async move {
+                let (stream, _) = upstream.accept().await.expect("startup probe connects");
+                drop(stream);
+            });
+            let result = timeout(TEST_TIMEOUT, run_server(cfg))
+                .await
+                .expect("startup bounded");
+            assert!(matches!(
+                result,
+                Err(CoreError::Reality(RealityError::ProbeFailed(_)))
+            ));
+            target.await.expect("local target joined");
+        }
+
+        #[tokio::test]
+        async fn disabled_keeps_successful_startup_profile_without_periodic_work() {
+            let calls = AtomicUsize::new(0);
+            let runtime = ServerRuntime::bind_with_probe(config(false), |dest| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Ok(profile(dest, 1)))
+            })
+            .await
+            .expect("startup succeeds");
+            let initial = runtime.profile_snapshot();
+            assert!(!runtime.prebuild_enabled());
+            assert!(runtime.profile_refresh.lock().expect("tasks").is_empty());
+            runtime
+                .run_until_shutdown(async {})
+                .await
+                .expect("shutdown");
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(Arc::ptr_eq(&initial, &runtime.profile_snapshot()));
+
+            let (runtime, mut control) = controlled(config(false)).await;
+            assert!(
+                control.ticks.send(()).is_err(),
+                "no periodic clock retained"
+            );
+            assert!(
+                control.probes.recv().await.is_none(),
+                "no periodic probe retained"
+            );
+            assert!(runtime.profile_refresh.lock().expect("tasks").is_empty());
+        }
+
+        #[tokio::test]
+        async fn hourly_schedule_delays_first_tick_and_skips_missed_ticks() {
+            let mut interval = profile_refresh_interval();
+            assert_eq!(interval.period(), Duration::from_hours(1));
+            assert_eq!(
+                interval.missed_tick_behavior(),
+                tokio::time::MissedTickBehavior::Skip
+            );
+            let pending =
+                std::future::poll_fn(|cx| Poll::Ready(interval.poll_tick(cx).is_pending())).await;
+            assert!(
+                pending,
+                "startup profile must not trigger an immediate second probe"
+            );
+            let mut immediate = tokio::time::interval(DEFAULT_PROFILE_REFRESH_INTERVAL);
+            timeout(TEST_TIMEOUT, ProfileRefreshClock::tick(&mut immediate))
+                .await
+                .expect("production clock implementation ticks");
+        }
+
+        #[tokio::test]
+        async fn refresh_replaces_future_tcp_and_quic_snapshots_only() {
+            let (runtime, mut control) = controlled(config(true)).await;
+            control.idle().await;
+            assert!(matches!(
+                control.probes.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            let old = runtime.profile_snapshot();
+            let (shutdown, task) = start(&runtime);
+            let tcp = TcpStream::connect(runtime.local_addr().expect("TCP address"))
+                .await
+                .expect("first TCP handshake");
+            wait_for_refs(&old, 3).await;
+            let socket = runtime.udp_socket.as_ref().expect("QUIC enabled");
+            let (_, inbox) = QuicFlowRoute::new("127.0.0.1:1234".parse().expect("peer"), b"");
+            let (_stop_flow, stopping) = tokio::sync::watch::channel(false);
+            let quic = runtime.quic_flow(socket, Vec::new(), inbox, TEST_TIMEOUT, stopping);
+            assert_eq!(Arc::strong_count(&old), 4, "QUIC snapshots before polling");
+
+            let refreshed = profile(old.dest.clone(), 2);
+            control
+                .probe()
+                .await
+                .send(Ok(refreshed.clone()))
+                .expect("successful refresh");
+            control.idle().await;
+            let new = runtime.profile_snapshot();
+            assert_eq!(*new, refreshed);
+            assert!(!Arc::ptr_eq(&old, &new));
+            assert_eq!(old.ocsp, Some(vec![1]));
+            assert_eq!(
+                Arc::strong_count(&old),
+                3,
+                "existing sessions retain old profile"
+            );
+            let tcp_after = TcpStream::connect(runtime.local_addr().expect("TCP address"))
+                .await
+                .expect("next TCP handshake");
+            wait_for_refs(&new, 3).await;
+            let (_, inbox) = QuicFlowRoute::new("127.0.0.1:1235".parse().expect("peer"), b"");
+            let (_stop_flow_after, stopping) = tokio::sync::watch::channel(false);
+            let quic_after = runtime.quic_flow(socket, Vec::new(), inbox, TEST_TIMEOUT, stopping);
+            assert_eq!(
+                Arc::strong_count(&new),
+                4,
+                "future QUIC flow takes new profile"
+            );
+            drop((quic, quic_after));
+            stop(shutdown, task).await;
+            drop((tcp, tcp_after));
+            assert_eq!(Arc::strong_count(&old), 1);
+            assert_eq!(Arc::strong_count(&new), 2);
+            assert!(control.ticks.send(()).is_err(), "shutdown releases clock");
+        }
+
+        #[tokio::test]
+        async fn convenience_tcp_accept_keeps_snapshot_during_refresh() {
+            let (runtime, mut control) = controlled(config(true)).await;
+            control.idle().await;
+            let old = runtime.profile_snapshot();
+            let accepting = Arc::clone(&runtime);
+            let task = tokio::spawn(async move {
+                accepting
+                    .accept_one_with_connector(|_| {
+                        std::future::ready(Err::<tokio::io::DuplexStream, _>(io::Error::other(
+                            "unused test connector",
+                        )))
+                    })
+                    .await
+            });
+            let client = TcpStream::connect(runtime.local_addr().expect("TCP address"))
+                .await
+                .expect("TCP connects");
+            wait_for_refs(&old, 3).await;
+            control
+                .probe()
+                .await
+                .send(Ok(profile(old.dest.clone(), 2)))
+                .expect("refresh succeeds without supervisor");
+            control.idle().await;
+            assert_eq!(
+                Arc::strong_count(&old),
+                2,
+                "in-flight accept retains snapshot"
+            );
+            assert_eq!(runtime.profile_snapshot().ocsp, Some(vec![2]));
+            task.abort();
+            assert!(task.await.expect_err("accept cancelled").is_cancelled());
+            assert_eq!(Arc::strong_count(&old), 1);
+            drop(client);
+            runtime
+                .run_until_shutdown(async {})
+                .await
+                .expect("shutdown");
+        }
+
+        #[tokio::test]
+        async fn failed_refresh_retains_last_good_and_next_success_recovers() {
+            let (runtime, mut control) = controlled(config(true)).await;
+            control.idle().await;
+            let old = runtime.profile_snapshot();
+            control
+                .probe()
+                .await
+                .send(Err(RealityError::ProbeFailed("controlled failure")))
+                .expect("failed result supplied");
+            control.idle().await;
+            assert!(Arc::ptr_eq(&old, &runtime.profile_snapshot()));
+            let replacement = profile(old.dest.clone(), 3);
+            control
+                .probe()
+                .await
+                .send(Ok(replacement.clone()))
+                .expect("recovery supplied");
+            control.idle().await;
+            assert_eq!(*runtime.profile_snapshot(), replacement);
+            assert_eq!(old.ocsp, Some(vec![1]));
+            runtime
+                .run_until_shutdown(async {})
+                .await
+                .expect("shutdown");
+            assert!(control.ticks.send(()).is_err());
+        }
+
+        #[tokio::test]
+        async fn stalled_refresh_is_single_flight_accepts_progress_and_shutdown_cancels_it() {
+            let upstream = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("loopback target");
+            let udp_upstream = UdpSocket::bind(upstream.local_addr().expect("target address"))
+                .await
+                .expect("loopback QUIC target");
+            let mut cfg = config(true);
+            cfg.dest = upstream.local_addr().expect("target address").to_string();
+            let (runtime, mut control) = controlled(cfg).await;
+            control.idle().await;
+            let pending = control.probe().await;
+            control.ticks.send(()).expect("queue another interval");
+            let (shutdown, task) = start(&runtime);
+            timeout(TEST_TIMEOUT, async {
+                let client = async {
+                    let mut stream = TcpStream::connect(runtime.local_addr().expect("address"))
+                        .await
+                        .expect("accept remains responsive");
+                    stream.write_all(b"not TLS").await.expect("send fallback");
+                    stream.shutdown().await.expect("client half close");
+                    let mut reply = Vec::new();
+                    stream
+                        .read_to_end(&mut reply)
+                        .await
+                        .expect("fallback reply");
+                    assert_eq!(reply, b"local reply");
+                };
+                let target = async {
+                    let (mut stream, _) = upstream.accept().await.expect("fallback target");
+                    let mut request = Vec::new();
+                    stream
+                        .read_to_end(&mut request)
+                        .await
+                        .expect("fallback request");
+                    assert_eq!(request, b"not TLS");
+                    stream
+                        .write_all(b"local reply")
+                        .await
+                        .expect("target reply");
+                };
+                tokio::join!(client, target);
+                let udp = UdpSocket::bind("127.0.0.1:0").await.expect("UDP client");
+                udp.connect(
+                    runtime
+                        .udp_local_addr()
+                        .expect("UDP address")
+                        .expect("QUIC enabled"),
+                )
+                .await
+                .expect("UDP connects");
+                udp.send(b"opaque QUIC").await.expect("UDP request");
+                let mut buf = [0; 64];
+                let (len, peer) = udp_upstream
+                    .recv_from(&mut buf)
+                    .await
+                    .expect("UDP forwarded");
+                assert_eq!(&buf[..len], b"opaque QUIC");
+                udp_upstream
+                    .send_to(b"UDP reply", peer)
+                    .await
+                    .expect("UDP target reply");
+                let len = udp.recv(&mut buf).await.expect("UDP response forwarded");
+                assert_eq!(&buf[..len], b"UDP reply");
+            })
+            .await
+            .expect("accepts progress while refresh stalls");
+            assert!(matches!(
+                control.probes.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            assert!(matches!(
+                control.waiting.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            stop(shutdown, task).await;
+            assert!(
+                pending.is_closed(),
+                "shutdown joined cancelled probe future"
+            );
+            assert!(control.ticks.send(()).is_err(), "no worker after shutdown");
+            assert!(control.probes.recv().await.is_none());
+            assert!(runtime.profile_refresh.lock().expect("tasks").is_empty());
+            assert_eq!(runtime.profile_snapshot().ocsp, Some(vec![1]));
+        }
+
+        #[tokio::test]
+        async fn dropping_bound_runtime_aborts_refresh_without_accept_loop() {
+            let (runtime, mut control) = controlled(config(true)).await;
+            control.idle().await;
+            let mut pending = control.probe().await;
+            drop(runtime);
+            timeout(TEST_TIMEOUT, pending.closed())
+                .await
+                .expect("drop cancels owned task");
+            assert!(control.ticks.send(()).is_err());
+            assert!(control.probes.recv().await.is_none());
+        }
+    }
+
+    async fn pooled_client_fixture() -> (ClientCfg, ServerRuntime) {
+        let key = x25519::generate_keypair();
+        let seed = [0x4c; 32];
+        let signing = umbra_crypto::mldsa::mldsa_keygen_from_seed(&seed);
+        let mut cfg = ClientCfg {
+            server: String::new(),
+            transport: TransportKind::Quic,
+            public_key: key.public,
+            short_id: vec![1],
+            server_name: "pool.example".to_owned(),
+            fingerprint: "chrome-latest".to_owned(),
+            mldsa_verify: signing.verifying_key,
+            spider_path: "/".to_owned(),
+            socks_listen: "127.0.0.1:0".parse().expect("loopback"),
+            mux: true,
+            padding_scheme: PadScheme::none(),
+            tcp_evasion: TcpEvasionPolicy::Off,
+        };
+        let server_cfg = RuntimeServerCfg {
+            listen: cfg.socks_listen,
+            udp_listen: Some(cfg.socks_listen),
+            private_key: key.private,
+            short_ids: vec![cfg.short_id.clone()],
+            dest: "pool.example:443".to_owned(),
+            server_names: vec![cfg.server_name.clone()],
+            max_time_diff: Duration::from_mins(2),
+            mldsa_seed: Secret::new(seed),
+            prebuild: false,
+            padding_scheme: PadScheme::none(),
+            tcp_evasion: TcpEvasionPolicy::Off,
+        };
+        let profile = DestProfile {
+            dest: server_cfg.dest.clone(),
+            tls_ver: 0x0304,
+            cipher: 0x1301,
+            group: 0x001d,
+            alpn: vec![b"h2".to_vec()],
+            ee_exts: vec![0x0010],
+            leaf_template: umbra_reality::prebuild::CertTemplate {
+                subject: "CN=pool.example".to_owned(),
+                issuer: "CN=Synthetic Test CA".to_owned(),
+                not_before_unix: 1_700_000_000,
+                not_after_unix: 1_900_000_000,
+                san_dns: vec![cfg.server_name.clone()],
+                sct: Vec::new(),
+                signature_algorithm: "ecdsa-with-SHA256".to_owned(),
+                leaf_der: Vec::new(),
+            },
+            ocsp: None,
+            rtt: Duration::ZERO,
+        };
+        let server =
+            ServerRuntime::bind_with_profile(server_cfg, profile, ProbeResistancePolicy::default())
+                .await
+                .expect("server binds");
+        cfg.server = server
+            .udp_local_addr()
+            .expect("UDP address")
+            .expect("UDP listener")
+            .to_string();
+        (cfg, server)
+    }
+
+    #[tokio::test]
+    async fn scenario_quic_pool_shares_establishment_and_replaces_only_closed_outer() {
+        let (cfg, server) = pooled_client_fixture().await;
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            server
+                .run_until_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+        });
+        let pool = ClientConnections::default();
+        let (first, second, third) = timeout(Duration::from_secs(5), async {
+            tokio::try_join!(pool.quic(&cfg), pool.quic(&cfg), pool.quic(&cfg))
+        })
+        .await
+        .expect("concurrent setup completes")
+        .expect("authenticated connections");
+        assert_eq!(first.stable_id(), second.stable_id());
+        assert_eq!(first.stable_id(), third.stable_id());
+        first.close(0_u32.into(), b"");
+        assert!(second.close_reason().is_some());
+        let replacement = timeout(Duration::from_secs(5), pool.quic(&cfg))
+            .await
+            .expect("replacement completes")
+            .expect("new authenticated connection");
+        assert_ne!(replacement.stable_id(), first.stable_id());
+        let again = pool.quic(&cfg).await.expect("reuse replacement");
+        assert_eq!(again.stable_id(), replacement.stable_id());
+        pool.shutdown().await;
+        assert!(replacement.close_reason().is_some());
+        assert!(pool.quic.lock().await.is_none());
+        stop.send(()).expect("stop server");
+        timeout(Duration::from_secs(5), server)
+            .await
+            .expect("server stopped")
+            .expect("server joins")
+            .expect("server shutdown succeeds");
+    }
+
+    #[tokio::test]
+    async fn scenario_quic_pool_failed_setup_does_not_publish_connection() {
+        let (mut cfg, _server) = pooled_client_fixture().await;
+        cfg.server = "127.0.0.1:invalid".to_owned();
+        let pool = ClientConnections::default();
+        assert!(pool.quic(&cfg).await.is_err());
+        assert!(pool.quic.lock().await.is_none());
+        pool.shutdown().await;
+    }
+
+    #[test]
+    fn scenario_realsite_spider_requires_compatible_http_alpn() {
+        assert!(require_http1_spider(None).is_ok());
+        assert!(require_http1_spider(Some(b"http/1.1")).is_ok());
+        for protocol in [b"h2".as_slice(), b"h3", b"", b"unknown"] {
+            assert!(require_http1_spider(Some(protocol)).is_err());
+        }
+    }
+
+    #[test]
+    fn scenario_tcp_verifier_rejects_untrusted_ordinary_certificate() {
+        let cert = rcgen::generate_simple_self_signed(vec!["site.example".to_owned()])
+            .expect("synthetic certificate");
+        let verifier = RealityCertVerifier {
+            shared: Secret::new([1; 32]),
+            session_id: [2; 32],
+            mldsa_verify: Vec::new(),
+            server_name: "site.example".to_owned(),
+        };
+        assert_eq!(verifier.verify(cert.cert.der(), &[]), TlsPeerKind::Invalid);
+        assert_eq!(verifier.verify(b"bad DER", &[]), TlsPeerKind::Invalid);
+    }
 
     #[test]
     fn scenario_target_to_host_port_formats_all_address_kinds() {
@@ -2412,18 +3544,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scenario_mux_close_ack_helpers_ignore_broken_pipe() {
+    async fn scenario_mux_driver_reports_closed_outer_to_new_opens() {
         let (client, server) = tokio::io::duplex(64);
         drop(server);
-        let pad = PadScheme::none();
-        let mut mux = MuxSession::client(client, &pad).expect("mux creates");
-
-        finish_stream_best_effort(&mut mux, 1)
-            .await
-            .expect("broken pipe during FIN is ignored");
-        send_window_update_best_effort(&mut mux, 1, 1)
-            .await
-            .expect("broken pipe during WINDOW_UPDATE is ignored");
+        let mux = MuxSession::client(client, &PadScheme::none()).expect("mux creates");
+        let (driver, handle) = crate::mux_io::start_client(mux).expect("driver starts");
+        assert!(timeout(
+            Duration::from_secs(1),
+            handle.open(TargetAddr::Ipv4(Ipv4Addr::LOCALHOST, 443),)
+        )
+        .await
+        .expect("open wakes")
+        .is_err());
+        assert!(!handle.is_healthy());
+        driver.shutdown().await;
     }
 
     #[tokio::test]
@@ -2483,11 +3617,13 @@ mod tests {
         let (target_io, mut target_peer) = tokio::io::duplex(4096);
         let target = TargetAddr::domain("solo.example", 443).expect("target");
         let server_task = tokio::spawn(async move {
+            let mut target_io = Some(target_io);
             relay_one_server_inner_stream(
                 server,
-                |dest| async move {
+                |dest| {
                     assert_eq!(dest, "solo.example:443");
-                    Ok::<_, std::io::Error>(target_io)
+                    let io = target_io.take().expect("one solo target");
+                    async move { Ok::<_, std::io::Error>(io) }
                 },
                 &PadScheme::none(),
                 DEFAULT_SESSION_IDLE_TIMEOUT,
@@ -2711,6 +3847,699 @@ mod tests {
         QuicCryptoFrame {
             offset,
             bytes: bytes.to_vec(),
+        }
+    }
+
+    mod quic_lifecycle {
+        use super::*;
+        use quinn::AsyncUdpSocket;
+        use quinn_proto::ConnectionIdGenerator;
+        use umbra_crypto::{mldsa::mldsa_keygen_from_seed, secret::Secret};
+        use umbra_reality::prebuild::CertTemplate;
+
+        const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+        async fn server(dest: SocketAddr) -> (Arc<ServerRuntime>, ClientCfg) {
+            let key = x25519::generate_keypair();
+            let public_key = key.public;
+            let signing = mldsa_keygen_from_seed(&[3; 32]);
+            let cfg = RuntimeServerCfg {
+                listen: "127.0.0.1:0".parse().expect("TCP bind"),
+                udp_listen: Some("127.0.0.1:0".parse().expect("UDP bind")),
+                private_key: key.private,
+                short_ids: vec![vec![1, 2, 3]],
+                dest: dest.to_string(),
+                server_names: vec!["quic.example".to_owned()],
+                max_time_diff: Duration::from_mins(2),
+                mldsa_seed: Secret::new([3; 32]),
+                prebuild: false,
+                padding_scheme: PadScheme::none(),
+                tcp_evasion: TcpEvasionPolicy::Off,
+            };
+            let profile = DestProfile {
+                dest: dest.to_string(),
+                tls_ver: 0x0304,
+                cipher: 0x1301,
+                group: 0x001d,
+                alpn: vec![b"h3".to_vec()],
+                ee_exts: vec![0x0010],
+                leaf_template: CertTemplate {
+                    subject: "CN=quic.example".to_owned(),
+                    issuer: "CN=Loopback CA".to_owned(),
+                    not_before_unix: 1_700_000_000,
+                    not_after_unix: 2_000_000_000,
+                    san_dns: vec!["quic.example".to_owned()],
+                    sct: Vec::new(),
+                    signature_algorithm: "ecdsa-with-SHA256".to_owned(),
+                    leaf_der: Vec::new(),
+                },
+                ocsp: None,
+                rtt: Duration::ZERO,
+            };
+            let runtime = Arc::new(
+                ServerRuntime::bind_with_profile(cfg, profile, ProbeResistancePolicy::default())
+                    .await
+                    .expect("bind runtime"),
+            );
+            let cfg = ClientCfg {
+                server: runtime
+                    .udp_local_addr()
+                    .expect("address")
+                    .expect("UDP")
+                    .to_string(),
+                transport: TransportKind::Quic,
+                public_key,
+                short_id: vec![1, 2, 3],
+                server_name: "quic.example".to_owned(),
+                fingerprint: "chrome-latest".to_owned(),
+                mldsa_verify: signing.verifying_key,
+                spider_path: "/".to_owned(),
+                socks_listen: "127.0.0.1:0".parse().expect("SOCKS address"),
+                mux: false,
+                padding_scheme: PadScheme::none(),
+                tcp_evasion: TcpEvasionPolicy::Off,
+            };
+            (runtime, cfg)
+        }
+
+        fn start(
+            runtime: &Arc<ServerRuntime>,
+        ) -> (tokio::sync::oneshot::Sender<()>, JoinHandle<()>) {
+            let (stop, stopped) = tokio::sync::oneshot::channel();
+            let runtime = Arc::clone(runtime);
+            let task = tokio::spawn(async move {
+                runtime
+                    .run_until_shutdown(async {
+                        let _ = stopped.await;
+                    })
+                    .await
+                    .expect("runtime stops");
+            });
+            (stop, task)
+        }
+
+        async fn client(runtime: &ServerRuntime) -> UdpSocket {
+            let client = UdpSocket::bind("127.0.0.1:0").await.expect("client bind");
+            client
+                .connect(runtime.udp_local_addr().expect("address").expect("UDP"))
+                .await
+                .expect("client connect");
+            client
+        }
+
+        async fn authenticated_connection(cfg: &ClientCfg) -> (quinn::Endpoint, quinn::Connection) {
+            let mut endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().expect("bind"))
+                .expect("client endpoint");
+            endpoint.set_default_client_config(quic_crypto::client_config(cfg).expect("crypto"));
+            let connection = endpoint
+                .connect(cfg.server.parse().expect("server"), &cfg.server_name)
+                .expect("connect")
+                .await
+                .expect("authenticated handshake");
+            (endpoint, connection)
+        }
+
+        async fn open_tcp_target_stream(
+            connection: &quinn::Connection,
+            request: &[u8],
+        ) -> (quinn::SendStream, quinn::RecvStream, TcpListener) {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("target");
+            let target = TargetAddr::Ipv4(
+                Ipv4Addr::LOCALHOST,
+                listener.local_addr().expect("address").port(),
+            );
+            let (mut send, recv) = connection.open_bi().await.expect("target stream");
+            write_target_stream(&mut send, &target, &[])
+                .await
+                .expect("target header");
+            send.write_all(request).await.expect("target request");
+            (send, recv, listener)
+        }
+
+        async fn closed_tcp_port() -> u16 {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("unused port");
+            let port = listener.local_addr().expect("address").port();
+            drop(listener);
+            port
+        }
+
+        fn assert_released(runtime: &ServerRuntime) {
+            let socket = runtime.udp_socket.as_ref().expect("QUIC socket");
+            assert!(socket.receiver.try_lock().is_ok(), "receive lease released");
+            assert_eq!(
+                Arc::strong_count(&socket.dispatch),
+                1,
+                "flow send handles released"
+            );
+            assert_eq!(
+                Arc::strong_count(&runtime.dispatch_cfg),
+                1,
+                "flow contexts released"
+            );
+        }
+
+        fn initial(offset: u8, crypto: &[u8], dcid: [u8; 8]) -> Vec<u8> {
+            assert!(offset < 64 && crypto.len() < 64);
+            let keys = umbra_transport::quic::derive_initial_quinn_packet_keys(
+                1,
+                &dcid,
+                quinn_proto::Side::Client,
+            )
+            .expect("Initial keys");
+            let mut packet = vec![0xc3, 0, 0, 0, 1, 8];
+            packet.extend_from_slice(&dcid);
+            packet.push(8);
+            packet.extend_from_slice(&[9; 8]);
+            packet.push(0); // Empty token.
+            let payload_len = u16::try_from(1200 - packet.len() - 2).expect("payload length");
+            packet.extend_from_slice(&(0x4000 | payload_len).to_be_bytes());
+            let pn_offset = packet.len();
+            packet.extend_from_slice(&u32::from(offset).to_be_bytes());
+            let header_len = packet.len();
+            packet.extend_from_slice(&[
+                6,
+                offset,
+                u8::try_from(crypto.len()).expect("CRYPTO length"),
+            ]);
+            packet.extend_from_slice(crypto);
+            packet.resize(1200, 0);
+            keys.packet
+                .local
+                .encrypt(u64::from(offset), &mut packet, header_len);
+            keys.header.local.encrypt(pn_offset, &mut packet);
+            packet
+        }
+
+        #[tokio::test]
+        async fn simultaneous_fallback_peers_preserve_bytes_and_shutdown() {
+            timeout(TEST_TIMEOUT, async {
+                let upstream = UdpSocket::bind("127.0.0.1:0").await.expect("upstream");
+                let (runtime, _) = server(upstream.local_addr().expect("address")).await;
+                let (stop, task) = start(&runtime);
+                let first = client(&runtime).await;
+                let second = client(&runtime).await;
+                let mut peers = Vec::new();
+                for round in 0..2 {
+                    let a = vec![0, 1, round, 0xff, 0];
+                    let b = vec![0, 2, round, 0xfe, 0];
+                    first.send(&a).await.expect("first sends");
+                    second.send(&b).await.expect("second sends");
+                    let mut observed = Vec::new();
+                    for _ in 0..2 {
+                        let mut buf = [0; 64];
+                        let (len, peer) = upstream
+                            .recv_from(&mut buf)
+                            .await
+                            .expect("upstream receives");
+                        observed.push(buf[..len].to_vec());
+                        if round == 0 {
+                            peers.push(peer);
+                        }
+                        upstream
+                            .send_to(&buf[..len], peer)
+                            .await
+                            .expect("upstream replies");
+                    }
+                    observed.sort();
+                    assert_eq!(observed, vec![a.clone(), b.clone()]);
+                    let mut buf = [0; 64];
+                    let len = first.recv(&mut buf).await.expect("first reply");
+                    assert_eq!(&buf[..len], a);
+                    let len = second.recv(&mut buf).await.expect("second reply");
+                    assert_eq!(&buf[..len], b);
+                }
+                assert_ne!(peers[0], peers[1], "fallback upstreams are isolated");
+                stop.send(()).expect("stop");
+                task.await.expect("join");
+                assert_released(&runtime);
+            })
+            .await
+            .expect("bounded fallback test");
+        }
+
+        #[tokio::test]
+        async fn same_peer_fallback_flows_route_upstream_issued_cids() {
+            timeout(TEST_TIMEOUT, async {
+                let upstream = UdpSocket::bind("127.0.0.1:0").await.expect("destination");
+                let (runtime, _) = server(upstream.local_addr().expect("address")).await;
+                let (stop, task) = start(&runtime);
+                let client = client(&runtime).await;
+                let mut upstream_peers = Vec::new();
+                let mut buf = [0; 2048];
+                for cid in [1_u8, 2] {
+                    let request = initial(0, b"\x01\x00\x00\x00", [cid; 8]);
+                    client.send(&request).await.expect("Initial");
+                    let (len, peer) = upstream
+                        .recv_from(&mut buf)
+                        .await
+                        .expect("Initial forwarded");
+                    assert_eq!(&buf[..len], request);
+                    upstream_peers.push(peer);
+                    let mut reply = vec![0xc0, 0, 0, 0, 1, 8];
+                    reply.extend_from_slice(&[9; 8]);
+                    reply.push(8);
+                    reply.extend_from_slice(&[cid + 2; 8]);
+                    upstream
+                        .send_to(&reply, peer)
+                        .await
+                        .expect("issued source CID");
+                    let len = client.recv(&mut buf).await.expect("Initial response");
+                    assert_eq!(&buf[..len], reply);
+                }
+                assert_ne!(upstream_peers[0], upstream_peers[1]);
+                for (index, cid) in [3_u8, 4].into_iter().enumerate() {
+                    let mut short = vec![0x40];
+                    short.extend_from_slice(&[cid; 8]);
+                    short.extend_from_slice(b"application packet");
+                    client.send(&short).await.expect("short header");
+                    let (len, peer) = upstream
+                        .recv_from(&mut buf)
+                        .await
+                        .expect("routed short header");
+                    assert_eq!(&buf[..len], short);
+                    assert_eq!(peer, upstream_peers[index]);
+                }
+                stop.send(()).expect("stop");
+                task.await.expect("join");
+                assert_released(&runtime);
+            })
+            .await
+            .expect("bounded same-peer flow test");
+        }
+
+        #[tokio::test]
+        async fn listener_flow_budget_preserves_existing_flows() {
+            timeout(TEST_TIMEOUT, async {
+                let upstream = UdpSocket::bind("127.0.0.1:0").await.expect("destination");
+                let (runtime, _) = server(upstream.local_addr().expect("address")).await;
+                let (stop, task) = start(&runtime);
+                let mut clients = Vec::new();
+                let mut buf = [0; 32];
+                for _ in 0..QUIC_MAX_FLOWS {
+                    let client = client(&runtime).await;
+                    client.send(b"occupy").await.expect("new flow");
+                    let (len, _) = upstream.recv_from(&mut buf).await.expect("flow admitted");
+                    assert_eq!(&buf[..len], b"occupy");
+                    clients.push(client);
+                }
+                assert_eq!(Arc::strong_count(&runtime.dispatch_cfg), QUIC_MAX_FLOWS + 1);
+                let overflow = client(&runtime).await;
+                overflow.send(b"overflow").await.expect("over capacity");
+                clients[0].send(b"existing").await.expect("existing flow");
+                let (len, peer) = upstream
+                    .recv_from(&mut buf)
+                    .await
+                    .expect("existing still relays");
+                assert_eq!(&buf[..len], b"existing");
+                upstream.send_to(b"alive", peer).await.expect("reply");
+                let len = clients[0].recv(&mut buf).await.expect("existing reply");
+                assert_eq!(&buf[..len], b"alive");
+                assert!(
+                    timeout(Duration::from_millis(20), upstream.recv_from(&mut buf))
+                        .await
+                        .is_err()
+                );
+                assert_eq!(Arc::strong_count(&runtime.dispatch_cfg), QUIC_MAX_FLOWS + 1);
+                stop.send(()).expect("stop all flows");
+                task.await.expect("join all flows");
+                assert_released(&runtime);
+            })
+            .await
+            .expect("bounded admission test");
+        }
+
+        #[tokio::test]
+        async fn fragmented_initial_and_duplicates_survive_tcp_accepts() {
+            timeout(TEST_TIMEOUT, async {
+                let tcp = TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("TCP destination");
+                let udp = UdpSocket::bind(tcp.local_addr().expect("address"))
+                    .await
+                    .expect("UDP destination");
+                let (runtime, _) = server(udp.local_addr().expect("address")).await;
+                let (stop, task) = start(&runtime);
+                let quic = client(&runtime).await;
+                let prefix = initial(0, b"\x01\x00\x00\x05he", [4; 8]);
+                let suffix = initial(6, b"llo", [4; 8]);
+                quic.send(&prefix).await.expect("fragment");
+                quic.send(&prefix).await.expect("retransmit");
+                // A second peer's fallback response is a receive-loop barrier.
+                let other = client(&runtime).await;
+                other.send(b"barrier").await.expect("other peer");
+                let mut buf = [0; 2048];
+                let (len, peer) = udp.recv_from(&mut buf).await.expect("other fallback");
+                assert_eq!(&buf[..len], b"barrier");
+                udp.send_to(b"ready", peer).await.expect("barrier reply");
+                assert_eq!(other.recv(&mut buf).await.expect("barrier received"), 5);
+                for _ in 0..3 {
+                    let mut incoming =
+                        TcpStream::connect(runtime.local_addr().expect("TCP address"))
+                            .await
+                            .expect("TCP client");
+                    incoming
+                        .write_all(&[0; 5])
+                        .await
+                        .expect("malformed TCP prefix");
+                    incoming.shutdown().await.expect("TCP half-close");
+                    let (mut forwarded, _) =
+                        tcp.accept().await.expect("TCP accepted and dispatched");
+                    let mut prefix = Vec::new();
+                    forwarded
+                        .read_to_end(&mut prefix)
+                        .await
+                        .expect("TCP prefix");
+                    assert_eq!(prefix, [0; 5]);
+                }
+                quic.send(&suffix).await.expect("complete Initial");
+                for expected in [&prefix, &prefix, &suffix] {
+                    let (len, _) = udp.recv_from(&mut buf).await.expect("retained Initial");
+                    assert_eq!(&buf[..len], expected);
+                }
+                stop.send(()).expect("stop");
+                task.await.expect("join");
+                assert_released(&runtime);
+            })
+            .await
+            .expect("bounded interleaving test");
+        }
+
+        #[tokio::test]
+        async fn authenticated_streams_and_udp_are_independent_and_joined() {
+            timeout(TEST_TIMEOUT, async {
+                let udp = UdpSocket::bind("127.0.0.1:0").await.expect("UDP target");
+                let (runtime, cfg) = server(udp.local_addr().expect("address")).await;
+                let (stop, task) = start(&runtime);
+                let (endpoint, connection) = authenticated_connection(&cfg).await;
+                let (mut udp_send, mut udp_recv) =
+                    connection.open_bi().await.expect("UDP stream zero");
+                write_udp_association_marker(&mut udp_send)
+                    .await
+                    .expect("association marker");
+                let udp_target = target_addr_from_udp_socket(&udp);
+                write_udp_envelope_stream(&mut udp_send, &udp_target, b"first UDP")
+                    .await
+                    .expect("first envelope");
+                let mut buf = [0; 64];
+                let (len, udp_peer) = udp.recv_from(&mut buf).await.expect("UDP request");
+                assert_eq!(&buf[..len], b"first UDP");
+
+                let (_slow_send, _slow_recv, slow) =
+                    open_tcp_target_stream(&connection, b"slow").await;
+                let (mut slow_peer, _) = slow.accept().await.expect("slow target accepted");
+                slow_peer
+                    .read_exact(&mut buf[..4])
+                    .await
+                    .expect("slow target request");
+                assert_eq!(&buf[..4], b"slow");
+
+                let failed_target = TargetAddr::Ipv4(Ipv4Addr::LOCALHOST, closed_tcp_port().await);
+                let (mut failed_send, mut failed_recv) =
+                    connection.open_bi().await.expect("failed stream");
+                write_target_stream(&mut failed_send, &failed_target, &[])
+                    .await
+                    .expect("failed header");
+                failed_send.finish().expect("finish failed request");
+                let failed = failed_recv.read_to_end(64).await;
+                assert!(failed.is_err() || failed.expect("closed stream").is_empty());
+
+                let (mut fast_send, mut fast_recv, fast) =
+                    open_tcp_target_stream(&connection, b"fast").await;
+                fast_send.finish().expect("fast half-close");
+                let (mut fast_peer, _) = fast.accept().await.expect("fast target accepted");
+                let mut request = Vec::new();
+                fast_peer
+                    .read_to_end(&mut request)
+                    .await
+                    .expect("fast target EOF");
+                assert_eq!(request, b"fast");
+                fast_peer
+                    .write_all(b"reverse reply")
+                    .await
+                    .expect("response after half-close");
+                fast_peer.shutdown().await.expect("fast target EOF");
+                assert_eq!(
+                    fast_recv.read_to_end(64).await.expect("fast response"),
+                    b"reverse reply"
+                );
+
+                // A target response interrupts a partially received second envelope.
+                let mut framed = Vec::new();
+                write_udp_envelope_stream(&mut framed, &udp_target, b"second UDP")
+                    .await
+                    .expect("encode second envelope");
+                udp_send
+                    .write_all(&framed[..3])
+                    .await
+                    .expect("fragment envelope");
+                udp.send_to(b"first reply", udp_peer)
+                    .await
+                    .expect("competing target reply");
+                let first_reply = umbra_transport::quic::read_udp_envelope_stream(&mut udp_recv)
+                    .await
+                    .expect("first association reply");
+                assert_eq!(first_reply.payload, b"first reply");
+                udp_send
+                    .write_all(&framed[3..])
+                    .await
+                    .expect("finish envelope");
+                let (len, _) = udp.recv_from(&mut buf).await.expect("resumed envelope");
+                assert_eq!(&buf[..len], b"second UDP");
+
+                stop.send(()).expect("shutdown with live streams");
+                task.await.expect("supervisor joined");
+                assert_eq!(
+                    slow_peer.read(&mut buf).await.expect("slow target closed"),
+                    0
+                );
+                assert_released(&runtime);
+                endpoint.close(0_u32.into(), b"");
+            })
+            .await
+            .expect("bounded authenticated multi-stream test");
+        }
+
+        #[tokio::test]
+        async fn one_outcome_api_cleans_up_other_pending_flows() {
+            timeout(TEST_TIMEOUT, async {
+                let upstream = UdpSocket::bind("127.0.0.1:0").await.expect("destination");
+                let (runtime, _) = server(upstream.local_addr().expect("address")).await;
+                let listener = Arc::clone(&runtime);
+                let task = tokio::spawn(async move {
+                    listener
+                        .accept_one_quic_with_idle_timeout(Duration::from_millis(100))
+                        .await
+                        .expect("one outcome")
+                });
+                let first = client(&runtime).await;
+                first.send(b"fallback").await.expect("fallback request");
+                let mut buf = [0; 32];
+                let (len, peer) = upstream.recv_from(&mut buf).await.expect("forwarded");
+                assert_eq!(&buf[..len], b"fallback");
+                upstream.send_to(b"reply", peer).await.expect("reply");
+                let read = first.recv(&mut buf).await.expect("fallback response");
+                assert_eq!(&buf[..read], b"reply");
+                let slow = client(&runtime).await;
+                slow.send(&initial(0, b"\x01\x00\x00\x05he", [5; 8]))
+                    .await
+                    .expect("pending prefetch");
+                let accepted = task.await.expect("listener joins");
+                assert_eq!(accepted.peer, first.local_addr().expect("first peer"));
+                assert!(matches!(
+                    accepted.outcome,
+                    QuicRuntimeOutcome::Forwarded {
+                        client_to_dest: 8,
+                        dest_to_client: 5,
+                        ..
+                    }
+                ));
+                assert_released(&runtime);
+            })
+            .await
+            .expect("bounded convenience test");
+        }
+
+        #[tokio::test]
+        async fn prefetch_retains_conflicts_deadlines_and_datagram_budget() {
+            let first = initial(0, b"\x01\x00\x00\x05he", [1; 8]);
+            let conflict = initial(4, b"Xello", [1; 8]);
+            let (sender, mut receiver) = mpsc::channel(QUIC_FLOW_QUEUE_CAPACITY);
+            sender
+                .send(conflict.clone())
+                .await
+                .expect("conflicting overlap");
+            let outcome =
+                prefetch_quic_client_hello(first.clone(), &mut receiver, TEST_TIMEOUT).await;
+            let QuicPrefetchOutcome::Fallback { datagrams, .. } = outcome else {
+                panic!("fallback")
+            };
+            assert_eq!(datagrams, vec![first.clone(), conflict]);
+            let outcome =
+                prefetch_quic_client_hello(first.clone(), &mut receiver, Duration::ZERO).await;
+            let QuicPrefetchOutcome::Fallback { datagrams, .. } = outcome else {
+                panic!("deadline fallback")
+            };
+            assert_eq!(datagrams, vec![first.clone()]);
+            for _ in 1..QUIC_PREFETCH_MAX_DATAGRAMS {
+                sender.send(first.clone()).await.expect("bounded duplicate");
+            }
+            let outcome =
+                prefetch_quic_client_hello(first.clone(), &mut receiver, TEST_TIMEOUT).await;
+            let QuicPrefetchOutcome::Fallback { datagrams, .. } = outcome else {
+                panic!("budget fallback")
+            };
+            assert_eq!(datagrams, vec![first; QUIC_PREFETCH_MAX_DATAGRAMS]);
+        }
+
+        #[tokio::test]
+        async fn routing_is_peer_and_cid_scoped_and_bounded() {
+            let peer: SocketAddr = "127.0.0.1:10001".parse().expect("peer");
+            let other: SocketAddr = "127.0.0.1:10002".parse().expect("other peer");
+            let mut tasks = JoinSet::new();
+            let one = tasks.spawn(std::future::pending::<()>()).id();
+            let two = tasks.spawn(std::future::pending::<()>()).id();
+            let three = tasks.spawn(std::future::pending::<()>()).id();
+            let packet = initial(0, b"\x01\x00\x00\x05he", [1; 8]);
+            let packet_two = initial(0, b"\x01\x00\x00\x05he", [2; 8]);
+            let (route_one, mut inbox_one) = QuicFlowRoute::new(peer, &packet);
+            let (route_two, mut inbox_two) = QuicFlowRoute::new(peer, &packet_two);
+            let (route_three, mut inbox_three) = QuicFlowRoute::new(other, &packet);
+            let mut routes =
+                HashMap::from([(one, route_one), (two, route_two), (three, route_three)]);
+            for (address, datagram) in [(peer, &packet), (peer, &packet_two), (other, &packet)] {
+                let QuicRouteMatch::Existing(sender) =
+                    route_quic_datagram(&routes, address, datagram)
+                else {
+                    panic!("known route")
+                };
+                sender.try_send(datagram.clone()).expect("route");
+            }
+            assert_eq!(inbox_one.receiver.recv().await.expect("one"), packet);
+            assert_eq!(inbox_two.receiver.recv().await.expect("two"), packet_two);
+            assert_eq!(inbox_three.receiver.recv().await.expect("three"), packet);
+            let mut generator = RoutedCidGenerator {
+                inner: quinn_proto::RandomConnectionIdGenerator::new(8),
+                cids: Arc::clone(&inbox_one.cids),
+            };
+            let issued = generator.generate_cid();
+            let mut short = vec![0x40];
+            short.extend_from_slice(&issued);
+            short.extend_from_slice(b"payload");
+            let QuicRouteMatch::Existing(sender) = route_quic_datagram(&routes, peer, &short)
+            else {
+                panic!("issued CID route")
+            };
+            for _ in 0..QUIC_FLOW_QUEUE_CAPACITY {
+                sender.try_send(short.clone()).expect("queue capacity");
+            }
+            assert!(matches!(
+                sender.try_send(short.clone()),
+                Err(mpsc::error::TrySendError::Full(_))
+            ));
+            assert!(matches!(
+                route_quic_datagram(&routes, other, &short),
+                QuicRouteMatch::Ambiguous
+            ));
+            inbox_three
+                .cids
+                .fallback
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            assert!(matches!(
+                route_quic_datagram(&routes, other, &short),
+                QuicRouteMatch::Existing(_)
+            ));
+            inbox_two.cids.register(&issued);
+            assert!(matches!(
+                route_quic_datagram(&routes, peer, &short),
+                QuicRouteMatch::Ambiguous
+            ));
+            for _ in 0..QUIC_FLOW_MAX_CIDS {
+                generator.generate_cid();
+            }
+            assert_eq!(
+                inbox_one.cids.values.lock().expect("CID list").len(),
+                QUIC_FLOW_MAX_CIDS
+            );
+            timeout(TEST_TIMEOUT, inbox_one.cids.exhausted.notified())
+                .await
+                .expect("bounded CID exhaustion");
+            routes.clear();
+            assert!(
+                inbox_two.receiver.recv().await.is_none(),
+                "route cleanup closes queue"
+            );
+            abort_all(&mut tasks).await;
+            assert!(tasks.is_empty());
+        }
+
+        #[derive(Debug)]
+        struct NeverReceiveSocket;
+
+        impl AsyncUdpSocket for NeverReceiveSocket {
+            fn create_io_poller(self: Arc<Self>) -> Pin<Box<dyn quinn::UdpPoller>> {
+                panic!("receive test does not send")
+            }
+            fn try_send(&self, _: &quinn::udp::Transmit<'_>) -> io::Result<()> {
+                Ok(())
+            }
+            fn poll_recv(
+                &self,
+                _: &mut Context<'_>,
+                _: &mut [IoSliceMut<'_>],
+                _: &mut [quinn::udp::RecvMeta],
+            ) -> Poll<io::Result<usize>> {
+                panic!("flow must never receive from physical socket")
+            }
+            fn local_addr(&self) -> io::Result<SocketAddr> {
+                Ok("127.0.0.1:10000".parse().expect("address"))
+            }
+        }
+
+        #[tokio::test]
+        async fn queue_socket_never_competes_for_physical_receives() {
+            let (sender, receiver) = mpsc::channel(1);
+            let socket = PrefetchedUdpSocket {
+                inner: Arc::new(NeverReceiveSocket),
+                peer: "127.0.0.1:10001".parse().expect("peer"),
+                pending: Mutex::new(QuicSocketQueue {
+                    prefetched: VecDeque::from([b"first".to_vec()]),
+                    receiver,
+                }),
+            };
+            let mut buf = [0; 32];
+            let mut meta = [quinn::udp::RecvMeta::default()];
+            let read = std::future::poll_fn(|cx| {
+                socket.poll_recv(cx, &mut [IoSliceMut::new(&mut buf)], &mut meta)
+            })
+            .await
+            .expect("prefetched packet");
+            assert_eq!(read, 1);
+            assert_eq!(&buf[..meta[0].len], b"first");
+            assert_eq!(meta[0].addr, socket.peer);
+            std::future::poll_fn(|cx| {
+                assert!(socket
+                    .poll_recv(cx, &mut [IoSliceMut::new(&mut buf)], &mut meta)
+                    .is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            sender
+                .send(b"second".to_vec())
+                .await
+                .expect("route datagram");
+            std::future::poll_fn(|cx| {
+                socket.poll_recv(cx, &mut [IoSliceMut::new(&mut buf)], &mut meta)
+            })
+            .await
+            .expect("queued packet");
+            assert_eq!(&buf[..meta[0].len], b"second");
+            drop(sender);
+            let error = std::future::poll_fn(|cx| {
+                socket.poll_recv(cx, &mut [IoSliceMut::new(&mut buf)], &mut meta)
+            })
+            .await
+            .expect_err("closed queue");
+            assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
         }
     }
 

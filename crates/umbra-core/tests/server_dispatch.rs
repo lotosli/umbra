@@ -66,29 +66,124 @@ async fn scenario_fragmented_clienthello_is_read_as_original_records() {
         .expect("read complete fragmented ClientHello");
 
     assert_eq!(raw, fragmented);
+    let decision = classify_client_hello(
+        raw,
+        DispatchContext {
+            cfg: &fixture.cfg,
+            profile: &fixture.dest_profile,
+            replay: &fixture.replay,
+            now_unix: fixture.now,
+        },
+    )
+    .expect("classify reframed authenticated hello");
+    assert!(matches!(decision, DispatchDecision::Authenticated(_)));
 }
 
 #[tokio::test]
-async fn scenario_read_limits_fail_fast_before_buffer_growth() {
+async fn scenario_read_limits_preserve_prefix_before_buffer_growth() {
     let fixture = authenticated_fixture();
-    let (mut client, mut server) = io::duplex(4096);
-
-    client
-        .write_all(&fixture.client_hello)
-        .await
-        .expect("write ClientHello");
-
-    let err = read_client_hello_raw(
-        &mut server,
+    let raw = assert_read_prefix(
+        &fixture.client_hello,
         HelloReadLimits {
             max_bytes: 16,
             ..HelloReadLimits::default()
         },
+        5,
     )
-    .await
-    .expect_err("oversized ClientHello must fail");
+    .await;
 
-    assert!(matches!(err, CoreError::ClientHelloTooLarge));
+    assert_malformed_fallback(&fixture, raw, &fixture.client_hello[..5]);
+}
+
+#[tokio::test]
+async fn scenario_partial_header_and_body_eof_preserve_every_byte() {
+    let fixture = authenticated_fixture();
+    let record = tls_handshake_record(&[1, 0, 0, 32, 0xaa, 0xbb, 0xcc, 0xdd]);
+    for end in 0..record.len() {
+        let prefix = &record[..end];
+        let raw = assert_read_prefix(prefix, HelloReadLimits::default(), end).await;
+        assert_malformed_fallback(&fixture, raw, prefix);
+    }
+}
+
+#[tokio::test]
+async fn scenario_byte_budget_preserves_partial_next_header() {
+    let fixture = authenticated_fixture();
+    let mut input = tls_handshake_record(&[1, 0]);
+    input.extend_from_slice(&tls_handshake_record(&[0, 32, 0xaa, 0xbb]));
+    for max_bytes in 5..=15 {
+        let prefix_len = if max_bytes < 7 { 5 } else { max_bytes.min(12) };
+        let raw = assert_read_prefix(
+            &input,
+            HelloReadLimits {
+                max_bytes,
+                ..HelloReadLimits::default()
+            },
+            prefix_len,
+        )
+        .await;
+        assert_malformed_fallback(&fixture, raw, &input[..prefix_len]);
+    }
+}
+
+#[tokio::test]
+async fn scenario_record_budget_preserves_complete_records_and_unread_suffix() {
+    let fixture = authenticated_fixture();
+    let mut input = tls_handshake_record(&[1, 0]);
+    input.extend_from_slice(&tls_handshake_record(&[0, 32, 0xaa, 0xbb]));
+    input.extend_from_slice(&tls_handshake_record(&[0xcc, 0xdd]));
+    for (max_records, prefix_len) in [(1, 7), (2, 16)] {
+        let raw = assert_read_prefix(
+            &input,
+            HelloReadLimits {
+                max_records,
+                ..HelloReadLimits::default()
+            },
+            prefix_len,
+        )
+        .await;
+        assert_malformed_fallback(&fixture, raw, &input[..prefix_len]);
+    }
+}
+
+#[tokio::test]
+async fn scenario_oversized_declarations_preserve_consumed_prefix() {
+    let fixture = authenticated_fixture();
+    for (input, prefix_len) in [
+        (vec![0x16, 3, 3, 0xff, 0xff, 1, 2, 3], 5),
+        (tls_handshake_record(&[1, 0xff, 0xff, 0xff, 1, 2, 3]), 12),
+    ] {
+        let raw = assert_read_prefix(&input, HelloReadLimits::default(), prefix_len).await;
+        assert_malformed_fallback(&fixture, raw, &input[..prefix_len]);
+    }
+}
+
+#[tokio::test]
+async fn scenario_invalid_read_limits_do_not_consume_input() {
+    for limits in [
+        HelloReadLimits {
+            max_bytes: 4,
+            ..HelloReadLimits::default()
+        },
+        HelloReadLimits {
+            max_records: 0,
+            ..HelloReadLimits::default()
+        },
+    ] {
+        let (mut client, mut server) = io::duplex(64);
+        client.write_all(b"untouched").await.expect("write input");
+        client.shutdown().await.expect("half-close client");
+        let err = read_client_hello_raw(&mut server, limits)
+            .await
+            .expect_err("invalid limits must fail");
+        assert!(matches!(err, CoreError::InvalidConfig(_)));
+        let mut remaining = Vec::new();
+        server
+            .read_to_end(&mut remaining)
+            .await
+            .expect("read input");
+        assert_eq!(remaining, b"untouched");
+    }
 }
 
 #[test]
@@ -268,6 +363,91 @@ async fn scenario_dispatch_fallback_relays_after_forwarded_clienthello() {
     assert_eq!(response, b"response");
 }
 
+#[tokio::test]
+async fn scenario_partial_eof_forwards_exact_prefix_and_half_close_response() {
+    let fixture = authenticated_fixture();
+    let record = tls_handshake_record(&[1, 0, 0, 32, 0xaa, 0xbb, 0xcc, 0xdd]);
+    for end in 0..record.len() {
+        assert_fallback_exchange(&fixture, &record[..end], end).await;
+    }
+}
+
+#[tokio::test]
+async fn scenario_exhausted_limits_forward_prefix_and_suffix_before_response() {
+    let mut fixture = authenticated_fixture();
+    let mut input = tls_handshake_record(&[1, 0]);
+    input.extend_from_slice(&tls_handshake_record(&[0, 32, 0xaa, 0xbb]));
+    input.extend_from_slice(b"unread suffix");
+    for (limits, prefix_len) in [
+        (
+            HelloReadLimits {
+                max_bytes: 5,
+                ..HelloReadLimits::default()
+            },
+            5,
+        ),
+        (
+            HelloReadLimits {
+                max_bytes: 7,
+                ..HelloReadLimits::default()
+            },
+            7,
+        ),
+        (
+            HelloReadLimits {
+                max_bytes: 9,
+                ..HelloReadLimits::default()
+            },
+            9,
+        ),
+        (
+            HelloReadLimits {
+                max_records: 1,
+                ..HelloReadLimits::default()
+            },
+            7,
+        ),
+    ] {
+        fixture.cfg.hello_limits = limits;
+        assert_fallback_exchange(&fixture, &input, prefix_len).await;
+    }
+    fixture.cfg.hello_limits = HelloReadLimits::default();
+    let mut oversized = tls_handshake_record(&[1, 0xff, 0xff, 0xff]);
+    oversized.extend_from_slice(b"unread suffix");
+    assert_fallback_exchange(&fixture, &oversized, 9).await;
+}
+
+#[tokio::test]
+async fn scenario_reader_retains_complete_record_without_reading_next_record() {
+    let mut input = tls_handshake_record(&[1, 0, 0, 0, 0xaa, 0xbb]);
+    let record_len = input.len();
+    input.extend_from_slice(&tls_handshake_record(&[2, 0, 0, 0]));
+    assert_read_prefix(&input, HelloReadLimits::default(), record_len).await;
+}
+
+#[tokio::test]
+async fn scenario_useless_records_respect_existing_budget() {
+    let mut input = vec![0x14, 3, 3, 0, 1, 1];
+    input.extend_from_slice(&tls_handshake_record(&[1, 0, 0, 0]));
+    assert_read_prefix(&input, HelloReadLimits::default(), 6).await;
+    assert_read_prefix(
+        &input,
+        HelloReadLimits {
+            max_useless_records: 1,
+            ..HelloReadLimits::default()
+        },
+        input.len(),
+    )
+    .await;
+    let not_client_hello = tls_handshake_record(&[2, 0, 0, 0]);
+    assert_read_prefix(
+        &not_client_hello,
+        HelloReadLimits::default(),
+        not_client_hello.len(),
+    )
+    .await;
+}
+
 #[test]
 fn scenario_invalid_dispatch_config_fails_fast() {
     let mut fixture = authenticated_fixture();
@@ -362,6 +542,98 @@ async fn scenario_relay_prefixed_copies_prefix_and_both_directions() {
         .await
         .expect("read destination bytes");
     assert_eq!(response, b"dest");
+}
+
+async fn assert_read_prefix(input: &[u8], limits: HelloReadLimits, prefix_len: usize) -> Vec<u8> {
+    let (mut client, mut server) = io::duplex(input.len().max(1));
+    client.write_all(input).await.expect("write input");
+    client.shutdown().await.expect("half-close client");
+    let raw = timeout(
+        Duration::from_secs(1),
+        read_client_hello_raw(&mut server, limits),
+    )
+    .await
+    .expect("reader finishes")
+    .expect("return consumed prefix");
+    assert_eq!(raw, input[..prefix_len]);
+    assert!(raw.len() <= limits.max_bytes);
+    let mut remaining = Vec::new();
+    server
+        .read_to_end(&mut remaining)
+        .await
+        .expect("read unconsumed suffix");
+    assert_eq!(remaining, input[prefix_len..]);
+    raw
+}
+
+fn assert_malformed_fallback(fixture: &Fixture, raw: Vec<u8>, expected: &[u8]) {
+    let decision = classify_client_hello(
+        raw,
+        DispatchContext {
+            cfg: &fixture.cfg,
+            profile: &fixture.dest_profile,
+            replay: &fixture.replay,
+            now_unix: fixture.now,
+        },
+    )
+    .expect("classify incomplete prefix");
+    let DispatchDecision::Fallback { reason, chello_raw } = decision else {
+        panic!("incomplete hello must fall back");
+    };
+    assert_eq!(reason, FallbackReason::MalformedClientHello);
+    assert_eq!(chello_raw, expected);
+}
+
+async fn assert_fallback_exchange(fixture: &Fixture, input: &[u8], prefix_len: usize) {
+    let (mut client, server) = io::duplex(64);
+    let (dest_stream, mut dest_peer) = io::duplex(64);
+    let dispatch = dispatch_with_connector(
+        server,
+        &fixture.cfg,
+        &fixture.dest_profile,
+        &fixture.replay,
+        fixture.now,
+        move |dest| async move {
+            assert_eq!(dest, "dest.example:443");
+            Ok::<_, std::io::Error>(dest_stream)
+        },
+    );
+    let destination = async {
+        let mut received = Vec::new();
+        dest_peer
+            .read_to_end(&mut received)
+            .await
+            .expect("receive request EOF");
+        assert_eq!(received, input);
+        dest_peer
+            .write_all(b"destination response")
+            .await
+            .expect("reply after request EOF");
+        dest_peer.shutdown().await.expect("half-close destination");
+    };
+    let client_exchange = async {
+        client.write_all(input).await.expect("write request");
+        client.shutdown().await.expect("half-close request");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("receive response after half-close");
+        assert_eq!(response, b"destination response");
+    };
+    let (outcome, (), ()) = timeout(Duration::from_secs(1), async {
+        tokio::join!(dispatch, destination, client_exchange)
+    })
+    .await
+    .expect("fallback preserves half-close and completes");
+    assert_eq!(
+        outcome.expect("transparent forwarding"),
+        DispatchOutcome::Forwarded {
+            reason: FallbackReason::MalformedClientHello,
+            client_to_dest: u64::try_from(input.len() - prefix_len).expect("length fits"),
+            dest_to_client: u64::try_from(b"destination response".len()).expect("length fits"),
+        }
+    );
 }
 
 struct Fixture {

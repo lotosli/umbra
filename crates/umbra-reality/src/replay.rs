@@ -1,13 +1,10 @@
 //! Bounded replay cache for REALITY tokens.
 
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Mutex,
-};
+use std::{collections::HashMap, sync::Mutex};
 
 use crate::RealityError;
 
-/// Capacity and TTL bounded replay cache.
+/// Capacity-bounded replay cache retaining keys through inclusive expiry deadlines.
 pub struct ReplayCache {
     capacity: usize,
     ttl_secs: u64,
@@ -17,11 +14,13 @@ pub struct ReplayCache {
 #[derive(Default)]
 struct ReplayState {
     entries: HashMap<[u8; 32], u64>,
-    order: VecDeque<([u8; 32], u64)>,
 }
 
 impl ReplayCache {
-    /// Create a replay cache with a fixed capacity and TTL in seconds.
+    /// Create a replay cache with a fixed capacity and default TTL in seconds.
+    ///
+    /// The TTL applies only to [`Self::insert_or_reject`]. Authentication uses
+    /// [`Self::insert_or_reject_until`] with the validated token's own deadline.
     pub fn new(capacity: usize, ttl_secs: u64) -> Result<Self, RealityError> {
         if capacity == 0 {
             return Err(RealityError::InvalidReplayCapacity);
@@ -33,40 +32,59 @@ impl ReplayCache {
         })
     }
 
-    /// Insert a key or return replay if it is still active.
+    /// Insert a key with an inclusive expiry of `now + ttl_secs`.
+    ///
+    /// Returns [`RealityError::ReplayExpiryOverflow`] if that deadline overflows.
+    /// Token authentication must instead use [`Self::insert_or_reject_until`]
+    /// with a deadline derived from the validated token timestamp.
     pub fn insert_or_reject(&self, key: [u8; 32], now: u64) -> Result<(), RealityError> {
+        let expires_at = now
+            .checked_add(self.ttl_secs)
+            .ok_or(RealityError::ReplayExpiryOverflow)?;
+        self.insert_or_reject_until(key, now, expires_at)
+    }
+
+    /// Atomically reject a duplicate or insert a key through `expires_at` inclusive.
+    ///
+    /// Expired deadlines are rejected. Cleanup, duplicate checking, capacity
+    /// checking, and insertion share one lock. A full cache returns
+    /// [`RealityError::ReplayCacheFull`] without evicting any live entries.
+    /// The caller must still validate token freshness independently of the cache.
+    pub fn insert_or_reject_until(
+        &self,
+        key: [u8; 32],
+        now: u64,
+        expires_at: u64,
+    ) -> Result<(), RealityError> {
+        if expires_at < now {
+            return Err(RealityError::Expired);
+        }
         let mut state = self
             .state
             .lock()
             .map_err(|_| RealityError::ReplayCachePoisoned)?;
-        cleanup_locked(&mut state, now, self.ttl_secs);
+        cleanup_locked(&mut state, now);
         if state.entries.contains_key(&key) {
             return Err(RealityError::Replay);
         }
-        state.entries.insert(key, now);
-        state.order.push_back((key, now));
-        while state.entries.len() > self.capacity {
-            let Some((old_key, old_seen)) = state.order.pop_front() else {
-                break;
-            };
-            if state.entries.get(&old_key) == Some(&old_seen) {
-                state.entries.remove(&old_key);
-            }
+        if state.entries.len() >= self.capacity {
+            return Err(RealityError::ReplayCacheFull);
         }
+        state.entries.insert(key, expires_at);
         Ok(())
     }
 
-    /// Remove expired entries and return the number of active entries.
+    /// Remove entries whose inclusive expiry is before `now` and return the remaining count.
     pub fn cleanup(&self, now: u64) -> Result<usize, RealityError> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| RealityError::ReplayCachePoisoned)?;
-        cleanup_locked(&mut state, now, self.ttl_secs);
+        cleanup_locked(&mut state, now);
         Ok(state.entries.len())
     }
 
-    /// Return active entry count.
+    /// Return the stored entry count without removing expired entries.
     pub fn len(&self) -> Result<usize, RealityError> {
         let state = self
             .state
@@ -92,16 +110,10 @@ impl core::fmt::Debug for ReplayCache {
     }
 }
 
-fn cleanup_locked(state: &mut ReplayState, now: u64, ttl_secs: u64) {
-    while let Some((key, seen_at)) = state.order.front().copied() {
-        if now.saturating_sub(seen_at) <= ttl_secs {
-            break;
-        }
-        state.order.pop_front();
-        if state.entries.get(&key) == Some(&seen_at) {
-            state.entries.remove(&key);
-        }
-    }
+fn cleanup_locked(state: &mut ReplayState, now: u64) {
+    // Deadlines need not follow insertion order. Scan the capacity-bounded map
+    // rather than keeping an insertion queue that could hide expired entries.
+    state.entries.retain(|_, expires_at| now <= *expires_at);
 }
 
 #[cfg(test)]
@@ -119,18 +131,23 @@ mod tests {
         assert_eq!(cache.len().expect("len"), 1);
 
         cache.insert_or_reject([2_u8; 32], 11).expect("second");
-        cache
-            .insert_or_reject([3_u8; 32], 12)
-            .expect("capacity evicts oldest");
+        assert_eq!(
+            cache.insert_or_reject([3_u8; 32], 12),
+            Err(RealityError::ReplayCacheFull)
+        );
         assert_eq!(cache.len().expect("bounded len"), 2);
-        assert!(cache.insert_or_reject([2_u8; 32], 12).is_err());
+        assert_eq!(
+            cache.insert_or_reject([1_u8; 32], 12),
+            Err(RealityError::Replay)
+        );
 
         let debug = format!("{cache:?}");
         assert!(debug.contains("ReplayCache"));
         assert!(debug.contains("len"));
         assert!(!debug.contains("010101"));
 
-        assert_eq!(cache.cleanup(17).expect("cleanup"), 1);
-        assert_eq!(cache.cleanup(18).expect("cleanup all"), 0);
+        assert_eq!(cache.cleanup(15).expect("inclusive expiry"), 2);
+        assert_eq!(cache.cleanup(16).expect("cleanup"), 1);
+        assert_eq!(cache.cleanup(17).expect("cleanup all"), 0);
     }
 }

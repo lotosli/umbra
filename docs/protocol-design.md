@@ -148,6 +148,13 @@ flowchart LR
 - 传输哈希 `Transcript-Hash`；`HKDF-Expand-Label` / `Derive-Secret`。
 - `Early=HKDF-Extract(0,PSK|0)` → `Handshake=HKDF-Extract(Derive-Secret(Early,"derived",""),ECDHE)` →
   `c/s hs traffic`、`Master`、`c/s ap traffic`、`exporter`、`resumption`。
+- TCP 与 QUIC 的 `c/s ap traffic`、`exp master` 使用截止 **Server Finished** 的 transcript；
+  `res master` 使用截止 **Client Finished** 的 transcript，API 必须区分这两个边界。
+- ClientHello 的 `compress_certificate` 使用 RFC 8879 的 uint8 算法列表长度；Brotli 算法 2 编码为
+  `02 00 02`。解压须同时限制压缩和解压长度，transcript 保留原始 CompressedCertificate 消息。
+- 握手消息须有界跨记录重组，并接受合法兼容 CCS；不能假定服务端固定发送两条记录。
+  验证 ServerHello 版本、零压缩、session-id 回显、扩展唯一性及参数确实被 offer；不支持的 HRR 明确拒绝。
+  所有广告的 TLS 1.3 可用签名算法须由成熟实现验证，TLS 1.2 专用算法不能用于 TLS 1.3 CertificateVerify。
 - ECDHE：X25519（认证复用此份）+ 可选 X25519MLKEM768（组件 I 混合共享秘密）。
 - 记录保护：`TLS_AES_128_GCM_SHA256` / `TLS_AES_256_GCM_SHA384` / `TLS_CHACHA20_POLY1305_SHA256`
   （RustCrypto `aes-gcm`/`chacha20poly1305`）；每方向 `key/iv` + 序号 nonce。
@@ -206,7 +213,8 @@ impl Tls13Server {
    `nonce = HKDF-SHA256(shared, salt="umbra-reality-v1", info="nonce")[..12]`。
 3. 明文 `P`（16B）= `ver(1)=0x01 || flags(1) || ts(u32 BE,4) || short_id(8) || reserved(2)=0`。
 4. `ct||tag = AES-128-GCM-Seal(auth_key, nonce, P, aad = HELLO0)`，其中 **`HELLO0` = 整条 ClientHello
-   握手消息、但把 `legacy_session_id` 的 32B 全部置零**（绑定全握手，防跨 hello 挪用）。
+   握手消息、但把 `legacy_session_id` 的 32B 全部置零**，不含任何 TLS record header。
+   同一握手消息改变 TLS 记录分片方式不得改变 AAD（绑定全握手，防跨 hello 挪用）。
 5. `session_id (32B) = ct(16) || tag(16)`；写回 ClientHello 的 `legacy_session_id`（在序列化+算 transcript 前）。
 
 ### B.3 服务端校验（响应前，任一失败 → 组件 C 转发 dest）
@@ -215,9 +223,12 @@ impl Tls13Server {
 3. `shared = X25519(S_priv, C_pub)`；派生 `auth_key,nonce`。
 4. `P = AES-128-GCM-Open(auth_key, nonce, ct=session_id[..16], tag=session_id[16..], aad=HELLO0)`；
    GCM 校验失败 → 转发。
-5. 校验 `ver`、`reserved==0`、`|now-ts|≤max_time_diff`、`short_id∈` 集合、`C_pub`（或 session_id）**不在**重放缓存
-   （LRU，TTL=`max_time_diff+60s`），随后插入。
+5. 校验 `ver`、`reserved==0`、`|now-ts|≤max_time_diff`、`short_id∈` 集合和重放缓存；检查与插入必须原子完成。
+   缓存保留至 `ts+max_time_diff`（含边界），不能从首次接收时只计一个时间窗；到期运算须检查溢出。
+   容量满时拒绝新本地认证并转发 dest，不得驱逐仍有效的条目；清理缓存后仍须验证令牌时间戳。
 6. 通过 → 认证成功，`shared` 传给组件 E。
+
+修正 HELLO0 与 TLS 应用密钥边界后，两端须同步升级；认证失败不得重试旧的非标准 AAD 或密钥派生。
 
 ### B.4 安全性
 - 只有知道 `S_pub` 者能算 `shared` → 未授权者无法伪造；`C_pub` 逐连接新鲜 → 逐连接前向保密的认证密钥；
@@ -230,8 +241,9 @@ impl Tls13Server {
 
 **响应前**决定：冒充握手 or 原样转发。是探测抵抗的核心。
 
-1. `read_client_hello_raw(conn)`：读满一个完整 ClientHello 的原始字节 `chello_raw`（处理跨多 TLS 记录的少见分片；
-   QUIC 路径见组件 G）。
+1. `read_client_hello_raw(conn)`：有界读取完整 ClientHello 的原始字节 `chello_raw`，处理跨多 TLS 记录的分片。
+   分类有总期限和字节/记录上限；半个 header/body、到期、超限或 EOF 必须保留已读前缀并交给 dest 转发，不能本地早断。
+   只禁止分类前的本地 TLS 响应，不禁止转发后的真实 dest 响应；QUIC 路径见组件 G。
 2. 解析 `SNI, C_pub, session_id`（自研 parser 或 `tls-parser`）。
 3. 组件 B 校验：
    - **成功** → `leaf = forge_cert(shared, SNI, dest_profile)`（组件 E）；`Tls13Server::accept(chello_raw, leaf, profile)`
@@ -251,10 +263,12 @@ pub struct PrefixedStream<S>{/* 先回放 prefix 再透传 inner */}
 
 **目的**：让“冒充握手”与真 dest 尽可能一致（ServerHello 参数、证书字段、时序、OCSP）。
 
-- 启动时 + 周期刷新：以自研 TLS 客户端（或标准客户端）连一次 `dest`，采集 `DestProfile`：
+- 启动时必须取得一次经验证的 `DestProfile`；`prebuild=true` 另启周期刷新，`false` 仅禁止周期刷新，不允许默认假档案启动。
+  首次探测失败则启动失败；周期刷新原子替换，失败保留上一份有效档案。采集内容：
   - 协商的 TLS 版本、**密码套件**、**key_share group**、**ALPN**、EncryptedExtensions 中出现的扩展；
   - 真实**叶子证书**（subject/issuer/validity/SAN/SCT）、是否 **OCSP stapling**、签名方案；
-  - **到首字节 RTT**（供组件 K 时序对齐）。
+  - 从开始连接 dest 到首个 TLS 响应的间隔，不计后续 HTTP 等待（供组件 K 时序对齐）。
+- DNS、连接、TLS、HTTP 元数据共用有限总期限；同步 I/O 不得阻塞 async executor，超时后仍运行的阻塞任务也占用有界并发额度。
 - 组件 E 依 `DestProfile` 生成 ServerHello 与伪造叶子证书的**可见字段**（内容 TLS 1.3 已加密，主要防高级关联）。
 
 ```rust
@@ -280,9 +294,12 @@ pub async fn probe_dest(dest:&str) -> anyhow::Result<DestProfile>;
 ### E.2 客户端证书校验（组件 A 的 `CertVerify`）
 客户端已知 `shared`（保留了 `C_priv`）与自己的 `session_id`：
 1. 派生 `cert_key`，校验 `cert_mac`（常量时间）**且** ML-DSA-65 验签（`mldsa_pk`）：
-   两者皆过 → **UmbraTrusted**（连接可用）。
-2. 收到**真实站点证书**（无我方扩展/校验不符）→ 被转发或 MITM → **RealSite** → 进入组件 F 的爬虫模式。
-3. TLS 本身无效 → **Invalid** → 正常 TLS alert 断开。
+   两者皆过且 CertificateVerify 证明私钥持有 → **UmbraTrusted**（唯一允许代理业务的分类）；不要求伪证书具有公有 CA 签名。
+2. 无有效我方绑定时，必须独立验证证书链、配置的信任根、预期域名、有效期和 CertificateVerify，全部通过才为
+   **RealSite**。TCP 仅以支持的协商 HTTP 协议访问爬虫路径，不发送代理目标或业务数据；不支持的 ALPN 不发送错误格式请求。
+   QUIC 的 RealSite 在本地拒绝代理建立，不发布业务密钥、连接就绪、SOCKS 成功或目标前缀，也不自动降级 TCP 或宣称 HTTP/3 爬虫。
+3. 任一所需校验失败 → **Invalid** → 正常 TLS 错误路径断开。
+4. 证书签名私钥、绑定密钥、流量密钥与探测 key-log 必须采用零化所有权和脱敏 Debug；配置解析的错误及嵌套原因不得保留秘密值或 TOML 源摘录。
 
 > 抗 MITM：逐连接 MITM 不知 `S_priv` → 算不出 `shared` → 无法伪造 `cert_mac` → 被判为 RealSite/Invalid。
 
@@ -303,7 +320,11 @@ cmd: 0x01 SYN(payload=目标地址) | 0x02 SYN_ACK | 0x03 DATA | 0x04 WINDOW_UPD
 目标地址(SYN.payload) = atyp(1) || addr(4|1+n|16) || port(2)   // 0x01 v4 / 0x03 域名 / 0x04 v6
 ```
 - 每流独立**流控窗口**（初始如 256KiB，WINDOW_UPDATE 递增）；`DATA` 分块 ≤16384。
-- 客户端 SOCKS5 每连接 → 一个 SYN 开流；服务端按 `atyp` connect 目标后回 SYN_ACK。
+- 客户端 SOCKS5 每连接 → 一个 SYN 开流；兼容配置复用健康外层连接，服务端并发 connect 各目标，成功后才回 SYN_ACK。
+- 会话持有跨取消的半帧读取状态与串行写入状态；开流/等待发送窗口不得吞掉其他事件。部分写入必须完成原帧或关闭连接，不能交错帧。
+- 接收信用由有界缓存预留，只在应用实际消费后返还；排入队列不等于消费。检查窗口溢出、零增量及未知流控制帧，限制流数和总缓存。
+- FIN 只关闭一个方向并排在既有 DATA 之后；RST 唤醒该流全部等待者，关闭流释放状态，不能结束其他流。
+- 外层失败不能自动重放业务；后续新请求可建立替代连接。stream-zero UDP 关联保持独占外层，不与共享 CONNECT 会话混用。
 
 ### F.2 自适应填充 scheme（抗 TLS-in-TLS，默认开启）
 - **填充策略串**（可配置，形如 anytls 的 padding scheme）：定义“第 k 个写事件应把本次记录整形到的目标长度分布/
@@ -374,16 +395,12 @@ pub async fn quic_dispatch(dgram_sock:UdpSocket, cfg:&ServerCfg, prof:&DestProfi
 
 ## 组件 H：Geneva 式 TCP 分段（抗 RST 注入）
 
-**目的**：在 TCP 路径上，通过分段/乱序/TTL 技巧使 GFW 的有状态 DPI 与 RST 注入失效（TCB 去同步）。
+**当前支持范围**：`off` 普通发送与 `segment` 有序分次写入；不宣称已实现或实测高级 Geneva 发包策略。
 
-- **策略引擎**：内置一组经实测有效的策略（Geneva 风格 DSL 表达），对**握手报文**（尤其 ClientHello 所在段）应用：
-  - **分段**：把 ClientHello 切成多个 TCP 段（可在敏感字段边界切分），迫使 GFW 无法一次性重组匹配；
-  - **TTL 诱饵段**：发送 TTL 很小的“诱饵”段（只到 GFW、不到服务器）扰乱其 TCB；
-  - **乱序/重叠**：乱序发送、制造序列号重叠，使 GFW 与服务器对流状态理解不一致。
-- **实现**：需较低层的发包控制。Rust 侧：`socket2` 设置 `IP_TTL`/`TCP_NODELAY` 与**手动切分 `write`** 可做基础分段；
-  高级策略（乱序/重叠/伪段）需**原始套接字**（`libc`/`pnet`，Linux 需 `CAP_NET_RAW`）或本机 `nftables/iptables`
-  配合。策略应**可配置、默认保守**（仅分段这类低风险手段），并具备“失败即回退到普通发送”的健壮性。
-- **与 QUIC 的关系**：QUIC(UDP) 天然规避了 TCP RST 注入；Geneva 组件是 TCP 路径的等效防线。二者按可用性择一。
+- `segment` 保证拼接后的 ClientHello 字节与原文一致，不保证每次 write 对应独立 TCP 包，也不据此保证抗干扰效果。
+- 没有发送实现的 Geneva DSL 必须在配置校验时明确拒绝，不能静默等同于 `off`；本次修订不引入特权原始套接字。
+- 只有尚未发送任何字节的可恢复分段准备错误可以回退普通发送。部分写入后出错返回传输错误，不能从头重发导致前缀重复。
+- QUIC 使用独立 UDP 路径，不把两种传输或其指纹的验证结果混为一谈。
 
 ```rust
 // transport/geneva.rs
@@ -433,12 +450,11 @@ pub fn ja3_ja4(chello:&[u8])->(String,String);          // 自检用
 
 ## 组件 K：探测抵抗加固（时序一致 / 无用记录 / 无限速）
 
-- **时序对齐**：认证成功的“冒充握手”本地完成会比“转发 dest”快 → 形成 RTT 侧信道。用组件 D 测得的 `dest.rtt`
-  对冒充路径的**首个 ServerHello 之前**加相应延迟，使两条路径到首字节时延分布一致。
-- **无用记录检测（maxUselessRecords）**：对 ChangeCipherSpec 等无载荷记录的洪泛设上限，超限即按 dest 转发/断开，
-  防基于此的探测。
-- **回落不限速、不早断**：转发 dest 的连接**绝不**限速或在收到垃圾时立刻断开（那本身是特征）；行为与真站一致。
-- **爬虫模式**：客户端遇 RealSite 时像浏览器访问 `spider_path` 后正常关闭，避免可区分的异常断开。
+- **时序对齐**：用组件 D 的连接至首个 TLS 响应间隔，在分类决策后的本地准备时间中扣减，
+  首个 ServerHello 前仅等待剩余的非负间隔；本地已经更慢时不再延迟，不保证未经测量的不可区分性。
+- **无用记录检测（maxUselessRecords）**：超过分类限额即转发 dest；可配置的未认证早断动作须在启动前拒绝。
+- **回落不限速、不早断**：转发 dest 的连接不施加 Umbra 特有限速或垃圾触发早断；请求半关闭仍保留返回响应。
+- **爬虫模式**：TCP 客户端仅在完整证书验证后，以支持的 ALPN 协议访问 `spider_path`；QUIC RealSite 本地拒绝代理。
 - **端口/IP 轮换**：多监听端口、备用 IP，降低残余审查影响；QUIC 与 TCP 双路可切换。
 
 ---
@@ -466,9 +482,9 @@ dest          = "www.microsoft.com:443"     # 借用站点（见 §20 选择标�
 server_names  = ["www.microsoft.com"]
 max_time_diff = "120s"
 mldsa_seed    = "BASE64(32B)"           # 组件I：抗量子证书签名种子
-prebuild      = true                    # 组件D：启动探测并镜像 dest
+prebuild      = true                    # 组件D：启用周期刷新；false 仍需启动探测
 padding_scheme= "default"               # 组件F 自适应填充策略
-tcp_evasion   = "segment"               # 组件H：off | segment | <strategy dsl>
+tcp_evasion   = "segment"               # 组件H：off | segment；Geneva DSL 暂不支持
 ```
 **client.toml**
 ```toml

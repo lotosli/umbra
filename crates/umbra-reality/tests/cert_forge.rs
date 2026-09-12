@@ -22,7 +22,7 @@ fn scenario_san_mirrors_server_name_and_valid_binding_verifies() {
     let (_, cert) = X509Certificate::from_der(&forged.tls_cert.leaf_der).expect("parse leaf");
 
     assert!(!forged.tls_cert.chain_der.is_empty());
-    assert!(!forged.leaf_private_key_der.is_empty());
+    assert!(!forged.tls_cert.certificate_verify_key_der.is_empty());
     assert_eq!(cert.validity().not_before.timestamp(), 1_700_000_000);
     assert_eq!(cert.validity().not_after.timestamp(), 1_800_000_000);
     assert!(cert.subject().to_string().contains("CN=front.example"));

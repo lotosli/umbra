@@ -161,10 +161,17 @@ async fn scenario_padding_payload_is_not_delivered() {
         .encode()
         .expect("encode data");
     writer.write_all(&padding).await.expect("write padding");
+    let target = TargetAddr::domain("padding.example", 443).expect("target");
+    let syn = MuxFrame::new(MuxCommand::Syn, 9, target.encode().expect("target bytes"))
+        .expect("SYN")
+        .encode()
+        .expect("encode SYN");
+    writer.write_all(&syn).await.expect("write SYN");
     writer.write_all(&data).await.expect("write data");
 
     let scheme = parse_pad_scheme("none").expect("none scheme");
     let mut session = MuxSession::server(reader, &scheme).expect("server session");
+    session.accept().await.expect("accept stream");
     let event = session.receive_next().await.expect("receive event");
 
     assert_eq!(
@@ -198,7 +205,7 @@ async fn scenario_data_waits_for_window_update() {
     let (client_io, server_io) = io::duplex(4096);
     let scheme = parse_pad_scheme("none").expect("none scheme");
     let settings = MuxSettings {
-        initial_window: 0,
+        initial_window: 5,
         ..MuxSettings::default()
     };
     let mut client = MuxSession::with_settings(
@@ -220,6 +227,17 @@ async fn scenario_data_waits_for_window_update() {
     let mut stream = stream.expect("client stream");
     accepted.expect("server stream");
     let stream_id = stream.stream_id;
+    client
+        .send_data_wait_window(&mut stream, b"first")
+        .await
+        .expect("exhaust initial credit");
+    assert_eq!(
+        server.receive_next().await.expect("consume first DATA"),
+        MuxEvent::Data {
+            stream_id,
+            payload: b"first".to_vec()
+        }
+    );
 
     let mut send = Box::pin(client.send_data_wait_window(&mut stream, b"hello"));
     assert!(

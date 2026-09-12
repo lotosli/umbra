@@ -13,6 +13,7 @@
 pub mod config;
 pub mod dispatch;
 pub mod error;
+pub(crate) mod mux_io;
 pub mod prefixed;
 pub mod probe;
 pub(crate) mod quic_crypto;

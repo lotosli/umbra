@@ -9,5 +9,8 @@ pub mod grease;
 pub mod ja3;
 pub mod profile;
 
-pub use ja3::{ja3_ja4, ClientHelloFingerprint};
-pub use profile::{load_profile, FingerprintError, FingerprintProfile, QuicFingerprint};
+pub use ja3::{ja3_ja4, ja3_ja4_with_transport, ClientHelloFingerprint, Ja4Transport};
+pub use profile::{
+    load_profile, CaptureEvidence, EvidenceStatus, FingerprintError, FingerprintProfile,
+    QuicFingerprint,
+};

@@ -177,7 +177,7 @@ fn scenario_client_all_overrides_apply() {
             socks_listen: Some("127.0.0.1:2080".to_owned()),
             mux: Some(false),
             padding_scheme: Some("default".to_owned()),
-            tcp_evasion: Some("geneva:fragment{tcp:flags:PA}".to_owned()),
+            tcp_evasion: Some("off".to_owned()),
         },
     )
     .expect("client overrides load");
@@ -1140,11 +1140,15 @@ async fn scenario_server_runtime_accepts_and_dispatches_fallback() {
     .expect("runtime binds");
     let addr = runtime.local_addr().expect("runtime addr");
     let (dest_stream, mut dest_peer) = io::duplex(4096);
+    let mut dest_stream = Some(dest_stream);
     let accept_task = tokio::spawn(async move {
         runtime
-            .accept_one_with_connector(
-                move |_dest| async move { Ok::<_, std::io::Error>(dest_stream) },
-            )
+            .accept_one_with_connector(move |_dest| {
+                let stream = dest_stream.take().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotConnected, "connector reused")
+                });
+                async move { stream }
+            })
             .await
     });
     let mut client = tokio::net::TcpStream::connect(addr)
@@ -1942,7 +1946,7 @@ fn scenario_probe_policy_validation_rejects_distinguishable_fallback() {
         action: UselessRecordAction::Close,
     }
     .validate()
-    .is_ok());
+    .is_err());
     assert!(UselessRecordPolicy {
         max_useless_records: 0,
         action: UselessRecordAction::Close,
@@ -2079,19 +2083,31 @@ tcp_evasion = "off"
 }
 
 #[tokio::test]
-async fn scenario_client_runtime_accepts_concurrent_socks_sessions() {
-    let outer_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind outer listener");
-    let outer_addr = outer_listener.local_addr().expect("outer addr");
-    let cfg = ClientCfg::from_toml_str_with_overrides(
-        &client_toml(),
-        ClientConfigOverrides {
-            server: Some(outer_addr.to_string()),
-            ..ClientConfigOverrides::default()
-        },
+async fn scenario_concurrent_socks_requests_share_one_mux_session() {
+    let server_key = x25519::generate_keypair();
+    let mldsa_seed = [0x74_u8; 32];
+    let mldsa = mldsa_keygen_from_seed(&mldsa_seed);
+    let server = ServerRuntime::bind_with_profile(
+        quic_runtime_server_cfg(&server_key, &mldsa_seed),
+        sample_dest_profile(),
+        ProbeResistancePolicy::default(),
     )
-    .expect("client config loads");
+    .await
+    .expect("server runtime binds");
+    let server_addr = server.local_addr().expect("server addr");
+    let (server_stop, server_stopped) = oneshot::channel();
+    let server_task = tokio::spawn(async move {
+        Box::pin(server.run_until_shutdown(async {
+            let _ = server_stopped.await;
+        }))
+        .await
+    });
+
+    let outer_accepts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let proxy_addr = spawn_counting_tcp_proxy(server_addr, Arc::clone(&outer_accepts)).await;
+    let target_addr = spawn_multi_ping_pong_target().await;
+
+    let cfg = tcp_runtime_client_cfg(proxy_addr, &server_key.public, &mldsa.verifying_key);
     let runtime = ClientRuntime::bind(cfg)
         .await
         .expect("client runtime binds");
@@ -2104,42 +2120,100 @@ async fn scenario_client_runtime_accepts_concurrent_socks_sessions() {
         .await
     });
 
-    let first_socks = open_socks_connect(socks_addr, "first.example").await;
-    let (first_outer, _) = timeout(Duration::from_secs(1), outer_listener.accept())
-        .await
-        .expect("first outer connection is not blocked")
-        .expect("accept first outer");
+    let first = socks_ping_pong(socks_addr, target_addr);
+    let second = socks_ping_pong(socks_addr, target_addr);
+    timeout(Duration::from_secs(5), async {
+        tokio::join!(first, second);
+    })
+    .await
+    .expect("concurrent sessions complete");
 
-    let second_socks = open_socks_connect(socks_addr, "second.example").await;
-    let (second_outer, _) = timeout(Duration::from_secs(1), outer_listener.accept())
-        .await
-        .expect("second outer connection is accepted concurrently")
-        .expect("accept second outer");
+    assert_eq!(
+        outer_accepts.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "one authenticated outer serves both SOCKS sessions"
+    );
 
-    drop(first_socks);
-    drop(second_socks);
-    drop(first_outer);
-    drop(second_outer);
     shutdown_tx.send(()).expect("send shutdown");
-    timeout(Duration::from_secs(1), runtime_task)
+    timeout(Duration::from_secs(5), runtime_task)
         .await
-        .expect("runtime shuts down")
-        .expect("join runtime")
-        .expect("runtime returns ok");
+        .expect("client runtime shuts down")
+        .expect("join client runtime")
+        .expect("client runtime returns ok");
+    server_stop.send(()).expect("stop server");
+    timeout(Duration::from_secs(5), server_task)
+        .await
+        .expect("server runtime shuts down")
+        .expect("join server runtime")
+        .expect("server runtime returns ok");
 }
 
-async fn open_socks_connect(
-    socks_addr: std::net::SocketAddr,
-    domain: &str,
-) -> tokio::net::TcpStream {
+async fn socks_ping_pong(socks_addr: std::net::SocketAddr, target: std::net::SocketAddr) {
     let mut socks = tokio::net::TcpStream::connect(socks_addr)
         .await
         .expect("connect socks runtime");
     socks
-        .write_all(&socks_connect_domain(domain, 443, 0x01))
+        .write_all(&socks_connect_domain("127.0.0.1", target.port(), 0x01))
         .await
         .expect("write socks connect");
-    socks
+    let mut replies = [0_u8; 12];
+    socks.read_exact(&mut replies).await.expect("read replies");
+    assert_eq!(&replies[..2], &[0x05, 0x00]);
+    assert_eq!(&replies[2..4], &[0x05, 0x00]);
+    socks.write_all(b"ping").await.expect("write ping");
+    socks.shutdown().await.expect("half-close request");
+    let mut response = [0_u8; 4];
+    socks.read_exact(&mut response).await.expect("read pong");
+    assert_eq!(&response, b"pong");
+}
+
+async fn spawn_counting_tcp_proxy(
+    server_addr: std::net::SocketAddr,
+    accepts: Arc<std::sync::atomic::AtomicUsize>,
+) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy");
+    let proxy_addr = listener.local_addr().expect("proxy addr");
+    tokio::spawn(async move {
+        let mut relays = tokio::task::JoinSet::new();
+        while let Ok((mut inbound, _)) = listener.accept().await {
+            accepts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            relays.spawn(async move {
+                let mut outbound = tokio::net::TcpStream::connect(server_addr)
+                    .await
+                    .expect("proxy connects server");
+                let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+            });
+        }
+    });
+    proxy_addr
+}
+
+async fn spawn_multi_ping_pong_target() -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind target");
+    let target_addr = listener.local_addr().expect("target addr");
+    tokio::spawn(async move {
+        let mut handlers = tokio::task::JoinSet::new();
+        while let Ok((mut stream, _)) = listener.accept().await {
+            handlers.spawn(async move {
+                let mut request = [0_u8; 4];
+                stream
+                    .read_exact(&mut request)
+                    .await
+                    .expect("target reads request");
+                assert_eq!(&request, b"ping");
+                stream
+                    .write_all(b"pong")
+                    .await
+                    .expect("target writes reply");
+                stream.shutdown().await.expect("target closes");
+            });
+        }
+    });
+    target_addr
 }
 
 fn client_toml() -> String {

@@ -38,6 +38,7 @@ const HANDSHAKE_FINISHED: u8 = 0x14;
 const HANDSHAKE_ENCRYPTED_EXTENSIONS: u8 = 0x08;
 
 /// QUIC traffic secrets for one encryption level.
+#[derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct QuicTrafficSecrets {
     /// Negotiated TLS 1.3 cipher suite.
     pub cipher_suite: u16,
@@ -45,6 +46,15 @@ pub struct QuicTrafficSecrets {
     pub client: Vec<u8>,
     /// Traffic secret used for server-to-client packets.
     pub server: Vec<u8>,
+}
+
+impl core::fmt::Debug for QuicTrafficSecrets {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("QuicTrafficSecrets")
+            .field("cipher_suite", &self.cipher_suite)
+            .field("traffic_secrets", &"<redacted>")
+            .finish_non_exhaustive()
+    }
 }
 
 /// Output from completing the client side of a QUIC TLS handshake.
@@ -62,9 +72,10 @@ pub struct QuicClientFinished {
 /// QUIC-facing TLS 1.3 client state.
 pub struct QuicTlsClient {
     cipher_suite: u16,
-    client_private: [u8; 32],
+    client_private: Secret<32>,
     mlkem_decapsulation_key: Option<SecretBytes>,
     client_hello: Vec<u8>,
+    offered: crate::handshake::OfferedParameters,
     shared_secret: Option<SecretBytes>,
     handshake_transcript: Vec<u8>,
     state: QuicClientState,
@@ -85,7 +96,7 @@ impl QuicTlsClient {
                 "QUIC ClientHello legacy_session_id must be empty",
             ));
         }
-        let client_private = params.x25519_priv;
+        let client_private = Secret::new(params.x25519_priv);
         let mlkem_decapsulation_key = params
             .mlkem
             .decapsulation_key
@@ -98,6 +109,7 @@ impl QuicTlsClient {
                 client_private,
                 mlkem_decapsulation_key,
                 client_hello: client_hello.clone(),
+                offered: crate::handshake::OfferedParameters::new(params, &client_hello)?,
                 shared_secret: None,
                 handshake_transcript: Vec::new(),
                 state: QuicClientState::ExpectServerHello,
@@ -115,9 +127,9 @@ impl QuicTlsClient {
             return Err(TlsError::InvalidInput("unexpected QUIC ServerHello"));
         }
         let parsed = parse_server_hello_handshake(server_hello)?;
+        self.offered.validate_server_hello(&parsed)?;
         self.cipher_suite = parsed.cipher_suite;
-        let client_secret = Secret::new(self.client_private);
-        let classic_shared = x25519::agree(&client_secret, &parsed.x25519_key_share)
+        let classic_shared = x25519::agree(&self.client_private, &parsed.x25519_key_share)
             .map_err(|_| TlsError::InvalidInput("bad server key_share"))?;
         let shared = client_negotiated_secret(
             &classic_shared,
@@ -126,12 +138,15 @@ impl QuicTlsClient {
             self.mlkem_decapsulation_key.as_ref(),
         )?;
 
+        self.client_private = Secret::new([0; 32]);
+        self.mlkem_decapsulation_key = None;
         let mut transcript = self.client_hello.clone();
         transcript.extend_from_slice(&parsed.handshake);
         let secrets = derive_tls13_secrets_for_suite(
             parsed.cipher_suite,
             shared.expose_secret(),
             &transcript,
+            &[],
             &[],
         )?;
         self.shared_secret = Some(shared);
@@ -150,6 +165,7 @@ impl QuicTlsClient {
             return Err(TlsError::InvalidInput("unexpected QUIC server flight"));
         }
         let flight = parse_server_flight(server_flight, &self.handshake_transcript)?;
+        self.offered.validate_flight(&flight)?;
         verify_certificate_verify(
             &flight.certificate,
             flight.certificate_verify_scheme,
@@ -170,6 +186,7 @@ impl QuicTlsClient {
             shared.expose_secret(),
             &self.handshake_transcript,
             &[],
+            &[],
         )?;
         let expected = finished_verify_data_for_suite(
             self.cipher_suite,
@@ -186,12 +203,13 @@ impl QuicTlsClient {
             &transcript_hash_for_suite(self.cipher_suite, &flight.transcript_after_finished)?,
         )?;
         let finished = handshake_message(HANDSHAKE_FINISHED, &client_verify)?;
-        let mut transcript_after_client_finished = flight.transcript_after_finished;
+        let mut transcript_after_client_finished = flight.transcript_after_finished.clone();
         transcript_after_client_finished.extend_from_slice(&finished);
         let app_secrets = derive_tls13_secrets_for_suite(
             self.cipher_suite,
             shared.expose_secret(),
             &self.handshake_transcript,
+            &flight.transcript_after_finished,
             &transcript_after_client_finished,
         )?;
         self.state = QuicClientState::Connected;
@@ -252,11 +270,6 @@ impl QuicTlsServer {
         profile: &DestProfile,
         transport_parameters: &[u8],
     ) -> Result<QuicServerAccepted, TlsError> {
-        let ForgedCert {
-            leaf_der,
-            chain_der,
-            certificate_verify_key_der,
-        } = leaf;
         let client_hello = parse_client_hello(client_hello_raw)?;
         if !client_hello.session_id.is_empty() {
             return Err(TlsError::InvalidInput(
@@ -294,6 +307,7 @@ impl QuicTlsServer {
             negotiated.shared_secret.expose_secret(),
             &handshake_transcript,
             &[],
+            &[],
         )?;
 
         let encrypted_extensions = if transport_parameters.is_empty() {
@@ -304,17 +318,18 @@ impl QuicTlsServer {
         } else {
             encrypted_extensions_with_quic_transport_parameters(profile, transport_parameters)?
         };
-        let certificate = certificate_message(&leaf_der, &chain_der)?;
+        let certificate = certificate_message(&leaf.leaf_der, &leaf.chain_der)?;
         let mut transcript_before_certificate_verify = handshake_transcript.clone();
         transcript_before_certificate_verify.extend_from_slice(&encrypted_extensions);
         transcript_before_certificate_verify.extend_from_slice(&certificate);
         let certificate_verify_signature = sign_certificate_verify(
-            &certificate_verify_key_der,
+            &leaf.certificate_verify_key_der,
             &transcript_hash_for_suite(
                 profile.cipher_suite,
                 &transcript_before_certificate_verify,
             )?,
         )?;
+        drop(leaf);
         let certificate_verify = certificate_verify_message(
             SIGNATURE_ECDSA_SECP256R1_SHA256,
             &certificate_verify_signature,
@@ -369,6 +384,7 @@ impl QuicTlsServer {
             self.shared_secret.expose_secret(),
             &self.handshake_transcript,
             &[],
+            &[],
         )?;
         let expected = finished_verify_data_for_suite(
             self.cipher_suite,
@@ -384,6 +400,7 @@ impl QuicTlsServer {
             self.cipher_suite,
             self.shared_secret.expose_secret(),
             &self.handshake_transcript,
+            &self.transcript_before_client_finished,
             &transcript_after_client_finished,
         )?;
         self.state = QuicServerState::Connected;

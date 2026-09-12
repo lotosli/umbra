@@ -1,7 +1,8 @@
 # crypto-primitives Specification
 
 ## Purpose
-TBD - created by archiving change crypto-primitives. Update Purpose after archive.
+Define the standard cryptographic primitives and secret-handling guarantees used by Umbra authentication, TLS key derivation, and encrypted transports, with known-answer tests and constant-time verification.
+
 ## Requirements
 ### Requirement: X25519 Diffie-Hellman
 The crate SHALL provide X25519 keypair generation and ECDH agreement conforming to RFC 7748, and the agreement MUST be symmetric between the two parties.

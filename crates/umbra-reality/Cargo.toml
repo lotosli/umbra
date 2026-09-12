@@ -21,6 +21,7 @@ rustls.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 time.workspace = true
+tokio.workspace = true
 webpki-roots.workspace = true
 x509-parser.workspace = true
 

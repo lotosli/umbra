@@ -27,3 +27,14 @@ The system SHALL merge CLI flag overrides over file-loaded configuration before 
 #### Scenario: CLI listen overrides file
 - **WHEN** a server config file specifies one listen address and the CLI specifies another
 - **THEN** the effective ServerCfg uses the CLI listen address
+
+### Requirement: Secret-safe configuration diagnostics
+Configuration parse and validation errors SHALL omit source excerpts and user-provided values from Display, Debug, nested error causes, and CLI stderr. Diagnostics MAY retain line and column numbers and allowlisted field names.
+
+#### Scenario: Syntax error on a secret-bearing line
+- **WHEN** invalid TOML syntax occurs on a line containing a synthetic private key, seed, or short id
+- **THEN** the returned error and CLI stderr contain none of those values while identifying the parse location
+
+#### Scenario: Type error contains a secret value
+- **WHEN** valid TOML provides a secret-bearing value with the wrong type, including inside an array
+- **THEN** the diagnostic omits that value and any source excerpt

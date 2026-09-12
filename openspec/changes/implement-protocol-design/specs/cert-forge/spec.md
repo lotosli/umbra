@@ -31,3 +31,21 @@ The system SHALL classify certificates without valid Umbra private extensions as
 #### Scenario: Real certificate is not UmbraTrusted
 - **WHEN** a valid destination certificate lacks Umbra extensions
 - **THEN** the verifier returns RealSite
+
+### Requirement: RealSite requires independent certificate validation
+RealSite classification SHALL require a valid certificate chain under configured trust roots, the expected server name, certificate validity dates, and handshake signature verification. UmbraTrusted SHALL require both private bindings and handshake proof of possession; it SHALL NOT require a public CA signature on the forged certificate.
+
+#### Scenario: Untrusted ordinary certificate
+- **WHEN** a certificate lacks valid Umbra bindings and its chain is untrusted under configured roots, expired, or issued for another name
+- **THEN** classification returns Invalid rather than RealSite
+
+#### Scenario: Trusted borrowed-site certificate
+- **WHEN** an ordinary certificate chain verifies for the expected name and current time and its handshake signature is valid
+- **THEN** classification returns RealSite without authorizing proxy traffic
+
+### Requirement: Certificate signing material is zeroized
+Ephemeral private DER, certificate binding keys, retained traffic keys, and probe key-log secrets SHALL use zeroizing storage and redacted diagnostic formatting. Implementations SHALL avoid unnecessary secret copies and explicitly protect required copies.
+
+#### Scenario: Secret holders are formatted or released
+- **WHEN** a secret-bearing certificate or TLS state holder is formatted or its zeroization path runs
+- **THEN** formatting excludes secret bytes and owned secret storage is cleared before release

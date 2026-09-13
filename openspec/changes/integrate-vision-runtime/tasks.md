@@ -37,4 +37,6 @@
 
 - [x] 6.1 Per user steering, omit performance comparisons; prove the optimization through captured raw record equality and stopped outer encryption counters.
 - [x] 6.2 Update usage, protocol review, and implementation task references with the verified mode and paired-endpoint requirements; distinguish raw userspace forwarding from kernel zero-copy and unmeasured deployment results.
-- [ ] 6.3 User explicitly requested version 0.0.7, remote push, and server/Mac deployment: bump release metadata, commit/push through the repository workflow, build both targets, deploy and verify actual Vision operation while preserving available legacy mux service.
+- [x] 6.3 User explicitly requested version 0.0.7, remote push, and server/Mac deployment: bump release metadata, commit/push through the repository workflow, build both targets, deploy and verify actual Vision operation while preserving available legacy mux service.
+
+Release completed: tag `v0.0.7` points to `ab92cc6`; macOS Apple Silicon and Linux x86_64 binaries plus SHA256SUMS are published. Both deployed hashes match those release artifacts. Xray and Hysteria 2 also passed independent HTTPS/exit regression. PR #6 remains open because GitHub jobs could not start under the account billing/spending restriction; no remote CI pass or merge is claimed.

@@ -29,3 +29,9 @@ Fuzz used cargo-fuzz 0.13.2, rustc 1.100.0-nightly (2026-09-12), explicit addres
 Native Apple Silicon and Linux x86_64 release binaries identify as 0.0.7. Both endpoints were deployed, and the Mac’s existing SOCKS entry now uses TCP solo (`mux=false`). Three serial HTTPS requests and six concurrent HTTPS requests succeeded; the expected server exit was verified. Both endpoints logged actual splice completion with `outer_records_unchanged=true`; the Mac had no new error lines during these requests. Restricted deployment backups and detailed live evidence are retained outside the source repository.
 
 This demonstrates removal of the outer cryptographic layer after committed handoff. It does not measure a throughput/CPU speedup, prove inner ciphertext for malicious simulated TLS applications, or claim kernel zero-copy.
+
+## Published release and remote CI limitation
+
+[v0.0.7](https://github.com/lotosli/umbra/releases/tag/v0.0.7) is tagged at implementation commit `ab92cc6`. The two published platform binaries and SHA256SUMS match the deployed Mac/server artifacts. A final SOCKS request passed after deploying the exact committed-source builds; the server configuration hash stayed unchanged. Existing Xray and Hysteria 2 each independently passed HTTPS and expected-exit regression.
+
+[PR #6](https://github.com/lotosli/umbra/pull/6) is intentionally unmerged. GitHub-hosted checks did not start because of the account billing/spending-limit condition, as recorded in [the failed run](https://github.com/lotosli/umbra/actions/runs/34760692973). This is an infrastructure limitation, not a remotely executed test result. Local checks above are the executed validation evidence.

@@ -141,6 +141,8 @@ flowchart LR
   随机注入 GREASE 值；位置/数量须与目标 Chrome 一致。
 - **key_share**：包含 `X25519MLKEM768`（混合，组件 I）与经典 `X25519`。**经典 X25519 的私钥 `C_priv` 由我方
   生成并保留**（组件 B 认证复用）。
+  `0x11ec` 的客户端内容严格为 `ML-KEM-768 公钥(1184) || X25519 公钥(32)`；服务端内容严格为
+  `ML-KEM-768 密文(1088) || X25519 公钥(32)`，见 RFC 10024 §4。0.0.8 修正早期的相反顺序；不兼容旧错序格式。
 - **padding**：把 ClientHello 补到 Chrome 习惯的长度分布（通常 512 的整数附近）。
 
 ### A.2 TLS 1.3 密钥调度与状态机（客户端）
@@ -377,6 +379,8 @@ pub async fn spider(tls:TlsIo, spider_path:&str) -> io::Result<()>; // RealSite 
 
 - **握手复用组件 A 的 TLS 1.3 逻辑**：QUIC 用 TLS 1.3 作为握手（ClientHello 在 Initial 包的 CRYPTO 帧中，
   Initial 密钥由 DCID + 固定 salt 派生 → ClientHello 对 GFW 可见，与 TCP 路径同）。
+  QUIC 的 `supported_versions` 仅包含 TLS 1.3 与有效 GREASE，不得照搬 TCP 档案里的 TLS 1.2；
+  该派生必须在计算 HELLO0/AAD 和认证令牌之前完成，直接 QUIC TLS API 不静默改写已绑定的握手参数。
 - **指纹**：复刻 **Chrome 的 QUIC 指纹**——QUIC 版本、transport parameters 集合与顺序、ALPN=`h3`、
   ClientHello 扩展（含 `quic_transport_parameters`）、SCID 长度、GREASE transport parameter（组件 J 维护）。
 - **REALITY 认证载体（QUIC 与 TCP 不同）**：QUIC 的 TLS ClientHello **不使用** `legacy_session_id`（须为空）。
@@ -420,8 +424,8 @@ pub async fn write_client_hello_evasive(sock:&TcpStream, chello:&[u8], ev:&TcpEv
 
 ## 组件 I：抗量子（X25519MLKEM768 + ML-DSA-65）
 
-- **密钥交换 PQ**：ClientHello 的 key_share 含 `X25519MLKEM768` 混合（Chrome 已默认），最终 ECDHE 秘密为
-  X25519 与 ML-KEM-768 共享秘密的串接/派生（按 draft-kwiatkowski-tls-ecdhe-mlkem，**以抓包/草案为准**）。
+- **密钥交换 PQ**：ClientHello 的 key_share 含 `X25519MLKEM768` 混合（Chrome 已默认），最终混合秘密严格为
+  `ML-KEM-768 共享秘密(32) || X25519 共享秘密(32)`，按 RFC 10024 §4.3 输入 TLS 1.3 密钥调度。
   RustCrypto `ml-kem` 提供 ML-KEM-768。**REALITY 认证仍复用经典 X25519 keyshare 分量**（组件 B）。
 - **证书签名 PQ**：组件 E 的临时证书附加 `ML-DSA-65` 私有扩展签名（RustCrypto `ml-dsa`）。服务端持
   `mldsa_sk`（由 `mldsa_seed` 派生），`mldsa_pk` 配置给客户端；客户端在 UmbraTrusted 判定中**同时**校验
@@ -716,7 +720,7 @@ stateDiagram-v2
 8. anytls / anytls-go（填充 scheme + 多路复用）。
 9. uTLS（refraction-networking/utls）；QUIC 指纹与 Chrome QUIC 行为。
 10. RFC 8446（TLS 1.3）、RFC 8448（测试向量）、RFC 8701（GREASE）、RFC 9000/9001（QUIC/QUIC-TLS）。
-11. draft-kwiatkowski-tls-ecdhe-mlkem（X25519MLKEM768）；FIPS 203（ML-KEM）、FIPS 204（ML-DSA）。
+11. RFC 10024（X25519MLKEM768）；FIPS 203（ML-KEM）、FIPS 204（ML-DSA）。
 12. Rust 生态：`x25519-dalek`、`ml-kem`、`ml-dsa`、`aes-gcm`、`chacha20poly1305`、`hkdf`、`rcgen`、`quiche`/`quinn`、`socket2`、`tls-parser`。
 
 > 说明：文中数值/阈值/扩展顺序/PQ codepoint 等为便于实现给出的近似或当前值；GFW 规则、Chrome 指纹与 PQ 草案

@@ -30,7 +30,7 @@ fuzz_target!(|data: &[u8]| {
     let scid_len = data.get(offset).map_or(0_usize, |len| {
         usize::from(*len).min(data.len().saturating_sub(1))
     });
-    offset = offset.saturating_add(1);
+    offset = offset.saturating_add(1).min(data.len());
     let scid_end = offset.saturating_add(scid_len).min(data.len());
     let scid = data[offset..scid_end].to_vec();
     offset = scid_end;

@@ -143,6 +143,7 @@ async fn server_fixture() -> (ClientCfg, RunningServer) {
     let mut cfg = ClientCfg {
         server: String::new(),
         transport: TransportKind::Tcp,
+        udp_transport: None,
         public_key: key.public,
         short_id: vec![1],
         server_name: "vision.example".to_owned(),

@@ -619,6 +619,13 @@ fn quic_profile(
     }
     let grease_parameter = profile.quic.grease_parameter;
     let cid_len = profile.quic.scid_len;
+    if !profile.supported_versions.contains(&0x0304) {
+        return Err(CoreError::InvalidConfig("QUIC profile must offer TLS 1.3"));
+    }
+    // Normalize before HELLO0/authentication binds the serialized ClientHello.
+    profile
+        .supported_versions
+        .retain(|version| *version == 0x0304 || umbra_fingerprint::grease::is_grease(*version));
     profile.alpn = vec![profile.quic.alpn.clone()];
     if !profile
         .extension_order
@@ -828,8 +835,8 @@ struct HybridMlkemMaterial {
 fn hybrid_mlkem_key_exchange(x25519_public: &[u8; 32]) -> HybridMlkemMaterial {
     let mlkem = mlkem_keygen();
     let mut key_exchange = Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
-    key_exchange.extend_from_slice(x25519_public);
     key_exchange.extend_from_slice(&mlkem.encapsulation_key);
+    key_exchange.extend_from_slice(x25519_public);
     HybridMlkemMaterial {
         key_exchange,
         decapsulation_key: mlkem.decapsulation_key,
@@ -932,6 +939,10 @@ mod tests {
         bad_cid.quic.scid_len = 7;
         assert!(quic_profile(bad_cid).is_err());
 
+        let mut missing_tls13 = profile.clone();
+        missing_tls13.supported_versions = vec![0x0a0a, 0x0303];
+        assert!(quic_profile(missing_tls13).is_err());
+
         let mut missing_extension = profile;
         missing_extension
             .extension_order
@@ -940,6 +951,75 @@ mod tests {
         assert!(patched
             .extension_order
             .contains(&EXT_QUIC_TRANSPORT_PARAMETERS));
+    }
+
+    #[test]
+    fn scenario_quinn_serialized_versions_are_normalized_before_authentication() {
+        use umbra_reality::{auth::open_session_id, replay::ReplayCache};
+        use umbra_tls::{clienthello::GROUP_X25519_MLKEM768, parse::parse_client_hello};
+
+        let mut source = load_profile("chrome-latest").expect("profile loads");
+        source.supported_versions = vec![0x0a0a, 0x0304, 0x0303, 0x1a1a, 0x0302, 0x2a0a];
+        let (profile, grease_parameter, _) = quic_profile(source.clone()).expect("QUIC profile");
+        let server_key = x25519::generate_keypair();
+        let config = UmbraQuicClientConfig {
+            public_key: *server_key.public.as_bytes(),
+            short_id: vec![1, 2],
+            profile,
+            grease_parameter,
+            mldsa_verify: Vec::new(),
+        };
+        let params = quinn_proto::transport_parameters::TransportParameters::read(
+            quinn_proto::Side::Server,
+            &mut io::Cursor::new([]),
+        )
+        .expect("default transport parameters");
+        let mut session =
+            build_client_session(&config, "server.example", &params).expect("client session");
+        let hello = session
+            .outgoing
+            .pop_front()
+            .expect("serialized ClientHello");
+        let fingerprint = umbra_fingerprint::ja3::parse_client_hello(&hello).expect("fingerprint");
+        assert_eq!(fingerprint.supported_versions, vec![0x0a0a, 0x0304, 0x1a1a]);
+        assert_eq!(
+            source.supported_versions,
+            vec![0x0a0a, 0x0304, 0x0303, 0x1a1a, 0x0302, 0x2a0a]
+        );
+
+        let parsed = parse_client_hello(&hello).expect("ClientHello parses");
+        let classic = parsed
+            .x25519_key_share
+            .expect("classic authentication share");
+        let hybrid = parsed
+            .key_shares
+            .iter()
+            .find(|share| share.group == GROUP_X25519_MLKEM768)
+            .expect("hybrid key share");
+        assert_eq!(hybrid.key_exchange.len(), 1184 + 32);
+        assert_eq!(&hybrid.key_exchange[1184..], &classic);
+
+        let shared = x25519::agree(&server_key.private, &classic).expect("server auth secret");
+        let carrier = parsed
+            .quic_transport_parameters
+            .iter()
+            .find(|parameter| parameter.id == grease_parameter)
+            .expect("authentication carrier");
+        let token: [u8; 32] = carrier.value.as_slice().try_into().expect("token length");
+        let aad = quic_hello0(&hello, grease_parameter).expect("authenticated HELLO0");
+        let now = current_unix_time().expect("current time");
+        let replay = ReplayCache::new(64, 120).expect("replay cache");
+        let authenticated = open_session_id(
+            shared.expose_secret(),
+            &token,
+            &aad,
+            &[config.short_id],
+            now,
+            120,
+            &replay,
+        )
+        .expect("normalized serialized ClientHello authenticates");
+        assert_eq!(authenticated.short_id.as_bytes(), &[1, 2, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]

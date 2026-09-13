@@ -292,8 +292,8 @@ mod tests {
         let mlkem = mlkem_keygen();
         let mut key_exchange =
             Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
-        key_exchange.extend_from_slice(x25519_public);
         key_exchange.extend_from_slice(&mlkem.encapsulation_key);
+        key_exchange.extend_from_slice(x25519_public);
         MlkemShare::x25519_mlkem768_with_decapsulation_key(key_exchange, mlkem.decapsulation_key)
     }
 

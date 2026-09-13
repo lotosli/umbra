@@ -98,8 +98,10 @@ impl fmt::Debug for ServerCfg {
 pub struct ClientCfg {
     /// Umbra server `host:port`.
     pub server: String,
-    /// Selected outer transport.
+    /// Outer transport for TCP CONNECT and for UDP when no override is set.
     pub transport: TransportKind,
+    /// Optional UDP association transport; omitted values inherit `transport`.
+    pub udp_transport: Option<TransportKind>,
     /// Server X25519 public key bytes.
     pub public_key: x25519::PublicKeyBytes,
     /// Selected REALITY short id bytes.
@@ -123,6 +125,12 @@ pub struct ClientCfg {
 }
 
 impl ClientCfg {
+    /// Return the UDP transport after configuration and CLI overrides have been merged.
+    #[must_use]
+    pub fn effective_udp_transport(&self) -> TransportKind {
+        self.udp_transport.unwrap_or(self.transport)
+    }
+
     /// Parse and validate a client TOML document.
     pub fn from_toml_str(input: &str) -> Result<Self, CoreError> {
         Self::from_toml_str_with_overrides(input, ClientConfigOverrides::default())
@@ -154,6 +162,7 @@ impl fmt::Debug for ClientCfg {
         f.debug_struct("ClientCfg")
             .field("server", &Redacted)
             .field("transport", &self.transport)
+            .field("udp_transport", &self.udp_transport)
             .field("public_key", &Redacted)
             .field("short_id", &Redacted)
             .field("server_name", &self.server_name)
@@ -282,6 +291,8 @@ pub struct ClientConfigOverrides {
     pub server: Option<String>,
     /// Override `transport`.
     pub transport: Option<String>,
+    /// Override the UDP association transport.
+    pub udp_transport: Option<String>,
     /// Override `public_key`.
     pub public_key: Option<String>,
     /// Override `short_id`.
@@ -309,6 +320,7 @@ impl fmt::Debug for ClientConfigOverrides {
         f.debug_struct("ClientConfigOverrides")
             .field("server", &self.server.as_ref().map(|_| Redacted))
             .field("transport", &self.transport)
+            .field("udp_transport", &self.udp_transport)
             .field("public_key", &self.public_key.as_ref().map(|_| Redacted))
             .field("short_id", &self.short_id.as_ref().map(|_| Redacted))
             .field("server_name", &self.server_name)
@@ -333,6 +345,9 @@ impl ClientConfigOverrides {
         }
         if let Some(value) = self.transport {
             raw.transport = Some(value);
+        }
+        if let Some(value) = self.udp_transport {
+            raw.udp_transport = Some(value);
         }
         if let Some(value) = self.public_key {
             raw.public_key = Some(value);
@@ -388,6 +403,7 @@ struct RawServerCfg {
 struct RawClientCfg {
     server: Option<String>,
     transport: Option<String>,
+    udp_transport: Option<String>,
     public_key: Option<String>,
     short_id: Option<String>,
     server_name: Option<String>,
@@ -453,6 +469,10 @@ fn client_from_raw(raw: RawClientCfg) -> Result<ClientCfg, CoreError> {
     let server = required(raw.server, "server is required")?;
     validate_host_port(&server)?;
     let transport = TransportKind::from_str(&required(raw.transport, "transport is required")?)?;
+    let udp_transport = raw
+        .udp_transport
+        .map(|value| TransportKind::from_str(&value))
+        .transpose()?;
     let public_key_raw = required(raw.public_key, "public_key is required")?;
     let public_key = x25519::PublicKeyBytes::new(decode_base64_array(
         &public_key_raw,
@@ -481,6 +501,7 @@ fn client_from_raw(raw: RawClientCfg) -> Result<ClientCfg, CoreError> {
     Ok(ClientCfg {
         server,
         transport,
+        udp_transport,
         public_key,
         short_id,
         server_name,

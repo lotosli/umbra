@@ -9,7 +9,7 @@ use umbra_crypto::{mlkem::mlkem_encapsulate, secret::SecretBytes, x25519};
 use umbra_fingerprint::profile::FingerprintProfile;
 
 use crate::{
-    clienthello::{GROUP_X25519, GROUP_X25519_MLKEM768},
+    clienthello::{GROUP_X25519, GROUP_X25519_MLKEM768, MLKEM768_PUBLIC_KEY_LEN, X25519_SHARE_LEN},
     handshake::{
         build_server_hello, certificate_message, certificate_verify_input,
         certificate_verify_message, combine_shared_secrets, encrypted_extensions_for_profile,
@@ -401,25 +401,27 @@ pub(crate) fn server_negotiated_key_share(
                 .iter()
                 .find(|share| share.group == GROUP_X25519_MLKEM768)
                 .ok_or(TlsError::InvalidInput("missing client hybrid key_share"))?;
-            if hybrid.key_exchange.len() <= 32 {
-                return Err(TlsError::InvalidInput("truncated client hybrid key_share"));
+            if hybrid.key_exchange.len() != MLKEM768_PUBLIC_KEY_LEN + X25519_SHARE_LEN {
+                return Err(TlsError::InvalidInput(
+                    "invalid client hybrid key_share length",
+                ));
             }
             let client_x25519 = client_hello
                 .x25519_key_share
                 .ok_or(TlsError::InvalidInput("missing client X25519 key_share"))?;
-            if hybrid.key_exchange[..32] != client_x25519[..] {
+            if hybrid.key_exchange[MLKEM768_PUBLIC_KEY_LEN..] != client_x25519[..] {
                 return Err(TlsError::InvalidInput(
                     "hybrid and classic X25519 key_shares differ",
                 ));
             }
-            let encapsulation = mlkem_encapsulate(&hybrid.key_exchange[32..])
+            let encapsulation = mlkem_encapsulate(&hybrid.key_exchange[..MLKEM768_PUBLIC_KEY_LEN])
                 .map_err(|_| TlsError::InvalidInput("bad client ML-KEM key_share"))?;
             let shared_secret =
                 combine_shared_secrets(classic_shared, Some(&encapsulation.shared_secret));
             let mut key_exchange =
                 Vec::with_capacity(server_x25519_public.len() + encapsulation.ciphertext.len());
-            key_exchange.extend_from_slice(server_x25519_public);
             key_exchange.extend_from_slice(&encapsulation.ciphertext);
+            key_exchange.extend_from_slice(server_x25519_public);
             Ok(NegotiatedKeyShare {
                 group: GROUP_X25519_MLKEM768,
                 key_exchange,

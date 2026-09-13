@@ -30,8 +30,8 @@ fn fixture() -> Fixture {
     let keypair = x25519::generate_keypair();
     let public = *keypair.public.as_bytes();
     let mlkem = mlkem_keygen();
-    let mut key_exchange = public.to_vec();
-    key_exchange.extend_from_slice(&mlkem.encapsulation_key);
+    let mut key_exchange = mlkem.encapsulation_key;
+    key_exchange.extend_from_slice(&public);
     let params = ClientHelloParams {
         sni: "server.example".to_owned(),
         session_id: vec![0x44; 32],

@@ -147,6 +147,23 @@ udp_listen = "0.0.0.0:443"
 
 在 `client.toml` 中设置 `transport = "quic"`。QUIC 使用 UDP，对 TCP RST 注入有更好的抵抗力。
 
+若要一个客户端同时采用 TCP/Vision 和 QUIC UDP，则保留 `transport = "tcp"`，另外设置 `udp_transport = "quic"`、`mux = false`，详见[单实例说明](#单实例-tcp-vision--quic-udp)。服务端仍只启动一次 `umbra server -c server.toml`；TCP 和 UDP 可以使用相同端口号。
+
+启用 QUIC 时，`dest` 也需提供可用的真实 QUIC/HTTP3 回落服务；只有 TCP HTTPS 的目标不能替代这一要求。如果由 Caddy 与 QUIC 分流模块统一承接公网443，可把 Umbra 的两个监听绑定到回环地址，由 Caddy 透传，内部端口无需在公网防火墙开放。
+
+### 7. Clash 单节点配置
+
+```yaml
+proxies:
+  - name: Umbra
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+    udp: true
+```
+
+`udp: true` 表示节点允许 UDP 请求。Clash 对 TCP 使用 SOCKS CONNECT，对 UDP 使用 UDP ASSOCIATE；外层采用 TCP 还是 QUIC，由 Umbra 的 `transport` 和 `udp_transport` 决定。
+
 ---
 
 ## CLI 参考
@@ -193,6 +210,7 @@ umbra client [选项]
 | `-c, --config <路径>` | `client.toml` 配置文件路径 |
 | `--server <HOST:PORT>` | Umbra 服务端地址 |
 | `--transport <tcp\|quic>` | 外层传输协议 |
+| `--udp-transport <tcp\|quic>` | UDP 关联的外层传输；省略时跟随主传输 |
 | `--public-key <B64>` | Base64 编码的 X25519 服务端公钥 |
 | `--short-id <HEX>` | 选定的 short id（十六进制） |
 | `--server-name <NAME>` | 外层 ClientHello 的 SNI |
@@ -281,6 +299,7 @@ tcp_evasion   = "segment"                  # TCP 规避策略
 |---|---|---|---|---|
 | `server` | 是 | `host:port` | -- | Umbra 服务端地址（公网 IP 和端口） |
 | `transport` | 是 | `"tcp"` 或 `"quic"` | -- | 外层传输协议 |
+| `udp_transport` | 否 | `"tcp"` 或 `"quic"` | 跟随 `transport` | 单独选择 UDP 关联的外层传输，TCP 请求仍使用主传输 |
 | `public_key` | 是 | base64（32 字节） | -- | 服务端 `umbra keygen` 输出的 X25519 公钥 |
 | `short_id` | 是 | 十六进制字符串 | -- | 必须匹配服务端 `short_ids` 之一（0-8 字节十六进制） |
 | `server_name` | 是 | 字符串 | -- | 外层 ClientHello 的 SNI。必须匹配服务端 `server_names` 之一 |
@@ -296,7 +315,28 @@ tcp_evasion   = "segment"                  # TCP 规避策略
 
 ## 传输模式
 
+### 0.0.8 升级说明
+
+0.0.8 修正 X25519MLKEM768 的标准字段与共享秘密顺序，并移除 QUIC 握手中的 TLS 1.2 版本声明。
+客户端和服务端必须同时升级；不保留早期混合握手的错误格式兼容。已有身份密钥、short ID、SNI 和 SOCKS 配置可以沿用。
+TCP Vision 与 mux 的选择方式不变，QUIC 仍通过 `transport = "quic"` 选择。此次标准互通修复不代表已验证完整 Chrome 指纹一致性，也不保证测速提升。
+
 Umbra 支持两种外层传输：
+
+### 单实例 TCP Vision + QUIC UDP
+
+在同一份客户端配置中设置：
+
+```toml
+transport = "tcp"
+udp_transport = "quic"
+mux = false
+socks_listen = "127.0.0.1:1080"
+```
+
+一个客户端实例即可在同一 SOCKS 入口接收 TCP 和 UDP 请求。TCP CONNECT 使用 TCP/Vision，UDP ASSOCIATE 使用 QUIC；二者连接同一个 `server` 地址，该服务端入口需同时支持 TCP 和 QUIC。
+Clash 只需配置一个 `type: socks5`、`server: 127.0.0.1`、`port: 1080`、`udp: true` 节点。1080 是 SOCKS 控制入口；UDP 数据中继地址通过标准 SOCKS 协商返回，不要求固定绑定 UDP1080。
+省略 `udp_transport` 时，UDP 跟随文件与 CLI 合并后的主 `transport`；`--udp-transport` 优先于文件设置。服务端原本就能用一个实例同时配置 `listen` 和 `udp_listen`。
 
 ### TCP（默认）
 
@@ -311,7 +351,7 @@ transport = "tcp"
 
 #### TCP Vision solo（0.0.7）
 
-使用 `transport = "tcp"`、`mux = false` 即可选择独占连接的 Vision；客户端和服务端都需升级到 0.0.7。符合条件的内层 TLS 1.3 流量经过双方确认切换边界后，原始受保护记录不再增加外层 TLS 加密或帧封装。非 TLS 和不符合条件的 TLS 仍加密传输。旧 solo 实现已删除，`mux = true` 继续提供加密多路复用；不需要额外 Vision 开关。原始转发使用用户态 I/O，不宣称内核零拷贝或未经测量的速度提升。
+使用 `transport = "tcp"`、`mux = false` 即可选择独占连接的 Vision；当前请将客户端和服务端统一升级到 0.0.8。符合条件的内层 TLS 1.3 流量经过双方确认切换边界后，原始受保护记录不再增加外层 TLS 加密或帧封装。非 TLS 和不符合条件的 TLS 仍加密传输。旧 solo 实现已删除，`mux = true` 继续提供加密多路复用；不需要额外 Vision 开关。原始转发使用用户态 I/O，不宣称内核零拷贝或未经测量的速度提升。
 
 成功切换会记录 `umbra vision splice active`；连接完成后记录原始字节数及 `outer_records_unchanged=true`，不包含目标地址或凭据。
 

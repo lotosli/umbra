@@ -10,8 +10,8 @@ use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::{
     clienthello::{
-        build_client_hello, ClientHelloParams, TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384,
-        TLS_CHACHA20_POLY1305_SHA256,
+        build_client_hello, ClientHelloParams, MLKEM768_CIPHERTEXT_LEN, TLS_AES_128_GCM_SHA256,
+        TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256, X25519_SHARE_LEN,
     },
     keyschedule::{
         derive_tls13_secrets_for_suite, derive_traffic_keys, finished_verify_data_for_suite,
@@ -671,10 +671,12 @@ pub(crate) fn client_negotiated_secret(
     match key_share_group {
         GROUP_X25519 => Ok(SecretBytes::new(classic_shared.expose_secret().to_vec())),
         GROUP_X25519_MLKEM768 => {
-            if server_key_share.len() <= 32 {
-                return Err(TlsError::InvalidInput("truncated hybrid server key_share"));
+            if server_key_share.len() != MLKEM768_CIPHERTEXT_LEN + X25519_SHARE_LEN {
+                return Err(TlsError::InvalidInput(
+                    "invalid server hybrid key_share length",
+                ));
             }
-            let ciphertext = &server_key_share[32..];
+            let ciphertext = &server_key_share[..MLKEM768_CIPHERTEXT_LEN];
             let decapsulation_key = mlkem_decapsulation_key
                 .ok_or(TlsError::InvalidInput("missing ML-KEM decapsulation key"))?;
             let mlkem_shared = mlkem_decapsulate(decapsulation_key, ciphertext)
@@ -690,10 +692,10 @@ pub(crate) fn combine_shared_secrets(
     mlkem_shared: Option<&Secret<32>>,
 ) -> SecretBytes {
     let mut out = Vec::with_capacity(64);
-    out.extend_from_slice(classic_shared.expose_secret());
     if let Some(mlkem_shared) = mlkem_shared {
         out.extend_from_slice(mlkem_shared.expose_secret());
     }
+    out.extend_from_slice(classic_shared.expose_secret());
     SecretBytes::new(out)
 }
 
@@ -831,8 +833,13 @@ pub fn parse_server_hello_handshake(handshake: &[u8]) -> Result<ServerHelloData,
             key_share = Some(key.to_vec());
             if group == GROUP_X25519 && key.len() == 32 {
                 x25519_key_share = Some(array32(key, "bad X25519 share")?);
-            } else if group == GROUP_X25519_MLKEM768 && key.len() == 32 + 1088 {
-                x25519_key_share = Some(array32(&key[..32], "bad hybrid X25519 share")?);
+            } else if group == GROUP_X25519_MLKEM768
+                && key.len() == MLKEM768_CIPHERTEXT_LEN + X25519_SHARE_LEN
+            {
+                x25519_key_share = Some(array32(
+                    &key[MLKEM768_CIPHERTEXT_LEN..],
+                    "bad hybrid X25519 share",
+                )?);
             }
         } else {
             return Err(TlsError::InvalidInput("unexpected ServerHello extension"));
@@ -1217,6 +1224,51 @@ fn push_u24_len(value: usize, out: &mut Vec<u8>) -> Result<(), TlsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hybrid_shared_secret_uses_mlkem_then_x25519_and_preserves_classic() {
+        let classic = Secret::new([0x11; 32]);
+        let mlkem = Secret::new([0x22; 32]);
+        let combined = combine_shared_secrets(&classic, Some(&mlkem));
+        assert_eq!(
+            combined.expose_secret(),
+            &[&[0x22; 32][..], &[0x11; 32][..]].concat()
+        );
+        assert_eq!(
+            combine_shared_secrets(&classic, None).expose_secret(),
+            &[0x11; 32]
+        );
+    }
+
+    #[test]
+    fn hybrid_client_rejects_non_exact_ciphertext_and_missing_secret() {
+        let classic = Secret::new([0x11; 32]);
+        for len in [0, 31, 32, 1087, 1088, 1119, 1121, 2048] {
+            assert_eq!(
+                client_negotiated_secret(&classic, GROUP_X25519_MLKEM768, &vec![0; len], None)
+                    .err(),
+                Some(TlsError::InvalidInput(
+                    "invalid server hybrid key_share length"
+                )),
+            );
+        }
+        assert_eq!(
+            client_negotiated_secret(&classic, GROUP_X25519_MLKEM768, &[0; 1120], None).err(),
+            Some(TlsError::InvalidInput("missing ML-KEM decapsulation key")),
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn non_exact_hybrid_server_shares_never_parse(len in 0_usize..2400) {
+            proptest::prop_assume!(len != 1120);
+            let record = build_server_hello(
+                &[7; 32], TLS_AES_128_GCM_SHA256, &[8; 32],
+                GROUP_X25519_MLKEM768, &vec![9; len],
+            ).unwrap();
+            proptest::prop_assert!(parse_server_hello_record(&record).is_err());
+        }
+    }
 
     fn encrypted_extensions_body(extensions: &[(u16, &[u8])]) -> Vec<u8> {
         let mut encoded = Vec::new();

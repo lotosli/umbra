@@ -147,6 +147,23 @@ udp_listen = "0.0.0.0:443"
 
 Set `transport = "quic"` in `client.toml`. QUIC uses UDP and offers better resistance to TCP RST injection.
 
+For one client using TCP/Vision and QUIC UDP together, keep `transport = "tcp"` and set `udp_transport = "quic"` and `mux = false`; see the [single-instance guide](#one-instance-with-tcp-vision-and-quic-udp). Start the server only once with `umbra server -c server.toml`; its TCP and UDP listeners can share a port number.
+
+When QUIC is enabled, `dest` must also provide a usable real QUIC/HTTP3 fallback service; a TCP-only HTTPS destination is insufficient. If Caddy with a QUIC-aware routing module owns public443, bind the Umbra backends to loopback and forward them transparently. Internal ports do not need public firewall rules.
+
+### 7. One Clash Node
+
+```yaml
+proxies:
+  - name: Umbra
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+    udp: true
+```
+
+`udp: true` permits UDP requests. Clash uses SOCKS CONNECT for TCP and UDP ASSOCIATE for UDP; Umbra selects their outer transports using `transport` and `udp_transport` respectively.
+
 ---
 
 ## CLI Reference
@@ -193,6 +210,7 @@ umbra client [OPTIONS]
 | `-c, --config <PATH>` | Path to `client.toml` |
 | `--server <HOST:PORT>` | Umbra server address |
 | `--transport <tcp\|quic>` | Outer transport |
+| `--udp-transport <tcp\|quic>` | UDP association transport; inherits the main transport when omitted |
 | `--public-key <B64>` | Base64 X25519 server public key |
 | `--short-id <HEX>` | Selected short id (hex) |
 | `--server-name <NAME>` | SNI for the outer ClientHello |
@@ -281,6 +299,7 @@ tcp_evasion   = "segment"            # TCP evasion policy
 |---|---|---|---|---|
 | `server` | yes | `host:port` | -- | Umbra server address (public IP and port) |
 | `transport` | yes | `"tcp"` or `"quic"` | -- | Outer transport protocol |
+| `udp_transport` | no | `"tcp"` or `"quic"` | Inherit `transport` | Select UDP association transport separately; TCP requests keep the main transport |
 | `public_key` | yes | base64 (32 bytes) | -- | X25519 public key from server's `umbra keygen` |
 | `short_id` | yes | hex string | -- | Must match one of the server's `short_ids` (0-8 bytes hex) |
 | `server_name` | yes | string | -- | SNI for the outer ClientHello. Must match one of the server's `server_names` |
@@ -296,7 +315,28 @@ tcp_evasion   = "segment"            # TCP evasion policy
 
 ## Transport Modes
 
+### Upgrading to 0.0.8
+
+Version 0.0.8 corrects the standard X25519MLKEM768 share and shared-secret ordering and removes TLS 1.2 from QUIC version offers.
+Upgrade both client and server together; the earlier reversed hybrid format is not supported. Existing identity keys, short IDs, SNI and SOCKS settings can be reused.
+TCP Vision and mux selection are unchanged; select QUIC with `transport = "quic"`. This standards correction does not establish complete Chrome fingerprint equivalence or promise a throughput increase.
+
 Umbra supports two outer transports:
+
+### One instance with TCP Vision and QUIC UDP
+
+Add these settings to the same client configuration:
+
+```toml
+transport = "tcp"
+udp_transport = "quic"
+mux = false
+socks_listen = "127.0.0.1:1080"
+```
+
+One client accepts TCP CONNECT and UDP ASSOCIATE on the same SOCKS control listener. TCP uses TCP/Vision and UDP uses QUIC, both against the configured `server` endpoint, which must support both transports.
+A Clash node needs only `type: socks5`, `server: 127.0.0.1`, `port: 1080`, and `udp: true`. UDP relay addresses are negotiated using SOCKS; a fixed UDP1080 listener is not required.
+When omitted, `udp_transport` inherits the final main transport after CLI merging. `--udp-transport` overrides the file value. A single server instance can already configure both `listen` and `udp_listen`.
 
 ### TCP (default)
 
@@ -311,7 +351,7 @@ transport = "tcp"
 
 #### TCP Vision solo (0.0.7)
 
-Set `transport = "tcp"` and `mux = false` to use dedicated Vision connections. Upgrade both client and server to 0.0.7. After an authenticated boundary exchange on eligible inner TLS 1.3 traffic, the runtime forwards the original protected records without outer TLS encryption or extra framing. Non-TLS and unsupported TLS remain encrypted. The legacy solo implementation was removed; `mux = true` continues to provide encrypted multiplexing. No extra Vision flag is needed. Raw forwarding is userspace I/O, not a claim of kernel zero-copy or a measured speed increase.
+Set `transport = "tcp"` and `mux = false` to use dedicated Vision connections. Upgrade both client and server together to 0.0.8. After an authenticated boundary exchange on eligible inner TLS 1.3 traffic, the runtime forwards the original protected records without outer TLS encryption or extra framing. Non-TLS and unsupported TLS remain encrypted. The legacy solo implementation was removed; `mux = true` continues to provide encrypted multiplexing. No extra Vision flag is needed. Raw forwarding is userspace I/O, not a claim of kernel zero-copy or a measured speed increase.
 
 Successful sessions log `umbra vision splice active` and, on completion, raw byte counts plus `outer_records_unchanged=true`, without targets or credentials.
 

@@ -25,7 +25,22 @@ Umbra 把协议伪装、响应前认证、浏览器级指纹保真、抗量子�
 
 ## 当前状态
 
-仓库包含 crate 结构、CLI 入口、协议模块、测试 harness、CI 闸门和基于 tag 的自动发布流程。
+**0.0.8** 修复标准混合 TLS/QUIC 互通，并支持一个 SOCKS 客户端实例：TCP 走 TCP/Vision，UDP 走 QUIC。客户端与服务端需一起升级，不保留旧版错误混合格式的兼容分支。
+
+在已有客户端配置中设置：
+
+```toml
+transport = "tcp"
+udp_transport = "quic"
+mux = false
+socks_listen = "127.0.0.1:1080"
+```
+
+服务端一个实例即可同时配置 `listen` 与 `udp_listen`。Clash 只需一个 `127.0.0.1:1080` 的 SOCKS5 节点，并设置 `udp: true`；该选项表示允许 UDP，不会让 TCP 强制走 UDP。
+
+使用步骤见[服务端配置](docs/usage.zh-CN.md#2-配置服务端)、[客户端配置](docs/usage.zh-CN.md#4-配置客户端)与[单实例分流说明](docs/usage.zh-CN.md#单实例-tcp-vision--quic-udp)。TLS 1.3 主握手与记录层由 Umbra 实现，QUIC 传输基于 Quinn。
+
+已保存真实 [Chrome 153.0.8010.37 的 TCP/QUIC 采样证据](fingerprints/chrome-153-macos.capture.md)。默认 `chrome-latest` 仍跟随历史 Chrome 150 档案；本次采样不代表已实现完整 Chrome 153 指纹一致性。
 
 最终协议形态见 [`docs/protocol-design.md`](docs/protocol-design.md)，crate 架构见 [`docs/architecture.md`](docs/architecture.md)。实现遵循 OpenSpec，规则见 [`AGENTS.md`](AGENTS.md)。
 
@@ -91,6 +106,8 @@ git push origin v0.0.1
 
 普通分支 push 只触发 `CI`。这样每个分支都能被验证，同时不会为每个开发提交消耗完整 release 构建时间。
 
+本次按明确要求手动发布 0.0.8：本地构建二进制，提交使用 `[skip ci]`，发布已有产物，不经过 Actions 构建。提供 macOS Apple Silicon/Intel 和 Linux x86_64/aarch64 四个程序及 SHA-256 校验文件。检查范围和最终部署情况见[验证记录](openspec/changes/fix-standard-quic-tls/verification.md)。
+
 ## 开发模型
 
 Umbra 使用 Specification-Driven Development：
@@ -122,6 +139,8 @@ cargo deny check
 ## 文档
 
 - 使用手册：[`docs/usage.md`](docs/usage.md)（[中文](docs/usage.zh-CN.md)）
+- 服务端：[配置步骤](docs/usage.zh-CN.md#2-配置服务端)与[字段参考](docs/usage.zh-CN.md#服务端配置)
+- 客户端：[配置步骤](docs/usage.zh-CN.md#4-配置客户端)与[单实例 TCP/UDP 分流](docs/usage.zh-CN.md#单实例-tcp-vision--quic-udp)
 - 协议设计：[`docs/protocol-design.md`](docs/protocol-design.md)
 - 架构：[`docs/architecture.md`](docs/architecture.md)
 - 贡献者与 AI 代理规则：[`AGENTS.md`](AGENTS.md)

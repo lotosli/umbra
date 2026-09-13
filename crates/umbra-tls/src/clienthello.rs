@@ -18,6 +18,12 @@ pub const TLS_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
 pub const GROUP_X25519: u16 = 0x001d;
 /// Chrome hybrid X25519MLKEM768 group codepoint used by the profile.
 pub const GROUP_X25519_MLKEM768: u16 = 0x11ec;
+/// Encoded ML-KEM-768 public key length in the RFC 10024 client share.
+pub(crate) const MLKEM768_PUBLIC_KEY_LEN: usize = 1184;
+/// Encoded ML-KEM-768 ciphertext length in the RFC 10024 server share.
+pub(crate) const MLKEM768_CIPHERTEXT_LEN: usize = 1088;
+/// Encoded X25519 public key length.
+pub(crate) const X25519_SHARE_LEN: usize = 32;
 /// TLS extension carrying QUIC transport parameters.
 pub const EXT_QUIC_TRANSPORT_PARAMETERS: u16 = 0x0039;
 
@@ -47,7 +53,7 @@ const EXT_ENCRYPTED_CLIENT_HELLO: u16 = 0xfe0d;
 pub struct MlkemShare {
     /// Named group for the hybrid share, normally X25519MLKEM768.
     pub group: u16,
-    /// Encoded hybrid key exchange bytes.
+    /// RFC 10024 client share: 1184-byte ML-KEM public key, then 32-byte X25519 share.
     pub key_exchange: Vec<u8>,
     /// Client ML-KEM decapsulation key, retained only by live handshake state.
     pub decapsulation_key: Option<SecretBytes>,

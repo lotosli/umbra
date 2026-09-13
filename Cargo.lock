@@ -154,6 +154,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "aws-lc-rs"
+version = "1.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4342d8937fc7e5dd9b1c60292261c0670c882a2cd1719cfc11b1af41731e32ad"
+dependencies = [
+ "aws-lc-sys",
+ "zeroize",
+]
+
+[[package]]
+name = "aws-lc-sys"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d9ceb1da931507a12f4fccea479dccd00da1943e1b4ae72d8e502d707361444"
+dependencies = [
+ "cc",
+ "cmake",
+ "dunce",
+ "fs_extra",
+ "pkg-config",
+]
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -235,6 +258,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f5d6cac793997bd970000024b2934968efe83b382de4fdcf4fcb46b6ee4ad996"
 dependencies = [
  "find-msvc-tools",
+ "jobserver",
+ "libc",
  "shlex",
 ]
 
@@ -335,6 +360,15 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
+
+[[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "cmov"
@@ -532,6 +566,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dunce"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -588,6 +628,12 @@ name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
+name = "fs_extra"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "futures-core"
@@ -794,6 +840,16 @@ checksum = "38c0b942f458fe50cdac086d2f946512305e5631e720728f2a61aabcd47a6264"
 dependencies = [
  "quote",
  "syn",
+]
+
+[[package]]
+name = "jobserver"
+version = "0.1.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
+dependencies = [
+ "getrandom 0.4.3",
+ "libc",
 ]
 
 [[package]]
@@ -1080,6 +1136,12 @@ dependencies = [
  "der",
  "spki",
 ]
+
+[[package]]
+name = "pkg-config"
+version = "0.3.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "poly1305"
@@ -1417,6 +1479,7 @@ version = "0.23.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b92b125634d9b795e7beca796cc790df15a7fb38323bf3196fda83292d06b1f"
 dependencies = [
+ "aws-lc-rs",
  "brotli",
  "brotli-decompressor",
  "once_cell",
@@ -1482,6 +1545,7 @@ version = "0.103.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
 dependencies = [
+ "aws-lc-rs",
  "ring",
  "rustls-pki-types",
  "untrusted",
@@ -1954,7 +2018,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "umbra"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "anyhow",
  "base64",
@@ -1966,7 +2030,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-core"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "base64",
  "bytes",
@@ -1992,7 +2056,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-crypto"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aes-gcm",
  "chacha20 0.9.1",
@@ -2014,7 +2078,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-fingerprint"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "md-5",
  "serde",
@@ -2026,7 +2090,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-inner"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "proptest",
  "rand 0.8.6",
@@ -2038,7 +2102,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-proto"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "proptest",
  "thiserror 2.0.18",
@@ -2046,7 +2110,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-reality"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "proptest",
  "rcgen",
@@ -2064,7 +2128,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-testkit"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "tokio",
  "umbra-core",
@@ -2076,7 +2140,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-tls"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "hkdf",
  "hmac",
@@ -2097,7 +2161,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-transport"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "bytes",
  "quinn",
@@ -2401,7 +2465,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.0.7"
+version = "0.0.8"
 
 [[package]]
 name = "yasna"

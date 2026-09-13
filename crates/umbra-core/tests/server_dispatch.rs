@@ -703,8 +703,8 @@ fn client_hello(
 fn hybrid_mlkem_key_exchange(x25519_public: &[u8; 32]) -> Vec<u8> {
     let mlkem = mlkem_keygen();
     let mut key_exchange = Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
-    key_exchange.extend_from_slice(x25519_public);
     key_exchange.extend_from_slice(&mlkem.encapsulation_key);
+    key_exchange.extend_from_slice(x25519_public);
     key_exchange
 }
 

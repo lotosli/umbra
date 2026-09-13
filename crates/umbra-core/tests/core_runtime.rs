@@ -128,6 +128,92 @@ fn scenario_client_cli_transport_override_is_validated() {
 }
 
 #[test]
+fn scenario_udp_transport_inherits_final_main_transport_when_omitted() {
+    let cfg = ClientCfg::from_toml_str(&client_toml()).expect("file configuration");
+    assert_eq!(cfg.udp_transport, None);
+    assert_eq!(cfg.effective_udp_transport(), TransportKind::Tcp);
+    for (value, expected) in [("tcp", TransportKind::Tcp), ("quic", TransportKind::Quic)] {
+        let cfg = ClientCfg::from_toml_str_with_overrides(
+            &client_toml(),
+            ClientConfigOverrides {
+                transport: Some(value.to_owned()),
+                ..ClientConfigOverrides::default()
+            },
+        )
+        .expect("main transport override");
+        assert_eq!(cfg.udp_transport, None);
+        assert_eq!(cfg.transport, expected);
+        assert_eq!(cfg.effective_udp_transport(), expected);
+    }
+}
+
+#[test]
+fn scenario_explicit_udp_transport_file_and_cli_precedence() {
+    let source = format!("{}\nudp_transport = \"quic\"\n", client_toml());
+    let cfg = ClientCfg::from_toml_str(&source).expect("explicit file UDP transport");
+    assert_eq!(cfg.transport, TransportKind::Tcp);
+    assert_eq!(cfg.udp_transport, Some(TransportKind::Quic));
+    assert_eq!(cfg.effective_udp_transport(), TransportKind::Quic);
+    assert!(format!("{cfg:?}").contains("udp_transport: Some(Quic)"));
+
+    let overrides = ClientConfigOverrides {
+        transport: Some("quic".to_owned()),
+        udp_transport: Some("tcp".to_owned()),
+        ..ClientConfigOverrides::default()
+    };
+    assert!(format!("{overrides:?}").contains("udp_transport: Some(\"tcp\")"));
+    let cfg = ClientCfg::from_toml_str_with_overrides(&source, overrides)
+        .expect("CLI UDP overrides file independently");
+    assert_eq!(cfg.transport, TransportKind::Quic);
+    assert_eq!(cfg.udp_transport, Some(TransportKind::Tcp));
+    assert_eq!(cfg.effective_udp_transport(), TransportKind::Tcp);
+
+    let cfg = ClientCfg::from_toml_str_with_overrides(
+        &source,
+        ClientConfigOverrides {
+            transport: Some("tcp".to_owned()),
+            ..ClientConfigOverrides::default()
+        },
+    )
+    .expect("main CLI transport does not erase explicit file UDP transport");
+    assert_eq!(cfg.effective_udp_transport(), TransportKind::Quic);
+}
+
+#[test]
+fn scenario_invalid_udp_transport_is_rejected_without_echoing_values() {
+    let secret = "invalid-secret-udp-transport";
+    let invalid_file = format!("{}\nudp_transport = \"{secret}\"\n", client_toml());
+    let file_error = ClientCfg::from_toml_str(&invalid_file).expect_err("invalid file value");
+    let cli_error = ClientCfg::from_toml_str_with_overrides(
+        &client_toml(),
+        ClientConfigOverrides {
+            udp_transport: Some(secret.to_owned()),
+            ..ClientConfigOverrides::default()
+        },
+    )
+    .expect_err("invalid CLI value");
+    let invalid_type = format!("{}\nudp_transport = [\"{secret}\"]\n", client_toml());
+    let type_error = ClientCfg::from_toml_str(&invalid_type).expect_err("invalid field type");
+    for error in [file_error, cli_error, type_error] {
+        assert!(matches!(
+            error,
+            CoreError::InvalidConfig(_) | CoreError::ConfigParse(_)
+        ));
+        assert!(!error.to_string().contains(secret));
+        assert!(!error.to_string().contains(&b64(3)));
+    }
+    let repaired = ClientCfg::from_toml_str_with_overrides(
+        &invalid_file,
+        ClientConfigOverrides {
+            udp_transport: Some("quic".to_owned()),
+            ..ClientConfigOverrides::default()
+        },
+    )
+    .expect("valid CLI override replaces invalid file value before validation");
+    assert_eq!(repaired.effective_udp_transport(), TransportKind::Quic);
+}
+
+#[test]
 fn scenario_config_file_load_and_all_overrides_apply() {
     let path = std::env::temp_dir().join(format!("umbra-core-config-{}.toml", std::process::id()));
     fs::write(&path, server_toml()).expect("write temp config");
@@ -168,6 +254,7 @@ fn scenario_client_all_overrides_apply() {
         ClientConfigOverrides {
             server: Some("198.51.100.7:8443".to_owned()),
             transport: Some("quic".to_owned()),
+            udp_transport: Some("tcp".to_owned()),
             public_key: Some(b64(10)),
             short_id: Some(String::new()),
             server_name: Some("alt.example".to_owned()),
@@ -184,6 +271,7 @@ fn scenario_client_all_overrides_apply() {
 
     assert_eq!(cfg.server, "198.51.100.7:8443");
     assert_eq!(cfg.transport, TransportKind::Quic);
+    assert_eq!(cfg.udp_transport, Some(TransportKind::Tcp));
     assert_eq!(cfg.public_key.as_bytes(), &[10_u8; 32]);
     assert!(cfg.short_id.is_empty());
     assert_eq!(cfg.server_name, "alt.example");
@@ -918,7 +1006,9 @@ async fn scenario_socks_request_opens_selected_tcp_mux_stream() {
 
 #[tokio::test]
 async fn scenario_socks_udp_associate_relays_over_tcp_mux_datagram() {
-    let cfg = ClientCfg::from_toml_str(&client_toml()).expect("client config loads");
+    let mut cfg = ClientCfg::from_toml_str(&client_toml()).expect("client config loads");
+    cfg.transport = TransportKind::Quic;
+    cfg.udp_transport = Some(TransportKind::Tcp);
     let (mut socks_client, mut socks_server) = io::duplex(4096);
     let (outer_client, outer_server) = io::duplex(4096);
     let server_task = tokio::spawn(async move {
@@ -950,7 +1040,10 @@ async fn scenario_socks_udp_associate_relays_over_tcp_mux_datagram() {
         Box::pin(client_session_with_outer(
             &cfg,
             &mut socks_server,
-            |_plan| async move { Ok::<_, CoreError>(outer_client) },
+            |plan| async move {
+                assert_eq!(plan.transport, TransportKind::Tcp);
+                Ok::<_, CoreError>(outer_client)
+            },
         ))
         .await
     });
@@ -1016,45 +1109,57 @@ async fn scenario_socks_udp_associate_relays_over_tcp_mux_datagram() {
 }
 
 #[tokio::test]
-async fn scenario_udp_associate_rejects_generic_quic_outer() {
-    let cfg = ClientCfg::from_toml_str_with_overrides(
-        &client_toml(),
-        ClientConfigOverrides {
-            transport: Some("quic".to_owned()),
-            ..ClientConfigOverrides::default()
-        },
-    )
-    .expect("client config loads");
-    let (mut socks_client, mut socks_server) = io::duplex(256);
-    let (outer_client, _outer_server) = io::duplex(64);
-    socks_client
-        .write_all(&socks_connect_domain("0.0.0.0", 0, 0x03))
-        .await
-        .expect("write UDP associate");
-    let session_task = tokio::spawn(async move {
-        Box::pin(client_session_with_outer(
-            &cfg,
-            &mut socks_server,
-            |_plan| async move { Ok::<_, CoreError>(outer_client) },
-        ))
-        .await
-    });
+async fn scenario_udp_associate_rejects_effective_quic_on_generic_outer() {
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    let mut method_reply = [0_u8; 2];
-    socks_client
-        .read_exact(&mut method_reply)
-        .await
-        .expect("read method reply");
-    assert_eq!(method_reply, [0x05, 0x00]);
+    for (transport, udp_transport) in [("quic", None), ("tcp", Some("quic"))] {
+        let cfg = ClientCfg::from_toml_str_with_overrides(
+            &client_toml(),
+            ClientConfigOverrides {
+                transport: Some(transport.to_owned()),
+                udp_transport: udp_transport.map(str::to_owned),
+                ..ClientConfigOverrides::default()
+            },
+        )
+        .expect("client config loads");
+        let (mut socks_client, mut socks_server) = io::duplex(256);
+        let (outer_client, _outer_server) = io::duplex(64);
+        let opened = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&opened);
+        socks_client
+            .write_all(&socks_connect_domain("0.0.0.0", 0, 0x03))
+            .await
+            .expect("write UDP associate");
+        let session_task = tokio::spawn(async move {
+            Box::pin(client_session_with_outer(
+                &cfg,
+                &mut socks_server,
+                |_plan| {
+                    observed.store(true, Ordering::SeqCst);
+                    async move { Ok::<_, CoreError>(outer_client) }
+                },
+            ))
+            .await
+        });
 
-    let err = session_task
-        .await
-        .expect("session task")
-        .expect_err("generic QUIC UDP association rejected");
-    assert!(matches!(
-        err,
-        CoreError::InvalidConfig("QUIC UDP association requires configured QUIC runtime")
-    ));
+        let mut method_reply = [0_u8; 2];
+        socks_client
+            .read_exact(&mut method_reply)
+            .await
+            .expect("read method reply");
+        assert_eq!(method_reply, [0x05, 0x00]);
+
+        let err = timeout(Duration::from_secs(2), session_task)
+            .await
+            .expect("unsupported interface fails promptly")
+            .expect("session task")
+            .expect_err("generic QUIC UDP association rejected");
+        assert!(matches!(
+            err,
+            CoreError::InvalidConfig("QUIC UDP association requires configured QUIC runtime")
+        ));
+        assert!(!opened.load(Ordering::SeqCst), "TCP opener must not run");
+    }
 }
 
 #[tokio::test]
@@ -1706,6 +1811,20 @@ fn scenario_quic_client_initial_from_config_authenticates_against_dispatch() {
     let parsed = parse_client_hello(&initial.client_hello).expect("ClientHello parses");
     assert_eq!(parsed.sni.as_deref(), Some("www.microsoft.com"));
     assert!(parsed.session_id.is_empty());
+    let source = load_profile(&cfg.fingerprint).expect("source profile");
+    assert!(source.supported_versions.contains(&0x0303));
+    let fingerprint = umbra_fingerprint::ja3::parse_client_hello(&initial.client_hello)
+        .expect("serialized QUIC fingerprint");
+    assert!(fingerprint.supported_versions.contains(&0x0304));
+    assert_eq!(
+        fingerprint.supported_versions,
+        source
+            .supported_versions
+            .iter()
+            .copied()
+            .filter(|version| *version == 0x0304 || umbra_fingerprint::grease::is_grease(*version))
+            .collect::<Vec<_>>()
+    );
 
     let now = current_test_unix_time();
     let dispatch_cfg = umbra_core::dispatch::ServerCfg {
@@ -1734,6 +1853,38 @@ fn scenario_quic_client_initial_from_config_authenticates_against_dispatch() {
     assert_eq!(authenticated.sni, cfg.server_name);
     assert_eq!(authenticated.session_id, initial.auth_token);
     assert_eq!(authenticated.client_hello, initial.client_hello);
+}
+
+#[test]
+fn scenario_tcp_advertisement_and_classic_share_survive_quic_normalization() {
+    use umbra_transport::tcp::{build_tcp_client_hello, TcpClientHelloConfig};
+
+    let cfg = ClientCfg::from_toml_str(&client_toml()).expect("client config");
+    let profile = load_profile(&cfg.fingerprint).expect("source profile");
+    let keypair = x25519::generate_keypair();
+    let hello = build_tcp_client_hello(TcpClientHelloConfig {
+        sni: cfg.server_name,
+        session_id: [0x44; 32],
+        x25519_priv: *keypair.private.expose_secret(),
+        x25519_pub: *keypair.public.as_bytes(),
+        mlkem_key_exchange: hybrid_mlkem_key_exchange(keypair.public.as_bytes()),
+        profile: profile.clone(),
+        random: [0x22; 32],
+    })
+    .expect("TCP ClientHello");
+    let fingerprint = umbra_fingerprint::ja3::parse_client_hello(&hello).expect("TCP fingerprint");
+    assert_eq!(fingerprint.supported_versions, profile.supported_versions);
+    assert!(fingerprint.supported_versions.contains(&0x0303));
+    assert!(fingerprint.supported_versions.contains(&0x0304));
+    let parsed = parse_client_hello(&hello).expect("TCP ClientHello parses");
+    assert_eq!(parsed.x25519_key_share, Some(*keypair.public.as_bytes()));
+    let hybrid = parsed
+        .key_shares
+        .iter()
+        .find(|share| share.group == umbra_tls::clienthello::GROUP_X25519_MLKEM768)
+        .expect("hybrid key share");
+    assert_eq!(hybrid.key_exchange.len(), 1184 + 32);
+    assert_eq!(&hybrid.key_exchange[1184..], keypair.public.as_bytes());
 }
 
 #[tokio::test]
@@ -2216,6 +2367,9 @@ fn quic_initial_for_dispatch(
 ) -> (Vec<u8>, [u8; 32], Vec<u8>) {
     let mut profile = load_profile("chrome-latest").expect("profile loads");
     profile.alpn = vec!["h3".to_owned()];
+    profile
+        .supported_versions
+        .retain(|version| *version == 0x0304 || umbra_fingerprint::grease::is_grease(*version));
     if !profile
         .extension_order
         .contains(&EXT_QUIC_TRANSPORT_PARAMETERS)
@@ -2283,8 +2437,8 @@ fn quic_initial_for_dispatch(
 fn hybrid_mlkem_key_exchange(x25519_public: &[u8; 32]) -> Vec<u8> {
     let mlkem = mlkem_keygen();
     let mut key_exchange = Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
-    key_exchange.extend_from_slice(x25519_public);
     key_exchange.extend_from_slice(&mlkem.encapsulation_key);
+    key_exchange.extend_from_slice(x25519_public);
     key_exchange
 }
 

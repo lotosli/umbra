@@ -96,6 +96,15 @@ impl QuicTlsClient {
                 "QUIC ClientHello legacy_session_id must be empty",
             ));
         }
+        if !params.profile.supported_versions.contains(&0x0304)
+            || params.profile.supported_versions.iter().any(|version| {
+                *version != 0x0304 && !umbra_fingerprint::grease::is_grease(*version)
+            })
+        {
+            return Err(TlsError::InvalidInput(
+                "QUIC supported_versions must contain only TLS 1.3 and GREASE",
+            ));
+        }
         let client_private = Secret::new(params.x25519_priv);
         let mlkem_decapsulation_key = params
             .mlkem

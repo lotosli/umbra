@@ -770,6 +770,7 @@ fn scenario_quic_tls_raw_handshake_derives_matching_secrets() {
     let mut params = client_hello_params();
     params.session_id = Vec::new();
     params.profile.alpn = vec!["h3".into()];
+    params.profile.supported_versions = vec![0x2a2a, 0x0304];
     params
         .profile
         .extension_order
@@ -834,6 +835,7 @@ fn scenario_quic_tls_rejects_unoffered_alpn() {
     let mut params = client_hello_params();
     params.session_id.clear();
     params.profile.alpn = vec!["h3".into()];
+    params.profile.supported_versions = vec![0x2a2a, 0x0304];
     let mut profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
     profile.alpn = Some("h2".into());
     let (mut client, hello) = QuicTlsClient::start(&params).unwrap();
@@ -851,6 +853,110 @@ fn scenario_quic_tls_rejects_unoffered_alpn() {
             .err(),
         Some(TlsError::InvalidInput("unoffered ALPN protocol"))
     );
+}
+
+#[test]
+fn scenario_quic_tls_rejects_invalid_version_offers_without_mutating_hello() {
+    for versions in [
+        vec![0x0303, 0x0304],
+        vec![0x0303],
+        vec![0x2a2a],
+        vec![],
+        vec![0x0304, 0x0305],
+    ] {
+        let mut params = client_hello_params();
+        params.session_id.clear();
+        params.profile.supported_versions = versions;
+        let before = build_client_hello_handshake(&params).unwrap();
+        assert_eq!(
+            QuicTlsClient::start(&params).err(),
+            Some(TlsError::InvalidInput(
+                "QUIC supported_versions must contain only TLS 1.3 and GREASE"
+            ))
+        );
+        assert_eq!(build_client_hello_handshake(&params).unwrap(), before);
+    }
+    let mut params = client_hello_params();
+    params.session_id.clear();
+    params.profile.supported_versions = vec![0x0a0a, 0x0304, 0xfafa];
+    let before = build_client_hello_handshake(&params).unwrap();
+    let (_, hello) = QuicTlsClient::start(&params).unwrap();
+    assert_eq!(hello, before);
+}
+
+#[test]
+fn scenario_standard_hybrid_wire_layout_and_invalid_classic_binding() {
+    use umbra_tls::clienthello::GROUP_X25519_MLKEM768;
+    use umbra_tls::handshake::parse_server_hello_record;
+    let mut params = client_hello_params();
+    let hello = build_client_hello(&params).unwrap();
+    let parsed = parse_client_hello(&hello).unwrap();
+    let hybrid = parsed
+        .key_shares
+        .iter()
+        .find(|share| share.group == GROUP_X25519_MLKEM768)
+        .unwrap();
+    assert_eq!(hybrid.key_exchange.len(), 1216);
+    assert_eq!(&hybrid.key_exchange[1184..], params.x25519_pub);
+    let profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
+    let (_, flight) = Tls13Server::accept(&hello, forged_cert(), &profile).unwrap();
+    let server_hello = parse_server_hello_record(
+        &flight[..5 + usize::from(u16::from_be_bytes([flight[3], flight[4]]))],
+    )
+    .unwrap();
+    assert_eq!(server_hello.key_share_group, GROUP_X25519_MLKEM768);
+    assert_eq!(server_hello.key_share.len(), 1120);
+    assert_eq!(
+        &server_hello.key_share[1088..],
+        server_hello.x25519_key_share
+    );
+
+    params.mlkem.key_exchange[1184] ^= 1;
+    let mismatched = build_client_hello(&params).unwrap();
+    assert_eq!(
+        Tls13Server::accept(&mismatched, forged_cert(), &profile).err(),
+        Some(TlsError::InvalidInput(
+            "hybrid and classic X25519 key_shares differ"
+        ))
+    );
+    params.mlkem.key_exchange[1184] ^= 1;
+    params.mlkem.key_exchange.rotate_right(32);
+    let legacy = build_client_hello(&params).unwrap();
+    assert!(Tls13Server::accept(&legacy, forged_cert(), &profile).is_err());
+}
+
+#[test]
+fn scenario_client_rejects_legacy_server_hybrid_order_before_application_data() {
+    use umbra_tls::handshake::parse_server_hello_record;
+    let params = client_hello_params();
+    let profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
+    let (mut client, hello) = Tls13Client::start(params).unwrap();
+    let (_, mut flight) = Tls13Server::accept(&hello, forged_cert(), &profile).unwrap();
+    let record_len = 5 + usize::from(u16::from_be_bytes([flight[3], flight[4]]));
+    let server_hello = parse_server_hello_record(&flight[..record_len]).unwrap();
+    let share = server_hello.key_share;
+    let start = flight[..record_len]
+        .windows(share.len())
+        .position(|bytes| bytes == share)
+        .unwrap();
+    flight[start..start + share.len()].rotate_right(32);
+    assert!(client.drive(&flight, &AcceptAll).is_err());
+    assert!(client.app_seal(b"must remain unavailable").is_err());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn arbitrary_non_exact_hybrid_client_shares_fail_without_panic(bytes in prop::collection::vec(any::<u8>(), 0..2400)) {
+        prop_assume!(bytes.len() != 1216);
+        let mut params = client_hello_params();
+        params.mlkem.key_exchange = bytes;
+        let profile = DestProfile::from_fingerprint(params.sni.clone(), &params.profile);
+        let hello = build_client_hello(&params).unwrap();
+        prop_assert_eq!(Tls13Server::accept(&hello, forged_cert(), &profile).err(), Some(TlsError::InvalidInput(
+            "invalid client hybrid key_share length"
+        )));
+    }
 }
 
 #[test]
@@ -1036,8 +1142,7 @@ fn rustls_interop(suite: u16, algorithm: &'static rcgen::SignatureAlgorithm, com
     let mut peer = rustls::ServerConnection::new(Arc::new(config)).unwrap();
     let mut params = client_hello_params();
     params.profile.signature_algorithms.push(0x0807);
-    // ECH placeholder serialization belongs to the separately deferred profile work.
-    params.profile.extension_order.retain(|ext| *ext != 0xfe0d);
+    assert!(params.profile.extension_order.contains(&0xfe0d));
     let (mut client, mut hello) = Tls13Client::start(params).unwrap();
     hello.extend_from_slice(&Tls13Client::dummy_change_cipher_spec());
     peer.read_tls(&mut Cursor::new(hello)).unwrap();
@@ -1267,8 +1372,8 @@ fn params_with_profile(profile: FingerprintProfile) -> ClientHelloParams {
 fn hybrid_mlkem_share(x25519_public: &[u8; 32]) -> MlkemShare {
     let mlkem = mlkem_keygen();
     let mut key_exchange = Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
-    key_exchange.extend_from_slice(x25519_public);
     key_exchange.extend_from_slice(&mlkem.encapsulation_key);
+    key_exchange.extend_from_slice(x25519_public);
     MlkemShare::x25519_mlkem768_with_decapsulation_key(key_exchange, mlkem.decapsulation_key)
 }
 

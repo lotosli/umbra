@@ -977,7 +977,8 @@ where
         let SocksRequest::UdpAssociate(associate) = request else {
             return Err(CoreError::Socks("unsupported SOCKS command"));
         };
-        if cfg.transport == TransportKind::Quic {
+        let transport = cfg.effective_udp_transport();
+        if transport == TransportKind::Quic {
             return Err(CoreError::InvalidConfig(
                 "QUIC UDP association requires configured QUIC runtime",
             ));
@@ -986,7 +987,7 @@ where
         let plan = ClientConnectPlan {
             target: associate.client_addr.clone(),
             server: cfg.server.clone(),
-            transport: cfg.transport,
+            transport,
             mode,
             server_name: cfg.server_name.clone(),
         };
@@ -994,7 +995,7 @@ where
         client_udp_association_over_tcp_outer(cfg, socks, outer).await?;
         return Ok(ClientSessionOutcome {
             target: associate.client_addr,
-            transport: cfg.transport,
+            transport,
             mode,
             vision: None,
         });
@@ -1057,11 +1058,12 @@ where
         let SocksRequest::UdpAssociate(associate) = request else {
             return Err(CoreError::Socks("unsupported SOCKS command"));
         };
-        let mode = match cfg.transport {
+        let transport = cfg.effective_udp_transport();
+        let mode = match transport {
             TransportKind::Tcp => ClientInnerMode::Mux,
             TransportKind::Quic => ClientInnerMode::QuicStream,
         };
-        match cfg.transport {
+        match transport {
             TransportKind::Tcp => {
                 let outer = open_tcp_outer(cfg).await?;
                 client_udp_association_over_tcp_outer(cfg, socks, outer).await?;
@@ -1072,7 +1074,7 @@ where
         }
         return Ok(ClientSessionOutcome {
             target: associate.client_addr,
-            transport: cfg.transport,
+            transport,
             mode,
             vision: None,
         });
@@ -1743,6 +1745,13 @@ fn quic_client_profile(
     }
     validate_quic_cid_len(profile.quic.scid_len)?;
     let grease_parameter = profile.quic.grease_parameter;
+    if !profile.supported_versions.contains(&0x0304) {
+        return Err(CoreError::InvalidConfig("QUIC profile must offer TLS 1.3"));
+    }
+    // Normalize before HELLO0/authentication binds the serialized ClientHello.
+    profile
+        .supported_versions
+        .retain(|version| *version == 0x0304 || umbra_fingerprint::grease::is_grease(*version));
     profile.alpn = vec![profile.quic.alpn.clone()];
     if !profile
         .extension_order
@@ -1778,8 +1787,8 @@ struct HybridMlkemMaterial {
 fn hybrid_mlkem_key_exchange(x25519_public: &[u8; 32]) -> HybridMlkemMaterial {
     let mlkem = mlkem_keygen();
     let mut key_exchange = Vec::with_capacity(x25519_public.len() + mlkem.encapsulation_key.len());
-    key_exchange.extend_from_slice(x25519_public);
     key_exchange.extend_from_slice(&mlkem.encapsulation_key);
+    key_exchange.extend_from_slice(x25519_public);
     HybridMlkemMaterial {
         key_exchange,
         decapsulation_key: mlkem.decapsulation_key,
@@ -3096,6 +3105,20 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn scenario_quic_initial_profile_retains_only_tls13_and_legal_grease() {
+        let mut profile = load_profile("chrome-latest").expect("profile loads");
+        profile.supported_versions = vec![0x0a0a, 0x0304, 0x0303, 0x1a1a, 0x0302, 0x2a0a];
+        let (quic, _) = quic_client_profile(profile.clone()).expect("QUIC profile");
+        assert_eq!(quic.supported_versions, vec![0x0a0a, 0x0304, 0x1a1a]);
+        assert_eq!(
+            profile.supported_versions,
+            vec![0x0a0a, 0x0304, 0x0303, 0x1a1a, 0x0302, 0x2a0a]
+        );
+        profile.supported_versions = vec![0x0a0a, 0x0303];
+        assert!(quic_client_profile(profile).is_err());
+    }
+
     mod profile_refresh {
         use super::*;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4059,6 +4082,7 @@ mod tests {
         let mut cfg = ClientCfg {
             server: String::new(),
             transport: TransportKind::Quic,
+            udp_transport: None,
             public_key: key.public,
             short_id: vec![1],
             server_name: "pool.example".to_owned(),
@@ -4548,6 +4572,7 @@ mod tests {
                     .expect("UDP")
                     .to_string(),
                 transport: TransportKind::Quic,
+                udp_transport: None,
                 public_key,
                 short_id: vec![1, 2, 3],
                 server_name: "quic.example".to_owned(),

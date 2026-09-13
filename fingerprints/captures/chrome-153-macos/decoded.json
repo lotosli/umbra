@@ -1,0 +1,824 @@
+{
+  "capture_date": "2026-09-14",
+  "chrome_version": "153.0.8010.37",
+  "platform": "macOS",
+  "provenance": {
+    "version": "153.0.8010.37",
+    "mode": "isolated headless process from same installed Chrome, forced QUIC to loopback",
+    "packets": 2,
+    "lengths": [
+      1250,
+      1250
+    ]
+  },
+  "tcp": {
+    "source_file": "chrome-153-running-tcp.bin",
+    "transport": "tcp",
+    "raw_length": 1929,
+    "raw_sha256": "f0c4224f8221184e4e43f78ac58805cc6ff375a378323e6b62b9a92ada2ba6a6",
+    "tls_records": [
+      {
+        "content_type": 22,
+        "legacy_record_version": 769,
+        "payload_length": 1924
+      }
+    ],
+    "handshake_length": 1924,
+    "handshake_sha256": "2a5213e93f78d7f92ec7908f38fb7521bd408cc897437f65afdc1cf5a61b1d92",
+    "legacy_version": 771,
+    "random_sha256": "6a5489e38a2c25740fd3151adb6904a98976a28c1bbbace98e0c8975a6bcaa40",
+    "session_id_length": 32,
+    "ciphers": [
+      2570,
+      4865,
+      4866,
+      4867,
+      49195,
+      49199,
+      49196,
+      49200,
+      52393,
+      52392,
+      49171,
+      49172,
+      156,
+      157,
+      47,
+      53
+    ],
+    "extension_order": [
+      60138,
+      11,
+      16,
+      18,
+      27,
+      23,
+      65281,
+      43,
+      10,
+      51,
+      0,
+      51764,
+      5,
+      17613,
+      45,
+      13,
+      65037,
+      35,
+      6682
+    ],
+    "extensions": [
+      {
+        "type": 60138,
+        "hex_type": "eaea",
+        "length": 0,
+        "data_hex": ""
+      },
+      {
+        "type": 11,
+        "hex_type": "000b",
+        "length": 2,
+        "data_hex": "0100"
+      },
+      {
+        "type": 16,
+        "hex_type": "0010",
+        "length": 14,
+        "data_hex": "000c02683208687474702f312e31"
+      },
+      {
+        "type": 18,
+        "hex_type": "0012",
+        "length": 0,
+        "data_hex": ""
+      },
+      {
+        "type": 27,
+        "hex_type": "001b",
+        "length": 3,
+        "data_hex": "020002"
+      },
+      {
+        "type": 23,
+        "hex_type": "0017",
+        "length": 0,
+        "data_hex": ""
+      },
+      {
+        "type": 65281,
+        "hex_type": "ff01",
+        "length": 1,
+        "data_hex": "00"
+      },
+      {
+        "type": 43,
+        "hex_type": "002b",
+        "length": 7,
+        "data_hex": "062a2a03040303"
+      },
+      {
+        "type": 10,
+        "hex_type": "000a",
+        "length": 12,
+        "data_hex": "000aeaea11ec001d00170018"
+      },
+      {
+        "type": 51,
+        "hex_type": "0033",
+        "length": 1263,
+        "data_hex": "04edeaea00010011ec04c0908b94d2b771ac95780457a92b39acb8062437141729abb04d01b9a78ab8e0327de99241f3449ec8929cdf07571e85a1cbec5519f2b6d4b600e6f0cfff7847022b1ac24598d05329c0ea1e20f17d7dd68d7448a10a0849baa42a9f48012482cf3bdb85d2353969424b520068928138b52c5ae8371ddd0c2d83d5c08ac63debba7e7e9150bc0432bfea1d1861c01e60c2c5713132f304d264b51b947400ec7a19117ca1c186cda32d6e783f5d7c5143ec53a7747268f390436228dcb16c9d8b3256a4c90ba3b0ab6c3ac3b764dd40714654b710b3cc9fc87d36f3250a650d7c05584a1a02a7aa822c875a4d901dea369e0eb0b86f011554c3ce6e7b8d747b3ed7722e99574848931011304af68124a8802fbdd0293a99345d0607ab79cc975823db86bef5d0919d99bbeacb6908546eb8a34ac3ca0e3ffba5a95a0219677a58f3266ea615c1c8191138a54a229af8e58efaa17ff80373b559870f776d4dd721e4d58fbb907648d948132b80857131865a09ae4c904b34814c999c2b0ab30a96010f244a49ac93949a5f03030d27e48fe89488dbab202c28be15ebb5d339bb37b20e997c28a4600c99380bec03056d206e9f18a293a37754f46bb2a6242fdcadae7b3b8be59a03ea25fa63399e0194cb596343f9a29495b4c4a6929e4b6211c6739560cfd798837e62378900bcdd7c6b958b066f259b62d3ab320b606c425f63b75098f318d96c15f1bca5af0c68bf23377df755273548d1e599b3b8cca86c6818d55b45801e1fb6001e8999fafc0110b2c0bdc8556e141586c3a67b22b16d95263afc94f8da447f1a4a3bdb30e558be5eb12e701b14b1812764e339477889ded27cea471f7e7b83a2c89d8c553e2e90051ea84ad9d92be61348a6540b90409ae8b90ca88a99d6a1a006aa16186082dff59b3f50b1642291428b2bbf9286e5246efd0a826332abd21234705232b9e75c68508a19c880981bc65e355848e7214c30ce39713f4180b05a8b7494fac16f62a61fe1bb072020f1d858b2f91fd62abc2835a04b6381bc8163363183bba1b41108a89cc8199ed2c8e3442f5a7912958a8e4305747ef551b915cee606826de9cbacbc512201bf4db2b07f8a3d5feb4d303ab37eab9a84316f23db3d6bf17401f870f6b52fc02b90ae18c8d3353fa9105ae2667ea9caba277b0ec8324f14039254dc3f9cc86a0edcbae2342dcbaca24147a658504c92a00d16e7bde4b76fcb657c6ba13143208aa89103ad0a4ff96a17774536531b52cf479cebe9aff5e3adb4a027c6a5c841899a98a6755e50cb55667770074ed49709a45767e23b5ece228054874dcb469c16a97e7b972351d36a89fb9e2cb3baf8291765dc48d2e80e67a985bcda0de3db0162042b42f51e499c449b373b95f700f8190c0f5c5e6090b992857154371956f6461692ccccb68a2a26644a8707b83664f186055844ccb354306911a5f798a7e29a4e25f54ea9068f7d60ac999348ffa284cada80bad09d77bba1f5f764b1d11d9811587491843a96b12c286e3cb11410f917718807899c4c5de42467e7819a2b331f9c395a24aca921661358595e47006cd077735a9d9f37c999c935cd6ab32e94103b0a4e0fb5258535aa1380e9811fda778f0b004db5ec9ed1b94ac35c764c43da5e04dced867d5c9b722fdf9f9ff7f84395f58746f97a443fadfac31fbace57e0a243774b76f3f9753e001d00200545979845cd5e0065a77c9c9b0e5abcd6ca8db6e53b0764c924cc5346898101"
+      },
+      {
+        "type": 0,
+        "hex_type": "0000",
+        "length": 26,
+        "data_hex": "001800001566696e6765727072696e742e6c6f63616c686f7374"
+      },
+      {
+        "type": 51764,
+        "hex_type": "ca34",
+        "length": 186,
+        "data_hex": "00b804d679090c08839a648c9b2d01070582df13020f0582df1302140582df13020d04d679090b08839a648c9b2d010a08839a648c9b2d010d0582df1302130582df13020608839a648c9b2d01080582df13020108839a648c9b2d010908839a648c9b2d010c08839a648c9b2d01130582df13021204d679090708839a648c9b2d011204d679090a04d679090d04d679090504d679090804d679090404d679090108839a648c9b2d010b04d679090f0582df13020e04d6790906"
+      },
+      {
+        "type": 5,
+        "hex_type": "0005",
+        "length": 5,
+        "data_hex": "0100000000"
+      },
+      {
+        "type": 17613,
+        "hex_type": "44cd",
+        "length": 5,
+        "data_hex": "0003026832"
+      },
+      {
+        "type": 45,
+        "hex_type": "002d",
+        "length": 2,
+        "data_hex": "0101"
+      },
+      {
+        "type": 13,
+        "hex_type": "000d",
+        "length": 26,
+        "data_hex": "0018dada09040905090604030804040105030805050108060601"
+      },
+      {
+        "type": 65037,
+        "hex_type": "fe0d",
+        "length": 186,
+        "data_hex": "00000100017600207502a81e6a86c720874ee2bed35e178a0de6976293451ca6bada7ad5a0bf6f170090ed84f258f5a8f4fd5f38bbc2f4a5f69c819f01ca26164db39e2e7db7c2525c26b7bed5b21a383b8bd049bf98a21c096a986ab21ee8d3590ffc258d4c6aabac1f4a42414311114850c4eac79557e0960c246abecfb17b59cc62188478cfd243b903d5003789c906433e561ee1c5bee90eb3f4bd731f0bc294ca8a7cb5d1d8f14085d456011cae8456b3ae11aebcdc4589"
+      },
+      {
+        "type": 35,
+        "hex_type": "0023",
+        "length": 0,
+        "data_hex": ""
+      },
+      {
+        "type": 6682,
+        "hex_type": "1a1a",
+        "length": 1,
+        "data_hex": "00"
+      }
+    ],
+    "supported_versions": [
+      10794,
+      772,
+      771
+    ],
+    "supported_groups": [
+      60138,
+      4588,
+      29,
+      23,
+      24
+    ],
+    "signature_algorithms": [
+      56026,
+      2308,
+      2309,
+      2310,
+      1027,
+      2052,
+      1025,
+      1283,
+      2053,
+      1281,
+      2054,
+      1537
+    ],
+    "compression_methods": [
+      0
+    ],
+    "ec_point_formats": [
+      0
+    ],
+    "sni": [
+      {
+        "name_type": 0,
+        "value": "fingerprint.localhost"
+      }
+    ],
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ],
+    "key_shares": [
+      {
+        "group": 60138,
+        "hex_group": "eaea",
+        "length": 1,
+        "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+      },
+      {
+        "group": 4588,
+        "hex_group": "11ec",
+        "length": 1216,
+        "sha256": "01282ca0518d81ab6b66a1c8899c7520fe6b057c5d89770312ae6aac9f18f8d3"
+      },
+      {
+        "group": 29,
+        "hex_group": "001d",
+        "length": 32,
+        "sha256": "16cfda7be8555da849df9a159879397db91ff7aebb22205965cefd0f7bc314b0"
+      }
+    ],
+    "hybrid_layout": {
+      "total_length": 1216,
+      "mlkem_public_key_bytes": 1184,
+      "x25519_bytes": 32,
+      "standard_mlkem_prefix_coefficient_check": true,
+      "reversed_layout_mlkem_suffix_coefficient_check": false,
+      "hybrid_x25519_tail_equals_classic": false,
+      "hybrid_mlkem_public_key_sha256": "14453d41d4dbdbf5331761126959d669038db077975b2b969f39787687f3d10f",
+      "hybrid_x25519_tail_sha256": "3188a15d439b29152a053a275d9b53c5a43e5090e636d98dc1c6c899e0a57b31"
+    },
+    "ech": {
+      "type": 0,
+      "kdf_id": 1,
+      "aead_id": 1,
+      "config_id": 118,
+      "enc_length": 32,
+      "payload_length": 144,
+      "enc_sha256": "631109eb5fd141c54eb0cb380d8b0f8ae16784dd1396b22e36bc433e0e057b7e",
+      "payload_sha256": "7868918acbeab3ea95def9ff6ee2dcc9b1e8e47a0a26c37b2dd1afc5a7d8909b"
+    },
+    "quic_transport_parameters": [],
+    "ja3_string": "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,11-16-18-27-23-65281-43-10-51-0-51764-5-17613-45-13-65037-35,4588-29-23-24,0",
+    "ja3_md5": "fd7a89b5b1742416d244ac5fd401d96f",
+    "ja4": "t13d1517h2_8daaf6152771_cb7bf5808d99",
+    "ja4_cipher_input": "002f,0035,009c,009d,1301,1302,1303,c013,c014,c02b,c02c,c02f,c030,cca8,cca9",
+    "ja4_extension_input": "0005,000a,000b,000d,0012,0017,001b,0023,002b,002d,0033,44cd,ca34,fe0d,ff01_0904,0905,0906,0403,0804,0401,0503,0805,0501,0806,0601"
+  },
+  "quic": {
+    "source_file": "chrome-153-quic-clienthello.bin",
+    "transport": "quic",
+    "raw_length": 1955,
+    "raw_sha256": "5a55989c6a731e1d18b6a818d47b90dd92e063ce82b253f921ad3280e60eecb9",
+    "tls_records": [],
+    "handshake_length": 1955,
+    "handshake_sha256": "5a55989c6a731e1d18b6a818d47b90dd92e063ce82b253f921ad3280e60eecb9",
+    "legacy_version": 771,
+    "random_sha256": "30faf243dbfd7d4fc9778efcaa8e24ec876185940146858322d7abcf28a0dd6e",
+    "session_id_length": 0,
+    "ciphers": [
+      4865,
+      4866,
+      4867
+    ],
+    "extension_order": [
+      0,
+      17613,
+      57,
+      27,
+      65037,
+      13,
+      10,
+      51764,
+      51,
+      16,
+      43,
+      45
+    ],
+    "extensions": [
+      {
+        "type": 0,
+        "hex_type": "0000",
+        "length": 25,
+        "data_hex": "0017000014717569632d636170747572652e696e76616c6964"
+      },
+      {
+        "type": 17613,
+        "hex_type": "44cd",
+        "length": 5,
+        "data_hex": "0003026833"
+      },
+      {
+        "type": 57,
+        "hex_type": "0039",
+        "length": 89,
+        "data_hex": "010480007530110c00000001000000012a3ada9a08024064070480600000040480f00000d2776213df91fcf50922baff946c9976af5a0f00030245c07128044f52494720048001000009024067050480600000060480600000"
+      },
+      {
+        "type": 27,
+        "hex_type": "001b",
+        "length": 3,
+        "data_hex": "020002"
+      },
+      {
+        "type": 65037,
+        "hex_type": "fe0d",
+        "length": 250,
+        "data_hex": "0000010001cd002052cdfb1509505d3429e34b66e0047557d81234d2405dbf87bc27b94eea63734000d04f11e23f1357ef70d27b4769bf0513eb52ee0b4dd24f1875e3b1b55a2111ffa4c26272063953bb95fc3ccd05f384fef08404c60c706881cbf8e24e9d45e4eb2849a28de2bc94a4b4cc375c03148bca5f699cb801130190951ef98b772de8d4820bc68fff5122c1dfb6b264c18775dc50a67c3362e2dca0588c32b324cdc1fda3acfe2ce920effcc96126fda608ddd0c29f1c99ce43cfd0e8a02a8338c267f018a39e17d185c272f335716bb22316ca8541692614d7f798bc1d1fdbe2a2006f1de5da6734b3f49c766755358654c7c06f"
+      },
+      {
+        "type": 13,
+        "hex_type": "000d",
+        "length": 20,
+        "data_hex": "0012040308040401050308050501080606010201"
+      },
+      {
+        "type": 10,
+        "hex_type": "000a",
+        "length": 10,
+        "data_hex": "000811ec001d00170018"
+      },
+      {
+        "type": 51764,
+        "hex_type": "ca34",
+        "length": 186,
+        "data_hex": "00b808839a648c9b2d010708839a648c9b2d010d08839a648c9b2d010a0582df13020104d679090b08839a648c9b2d01090582df13021408839a648c9b2d010c0582df13020f08839a648c9b2d01130582df1302120582df13020e04d679090704d679090808839a648c9b2d01080582df1302060582df13021304d679090f04d679090404d679090104d679090504d679090d04d679090a08839a648c9b2d010b04d679090c0582df13020d08839a648c9b2d011204d6790906"
+      },
+      {
+        "type": 51,
+        "hex_type": "0033",
+        "length": 1258,
+        "data_hex": "04e811ec04c02d2c01c9dbc8838238739c41b0a1b2440a6a0915538a4b5c9f22bf71247ced273a57997ca6663400cd3a51da11516a91812531dbe9ba18f56684e0514abac45600c78db9c4806b54c728bf651ccffef586e1f8341eb08bee440cda5a55a13a841c118a9cfb6c9905c23255302a859879b5c031bb8961754e97f19a1e89127004783020493045a3c5a18bfe1833a1546d2370797f84b11b76797477546c719ded6c3cca3bcb5006386d4071a3a14f9d3b771720458ce3a1e6b94a90c799a8b09e8e171f294147c39827ca6362423a36d204a791d3c7413cc1f3758b9d6470d54268bc0804922aba10ac736e344ecf521633cbac22809fe905a7a8b7c359c9c18f22b4178672954270e48236bc5a698853a091b0cae2269cfc154c1c9cb2d9e4332a8387baa09356983e1630a48aa01f41b213d2eba778a7af5db748e956415f8021efb51dffd87aee30303c840ea65257e3b367bfb675b46211ff631dfeb4272a34734d314a06faaf9923479da0bee4f98defcb1fa1b35ee90334c2e19f2ea47c97a7379072b0eed49e1ce5cf52b177916b44f81b338c43641460019588b39be410cd43932808a1439338ad96044dd51174049c66818ba0d555a50a0fcee5052db7122801aaa358b76aeb51e8d7149481693e993617a53197126539a1b6b5d3647270af61d43e79a5023e041cbc854817598dd6263adb1a16a42ab65c339c78334db54541d1c291a62398d493947bf181e3d13140c5479ee6c1eab224d237840ff9351f52894621cdabdc5bd3b30c5c705d1e39c4949759cbb7bc1689c18811ce92c69bf5c07d3f6250ec1788726798877111728aa63534c4571598278cc789670c338c1fbdc4c902a7b66e2a4342b60937a425c272c0e3c00856a8599be48694f3875de4a68d10c561a0585e43b717817a02552fae482b8c9133fc042a7ac4c146c80a4fcba31d01ba7fa5326fe02d1c28b2f29389073accdbd751b489bb7cc19b02f55a4ac3748e642f8dcc82ad28cc4dd98e39ac05211356a9b7a131bbb8b67551d20c3834107657697feaf46ad4ea89ba333750db4de58580ab30275778850585464c730301037d2710c3a0281e33141ca8c652ed5aafb7e647e94c068e68448215a7e8bb2c38b80ac99173ee0810751408ee17256a040225e7a2e9f0addce2402f735f5a422dd1f99419c01b29ea65c894b892e7ad59fa3b2fc4a7916729e00862273a1f2d45a1bcf08e42fa225b9a7e874a653fdc5f56065dc236016eccb35330a0dd295c08d682bbd22649bb6bb46b93aa762533b341b3c235ed399d84c23dc961c8cad57e6577c67001418dc406a9960157f57b92a10e67f2c16ed4c324b63dff70859a3b9cf3f4711c0a9a2558b6f2b94be0ec2b3638554bc81735aa92941ca33a1022c34c78aa7314d4e82547a98e8fd3051d7ba48dc7c511f27d2d51a330b350e1388063e84a7f1a5c65fab5a54a8535a9576095bd7114911287b7c6b865a0563a14dc14bb65bb985036002d7aac864c30535511e92a2b641c9d33b5f9374fb82b99c58138ee4881ba859a201bbb286940707223d26abaf99a49ee9b029780166271a089027c26d83d4c3b817431a48d8bcc6feb556bf65bb170b4b56bea9c992a3f1a668d5805ac7e7c47c5e5db3a1990a81d1fabec84fc09fc7039ca7cad344f1b7c0cd2ce8c41a0c4274a84396dac625df9c922aefd3a15663f001d0020372bc286947b68c43b102bbcd63d9bca71e15312f5363135e1efe8228e21a903"
+      },
+      {
+        "type": 16,
+        "hex_type": "0010",
+        "length": 5,
+        "data_hex": "0003026833"
+      },
+      {
+        "type": 43,
+        "hex_type": "002b",
+        "length": 3,
+        "data_hex": "020304"
+      },
+      {
+        "type": 45,
+        "hex_type": "002d",
+        "length": 2,
+        "data_hex": "0101"
+      }
+    ],
+    "supported_versions": [
+      772
+    ],
+    "supported_groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "signature_algorithms": [
+      1027,
+      2052,
+      1025,
+      1283,
+      2053,
+      1281,
+      2054,
+      1537,
+      513
+    ],
+    "compression_methods": [
+      0
+    ],
+    "ec_point_formats": [],
+    "sni": [
+      {
+        "name_type": 0,
+        "value": "quic-capture.invalid"
+      }
+    ],
+    "alpn": [
+      "h3"
+    ],
+    "key_shares": [
+      {
+        "group": 4588,
+        "hex_group": "11ec",
+        "length": 1216,
+        "sha256": "997bf0914e40ba7a48264d699bf93977d3ceed7801253cee58db066e24e55ae6"
+      },
+      {
+        "group": 29,
+        "hex_group": "001d",
+        "length": 32,
+        "sha256": "5656114d4863234efdebf26e8d9d335458e925bea7cb4e9b2fdc89a1e34be403"
+      }
+    ],
+    "hybrid_layout": {
+      "total_length": 1216,
+      "mlkem_public_key_bytes": 1184,
+      "x25519_bytes": 32,
+      "standard_mlkem_prefix_coefficient_check": true,
+      "reversed_layout_mlkem_suffix_coefficient_check": false,
+      "hybrid_x25519_tail_equals_classic": false,
+      "hybrid_mlkem_public_key_sha256": "7eabeb25663b0e17a94a6ebba3aeca76f3ecb6ffdfb99b166a28a54341f53f36",
+      "hybrid_x25519_tail_sha256": "01f5efd2f5b00e423b4528f32e0e3e32532bc66bb3ca8fef58ea6dee08d0d930"
+    },
+    "ech": {
+      "type": 0,
+      "kdf_id": 1,
+      "aead_id": 1,
+      "config_id": 205,
+      "enc_length": 32,
+      "payload_length": 208,
+      "enc_sha256": "eb0d7e56c7374ed33f1de1117209abf30885590af56d736768d3d53275944f4a",
+      "payload_sha256": "5ea172f8782248642202f53127e11c7402e422bf63647504a589b056cd6e0e03"
+    },
+    "quic_transport_parameters": [
+      {
+        "id": 1,
+        "hex_id": "1",
+        "name": "max_idle_timeout",
+        "length": 4,
+        "value_hex": "80007530",
+        "rfc9000_reserved_id": false,
+        "integer_value": 30000
+      },
+      {
+        "id": 17,
+        "hex_id": "11",
+        "name": "version_information",
+        "length": 12,
+        "value_hex": "00000001000000012a3ada9a",
+        "rfc9000_reserved_id": false
+      },
+      {
+        "id": 8,
+        "hex_id": "8",
+        "name": "initial_max_streams_bidi",
+        "length": 2,
+        "value_hex": "4064",
+        "rfc9000_reserved_id": false,
+        "integer_value": 100
+      },
+      {
+        "id": 7,
+        "hex_id": "7",
+        "name": "initial_max_stream_data_uni",
+        "length": 4,
+        "value_hex": "80600000",
+        "rfc9000_reserved_id": false,
+        "integer_value": 6291456
+      },
+      {
+        "id": 4,
+        "hex_id": "4",
+        "name": "initial_max_data",
+        "length": 4,
+        "value_hex": "80f00000",
+        "rfc9000_reserved_id": false,
+        "integer_value": 15728640
+      },
+      {
+        "id": 1330640052406058229,
+        "hex_id": "12776213df91fcf5",
+        "name": "unknown_or_reserved",
+        "length": 9,
+        "value_hex": "22baff946c9976af5a",
+        "rfc9000_reserved_id": true
+      },
+      {
+        "id": 15,
+        "hex_id": "f",
+        "name": "initial_source_connection_id",
+        "length": 0,
+        "value_hex": "",
+        "rfc9000_reserved_id": false
+      },
+      {
+        "id": 3,
+        "hex_id": "3",
+        "name": "max_udp_payload_size",
+        "length": 2,
+        "value_hex": "45c0",
+        "rfc9000_reserved_id": false,
+        "integer_value": 1472
+      },
+      {
+        "id": 12584,
+        "hex_id": "3128",
+        "name": "unknown_or_reserved",
+        "length": 4,
+        "value_hex": "4f524947",
+        "rfc9000_reserved_id": false
+      },
+      {
+        "id": 32,
+        "hex_id": "20",
+        "name": "max_datagram_frame_size",
+        "length": 4,
+        "value_hex": "80010000",
+        "rfc9000_reserved_id": false,
+        "integer_value": 65536
+      },
+      {
+        "id": 9,
+        "hex_id": "9",
+        "name": "initial_max_streams_uni",
+        "length": 2,
+        "value_hex": "4067",
+        "rfc9000_reserved_id": false,
+        "integer_value": 103
+      },
+      {
+        "id": 5,
+        "hex_id": "5",
+        "name": "initial_max_stream_data_bidi_local",
+        "length": 4,
+        "value_hex": "80600000",
+        "rfc9000_reserved_id": false,
+        "integer_value": 6291456
+      },
+      {
+        "id": 6,
+        "hex_id": "6",
+        "name": "initial_max_stream_data_bidi_remote",
+        "length": 4,
+        "value_hex": "80600000",
+        "rfc9000_reserved_id": false,
+        "integer_value": 6291456
+      }
+    ],
+    "ja3_string": "771,4865-4866-4867,0-17613-57-27-65037-13-10-51764-51-16-43-45,4588-29-23-24,",
+    "ja3_md5": "1ede84abc23b7736f99c952aa7cc41e3",
+    "ja4": "q13d0312h3_55b375c5d22e_178839b6cec1",
+    "ja4_cipher_input": "1301,1302,1303",
+    "ja4_extension_input": "000a,000d,001b,002b,002d,0033,0039,44cd,ca34,fe0d_0403,0804,0401,0503,0805,0501,0806,0601,0201"
+  },
+  "quic_frames": {
+    "datagrams": [
+      {
+        "file": "quic-after-00.bin",
+        "datagram_length": 1250,
+        "version": 1,
+        "dcid": "d3a2240df7573a83",
+        "scid": "",
+        "token_length": 0,
+        "packet_length": 1250,
+        "crypto_frames": [
+          {
+            "offset": 0,
+            "length": 66
+          },
+          {
+            "offset": 1046,
+            "length": 13
+          },
+          {
+            "offset": 1059,
+            "length": 34
+          },
+          {
+            "offset": 1093,
+            "length": 14
+          },
+          {
+            "offset": 1107,
+            "length": 47
+          },
+          {
+            "offset": 1154,
+            "length": 9
+          },
+          {
+            "offset": 1163,
+            "length": 31
+          },
+          {
+            "offset": 1194,
+            "length": 7
+          },
+          {
+            "offset": 1201,
+            "length": 356
+          },
+          {
+            "offset": 1557,
+            "length": 398
+          }
+        ]
+      },
+      {
+        "file": "quic-after-01.bin",
+        "datagram_length": 1250,
+        "version": 1,
+        "dcid": "d3a2240df7573a83",
+        "scid": "",
+        "token_length": 0,
+        "packet_length": 1250,
+        "crypto_frames": [
+          {
+            "offset": 66,
+            "length": 15
+          },
+          {
+            "offset": 81,
+            "length": 13
+          },
+          {
+            "offset": 94,
+            "length": 10
+          },
+          {
+            "offset": 104,
+            "length": 6
+          },
+          {
+            "offset": 110,
+            "length": 303
+          },
+          {
+            "offset": 413,
+            "length": 347
+          },
+          {
+            "offset": 760,
+            "length": 286
+          }
+        ]
+      }
+    ],
+    "reassembled_handshake_length": 1955
+  },
+  "comparison_to_current_chrome150": {
+    "ciphers": {
+      "chrome150_profile": [
+        43690,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "chrome153_tcp": [
+        2570,
+        4865,
+        4866,
+        4867,
+        49195,
+        49199,
+        49196,
+        49200,
+        52393,
+        52392,
+        49171,
+        49172,
+        156,
+        157,
+        47,
+        53
+      ],
+      "equal_including_grease_order": false
+    },
+    "extension_order": {
+      "chrome150_profile": [
+        19018,
+        0,
+        51,
+        27,
+        5,
+        17613,
+        11,
+        10,
+        35,
+        65037,
+        18,
+        43,
+        65281,
+        23,
+        13,
+        45,
+        16,
+        64250
+      ],
+      "chrome153_tcp": [
+        60138,
+        11,
+        16,
+        18,
+        27,
+        23,
+        65281,
+        43,
+        10,
+        51,
+        0,
+        51764,
+        5,
+        17613,
+        45,
+        13,
+        65037,
+        35,
+        6682
+      ],
+      "equal_including_grease_order": false
+    },
+    "supported_versions": {
+      "chrome150_profile": [
+        10794,
+        772,
+        771
+      ],
+      "chrome153_tcp": [
+        10794,
+        772,
+        771
+      ],
+      "equal_including_grease_order": true
+    },
+    "supported_groups": {
+      "chrome150_profile": [
+        43690,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "chrome153_tcp": [
+        60138,
+        4588,
+        29,
+        23,
+        24
+      ],
+      "equal_including_grease_order": false
+    },
+    "signature_algorithms": {
+      "chrome150_profile": [
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "chrome153_tcp": [
+        56026,
+        2308,
+        2309,
+        2310,
+        1027,
+        2052,
+        1025,
+        1283,
+        2053,
+        1281,
+        2054,
+        1537
+      ],
+      "equal_including_grease_order": false
+    },
+    "alpn": {
+      "chrome150_profile": [
+        "h2",
+        "http/1.1"
+      ],
+      "chrome153_tcp": [
+        "h2",
+        "http/1.1"
+      ],
+      "equal_including_grease_order": true
+    }
+  },
+  "source_raw_hashes": {
+    "chrome-153-running-tcp.bin": "f0c4224f8221184e4e43f78ac58805cc6ff375a378323e6b62b9a92ada2ba6a6",
+    "quic-after-00.bin": "1ee77f873354b2aa358481624cc22f4881dc21d7ab51578410533a4c4b881bfa",
+    "quic-after-01.bin": "01788d6f86535ccb02996b147a4ceadb49ccdd5ce5ceaec30063d08b6e201ced",
+    "after-relaunch.json": "b20a271cf3c5b94a3bdb837a1224b8a0b2c1b8be2121b170d5087af7475be29b"
+  }
+}

@@ -80,9 +80,12 @@ struct ClientArgs {
     /// Umbra server `host:port`.
     #[arg(long)]
     server: Option<String>,
-    /// Outer transport: `tcp` or `quic`.
+    /// Main outer transport: `tcp` or `quic`; also used for UDP unless overridden.
     #[arg(long)]
     transport: Option<String>,
+    /// UDP association transport: `tcp` or `quic`; defaults to the main transport.
+    #[arg(long = "udp-transport")]
+    udp_transport: Option<String>,
     /// Base64 X25519 server public key.
     #[arg(long = "public-key")]
     public_key: Option<String>,
@@ -166,6 +169,7 @@ fn client_overrides(args: &ClientArgs) -> ClientConfigOverrides {
     ClientConfigOverrides {
         server: args.server.clone(),
         transport: args.transport.clone(),
+        udp_transport: args.udp_transport.clone(),
         public_key: args.public_key.clone(),
         short_id: args.short_id.clone(),
         server_name: args.server_name.clone(),
@@ -238,6 +242,7 @@ mod tests {
             config: None,
             server: Some("198.51.100.10:443".to_owned()),
             transport: Some("tcp".to_owned()),
+            udp_transport: Some("quic".to_owned()),
             public_key: Some(b64(3)),
             short_id: Some("aa".to_owned()),
             server_name: Some("server.example".to_owned()),
@@ -253,6 +258,11 @@ mod tests {
         let cfg = resolve_client_cfg(&args).expect("client flags resolve");
 
         assert_eq!(cfg.server, "198.51.100.10:443");
+        assert_eq!(cfg.transport, umbra_core::config::TransportKind::Tcp);
+        assert_eq!(
+            cfg.effective_udp_transport(),
+            umbra_core::config::TransportKind::Quic
+        );
         assert_eq!(cfg.short_id, vec![0xaa]);
         assert_eq!(cfg.server_name, "server.example");
         assert_eq!(cfg.spider_path, "/spider");
@@ -265,6 +275,7 @@ mod tests {
             config: None,
             server: Some("198.51.100.10:443".to_owned()),
             transport: Some("invalid".to_owned()),
+            udp_transport: None,
             public_key: Some(b64(3)),
             short_id: Some("aa".to_owned()),
             server_name: Some("server.example".to_owned()),
@@ -278,6 +289,42 @@ mod tests {
         };
 
         assert!(resolve_client_cfg(&args).is_err());
+    }
+
+    #[test]
+    fn scenario_udp_transport_cli_flag_parses_and_validates_independently() {
+        for value in ["tcp", "quic", "invalid-secret-value"] {
+            let cli = Cli::try_parse_from(["umbra", "client", "--udp-transport", value])
+                .expect("UDP flag is recognized");
+            let Command::Client(mut args) = cli.command else {
+                panic!("client command expected");
+            };
+            assert_eq!(args.udp_transport.as_deref(), Some(value));
+            args.server = Some("server.example:443".to_owned());
+            args.transport = Some("tcp".to_owned());
+            args.public_key = Some(b64(3));
+            args.short_id = Some("aa".to_owned());
+            args.server_name = Some("server.example".to_owned());
+            args.fingerprint = Some("chrome-latest".to_owned());
+            args.mldsa_verify = Some(b64(4));
+            args.socks_listen = Some("127.0.0.1:1080".to_owned());
+            let resolved = resolve_client_cfg(&args);
+            if value == "invalid-secret-value" {
+                let error = resolved.expect_err("invalid UDP flag rejected before runtime");
+                assert!(!error.to_string().contains(value));
+                assert!(!error.to_string().contains(&b64(3)));
+            } else {
+                let cfg = resolved.expect("valid UDP flag");
+                assert_eq!(cfg.transport, umbra_core::config::TransportKind::Tcp);
+                let expected = if value == "quic" {
+                    umbra_core::config::TransportKind::Quic
+                } else {
+                    umbra_core::config::TransportKind::Tcp
+                };
+                assert_eq!(cfg.udp_transport, Some(expected));
+                assert_eq!(cfg.effective_udp_transport(), expected);
+            }
+        }
     }
 
     fn b64(byte: u8) -> String {

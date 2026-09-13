@@ -17,6 +17,7 @@ const METHOD_NO_ACCEPTABLE: u8 = 0xff;
 const CMD_CONNECT: u8 = 0x01;
 const CMD_UDP_ASSOCIATE: u8 = 0x03;
 const REP_SUCCEEDED: u8 = 0x00;
+const REP_GENERAL_FAILURE: u8 = 0x01;
 const REP_COMMAND_NOT_SUPPORTED: u8 = 0x07;
 const ATYP_IPV4: u8 = 0x01;
 const ATYP_DOMAIN: u8 = 0x03;
@@ -182,6 +183,19 @@ where
     W: AsyncWrite + Unpin,
 {
     write_bound_reply(writer, REP_SUCCEEDED, SocketAddr::from(([0, 0, 0, 0], 0))).await
+}
+
+/// Report a failed CONNECT setup without falsely acknowledging a target connection.
+pub async fn write_failure_reply<W>(writer: &mut W) -> Result<(), CoreError>
+where
+    W: AsyncWrite + Unpin,
+{
+    write_bound_reply(
+        writer,
+        REP_GENERAL_FAILURE,
+        SocketAddr::from(([0, 0, 0, 0], 0)),
+    )
+    .await
 }
 
 /// Write a SOCKS5 success reply with the supplied bound UDP endpoint.

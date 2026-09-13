@@ -308,6 +308,12 @@ transport = "tcp"
 - Works through most firewalls since port 443 TCP is rarely blocked.
 - Use with `tcp_evasion = "segment"` for conservative TCP segmentation.
 
+#### TCP mux capacity and recovery (current source)
+
+With `mux = true`, the client reuses up to four accepting outer connections and reserves real stream capacity before choosing one. The default 256 KiB per-stream window and 8 MiB per-outer receive budget allow 32 streams per outer, or up to 128 across accepting outers. Pool admission has a separate limit of 128 waiters. Four additional retirement slots allow draining outers to keep existing streams, with a hard limit of eight outers in total. If a new accepting outer is needed at that limit, only the oldest draining outer is retired; its remaining streams fail, and business requests or payloads are never replayed.
+
+Server TCP target setup gives DNS up to 5 seconds within a 14-second total budget, then races up to four resolved addresses at a time with a 250 ms stagger and bounded candidate rotation. The client distinguishes pool admission, SYN transmission, and target acknowledgement failures; its target-acknowledgement wait is 25 seconds to cover the server deadline and feedback. Failed TCP mux setup returns a standard SOCKS failure reply. Suspected stalled outers stop accepting new streams, allowing replacements while the retirement budget permits. Unreachable targets still return a bounded failure.
+
 ### QUIC
 
 ```toml

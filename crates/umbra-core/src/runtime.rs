@@ -7,7 +7,10 @@ use std::{
     io::{self, IoSliceMut},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket as StdUdpSocket},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     task::{Context, Poll},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -68,8 +71,9 @@ use crate::{
     quic_crypto,
     socks::{
         decode_udp_packet, encode_udp_response_packets, negotiate_no_auth, read_request,
-        write_bound_success_reply, write_success_reply, write_unsupported_command_reply,
-        SocksConnect, SocksRequest, SocksUdpReassembler, DEFAULT_RESPONSE_FRAGMENT_PAYLOAD,
+        write_bound_success_reply, write_failure_reply, write_success_reply,
+        write_unsupported_command_reply, SocksConnect, SocksRequest, SocksUdpReassembler,
+        DEFAULT_RESPONSE_FRAGMENT_PAYLOAD,
     },
     tls_io::{read_tls_record, spawn_tls_app_io, TlsAppEndpoint},
     CoreError,
@@ -77,6 +81,12 @@ use crate::{
 
 const DEFAULT_REPLAY_CAPACITY: usize = 65_536;
 const DEFAULT_OUTER_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_MUX_POOL_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_MUX_TARGET_TIMEOUT: Duration = Duration::from_secs(25);
+const MAX_MUX_OUTERS: usize = 4;
+const MAX_MUX_DRAINING_SPARE: usize = 4;
+const MAX_MUX_TOTAL_OUTERS: usize = MAX_MUX_OUTERS + MAX_MUX_DRAINING_SPARE;
+const MAX_MUX_QUEUED_OPENS: usize = 128;
 const DEFAULT_SESSION_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
 const DEFAULT_PROFILE_REFRESH_INTERVAL: Duration = Duration::from_hours(1);
 const DEFAULT_QUIC_FALLBACK_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -500,7 +510,7 @@ impl ServerRuntime {
                             profile.as_ref(),
                             replay.as_ref(),
                             current_unix_time()?,
-                            TcpStream::connect,
+                            crate::target_connect::connect_tcp_target,
                             timing,
                             &padding_scheme,
                         ))
@@ -563,28 +573,155 @@ pub struct ClientRuntime {
     connections: Arc<ClientConnections>,
 }
 
-#[derive(Default)]
 struct ClientConnections {
     quic: tokio::sync::Mutex<Option<QuicClientConnection>>,
-    mux: tokio::sync::Mutex<Option<(crate::mux_io::MuxDriver, crate::mux_io::ClientMux)>>,
+    mux: tokio::sync::Mutex<Vec<(crate::mux_io::MuxDriver, crate::mux_io::ClientMux)>>,
+    mux_changed: Arc<tokio::sync::Notify>,
+    stopped: tokio::sync::Notify,
+    closed: AtomicBool,
+    mux_waiters: tokio::sync::Semaphore,
+}
+
+impl Default for ClientConnections {
+    fn default() -> Self {
+        Self {
+            quic: tokio::sync::Mutex::new(None),
+            mux: tokio::sync::Mutex::new(Vec::new()),
+            mux_changed: Arc::new(tokio::sync::Notify::new()),
+            stopped: tokio::sync::Notify::new(),
+            closed: AtomicBool::new(false),
+            mux_waiters: tokio::sync::Semaphore::new(MAX_MUX_QUEUED_OPENS),
+        }
+    }
 }
 
 impl ClientConnections {
-    async fn mux(&self, cfg: &ClientCfg) -> Result<crate::mux_io::ClientMux, CoreError> {
-        let mut active = self.mux.lock().await;
-        if let Some((_, handle)) = active.as_ref() {
-            if handle.is_healthy() {
-                return Ok(handle.clone());
+    async fn open_mux(
+        &self,
+        cfg: &ClientCfg,
+        target: TargetAddr,
+    ) -> Result<crate::mux_io::MuxIo, CoreError> {
+        let reservation = self
+            .reserve_mux(|| async {
+                let outer = open_tcp_outer(cfg).await?;
+                MuxSession::client(outer, &cfg.padding_scheme).map_err(CoreError::from)
+            })
+            .await?;
+        reservation
+            .open(
+                target,
+                DEFAULT_OUTER_CONNECT_TIMEOUT,
+                DEFAULT_MUX_TARGET_TIMEOUT,
+            )
+            .await
+            .map_err(CoreError::from)
+    }
+
+    async fn reserve_mux<IO, Open, Opening>(
+        &self,
+        open: Open,
+    ) -> Result<crate::mux_io::MuxReservation, CoreError>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        Open: FnMut() -> Opening,
+        Opening: Future<Output = Result<MuxSession<IO>, CoreError>>,
+    {
+        self.reserve_mux_with_timeout(open, DEFAULT_MUX_POOL_TIMEOUT)
+            .await
+    }
+
+    async fn reserve_mux_with_timeout<IO, Open, Opening>(
+        &self,
+        open: Open,
+        wait_timeout: Duration,
+    ) -> Result<crate::mux_io::MuxReservation, CoreError>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        Open: FnMut() -> Opening,
+        Opening: Future<Output = Result<MuxSession<IO>, CoreError>>,
+    {
+        let _waiting = self.mux_waiters.try_acquire().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "mux pool admission queue is full",
+            )
+        })?;
+        tokio::time::timeout(wait_timeout, self.reserve_mux_inner(open))
+            .await
+            .map_err(|_| CoreError::IdleTimeout("mux pool admission"))?
+    }
+
+    async fn reserve_mux_inner<IO, Open, Opening>(
+        &self,
+        mut open: Open,
+    ) -> Result<crate::mux_io::MuxReservation, CoreError>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        Open: FnMut() -> Opening,
+        Opening: Future<Output = Result<MuxSession<IO>, CoreError>>,
+    {
+        loop {
+            // Register before inspecting slots so their last release cannot be lost.
+            let changed = self.mux_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let mut active = self.mux.lock().await;
+            if self.closed.load(Ordering::Acquire) {
+                return Err(CoreError::InvalidConfig("client runtime is shutting down"));
+            }
+            let mut index = 0;
+            while index < active.len() {
+                let handle = &active[index].1;
+                if !handle.is_healthy() || (!handle.is_accepting() && handle.live_streams() == 0) {
+                    let (driver, _) = active.remove(index);
+                    driver.shutdown().await;
+                } else {
+                    index += 1;
+                }
+            }
+            for (_, handle) in active.iter() {
+                if let Some(reserved) = handle.try_reserve() {
+                    return Ok(reserved);
+                }
+            }
+            let can_create = active
+                .iter()
+                .filter(|(_, handle)| handle.is_accepting())
+                .count()
+                < MAX_MUX_OUTERS;
+            if can_create && active.len() == MAX_MUX_TOTAL_OUTERS {
+                // Preserve old streams while spare slots exist. At the hard
+                // total bound, retire only the oldest draining outer: its old
+                // operations fail terminally and are never replayed elsewhere.
+                if let Some(index) = oldest_draining_outer(&active) {
+                    let (driver, _) = active.remove(index);
+                    driver.shutdown().await;
+                }
+            }
+            if can_create && active.len() < MAX_MUX_TOTAL_OUTERS {
+                let stopped = self.stopped.notified();
+                tokio::pin!(stopped);
+                stopped.as_mut().enable();
+                if self.closed.load(Ordering::Acquire) {
+                    return Err(CoreError::InvalidConfig("client runtime is shutting down"));
+                }
+                // The pool lock coordinates establishment. It never guards stream I/O.
+                let session = tokio::select! {
+                    () = &mut stopped => return Err(CoreError::InvalidConfig("client runtime is shutting down")),
+                    result = open() => result?,
+                };
+                let (driver, handle) =
+                    crate::mux_io::start_client_with_notifier(session, self.mux_changed.clone())?;
+                let reservation = handle.try_reserve();
+                active.push((driver, handle));
+                if let Some(reservation) = reservation {
+                    return Ok(reservation);
+                }
+            } else {
+                drop(active);
+                changed.await;
             }
         }
-        if let Some((driver, _)) = active.take() {
-            driver.shutdown().await;
-        }
-        let outer = open_tcp_outer(cfg).await?;
-        let session = MuxSession::client(outer, &cfg.padding_scheme)?;
-        let (driver, handle) = crate::mux_io::start_client(session)?;
-        *active = Some((driver, handle.clone()));
-        Ok(handle)
     }
 
     async fn quic(&self, cfg: &ClientCfg) -> Result<quinn::Connection, CoreError> {
@@ -602,7 +739,11 @@ impl ClientConnections {
     }
 
     async fn shutdown(&self) {
-        if let Some((driver, _)) = self.mux.lock().await.take() {
+        self.closed.store(true, Ordering::Release);
+        self.stopped.notify_waiters();
+        self.mux_changed.notify_waiters();
+        let active = std::mem::take(&mut *self.mux.lock().await);
+        for (driver, _) in active {
             driver.shutdown().await;
         }
         if let Some(outer) = self.quic.lock().await.take() {
@@ -611,6 +752,18 @@ impl ClientConnections {
                 .await;
         }
     }
+}
+
+fn oldest_draining_outer(
+    outers: &[(crate::mux_io::MuxDriver, crate::mux_io::ClientMux)],
+) -> Option<usize> {
+    outers
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, handle))| !handle.is_accepting())
+        .filter_map(|(index, (_, handle))| handle.draining_since().map(|since| (index, since)))
+        .min_by_key(|(_, since)| *since)
+        .map(|(index, _)| index)
 }
 
 struct QuicClientConnection {
@@ -916,11 +1069,15 @@ where
     let mode = selected_client_inner_mode(cfg);
     match cfg.transport {
         TransportKind::Tcp if mode == ClientInnerMode::Mux => {
-            let mux = connections.mux(cfg).await?;
-            let mut stream =
-                tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, mux.open(target.clone()))
-                    .await
-                    .map_err(|_| CoreError::IdleTimeout("mux target setup"))??;
+            let mut stream = match connections.open_mux(cfg, target.clone()).await {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let _ =
+                        tokio::time::timeout(Duration::from_secs(2), write_failure_reply(socks))
+                            .await;
+                    return Err(error);
+                }
+            };
             write_success_reply(socks).await?;
             relay_bidirectional_until_idle(socks, &mut stream, DEFAULT_SESSION_IDLE_TIMEOUT)
                 .await?;
@@ -2253,7 +2410,7 @@ async fn run_quic_accepted_bi_stream(
             .map_err(|_| CoreError::IdleTimeout("server QUIC target header"))??;
         let target_io = tokio::time::timeout(
             DEFAULT_OUTER_CONNECT_TIMEOUT,
-            TcpStream::connect(target_to_host_port(&target)),
+            crate::target_connect::connect_tcp_target(target_to_host_port(&target)),
         )
         .await
         .map_err(|_| CoreError::IdleTimeout("server QUIC target connect"))??;
@@ -3378,6 +3535,482 @@ mod tests {
             assert!(control.ticks.send(()).is_err());
             assert!(control.probes.recv().await.is_none());
         }
+    }
+
+    struct MuxPoolFixture {
+        created: std::sync::atomic::AtomicUsize,
+        silent_outers: usize,
+        drivers: Mutex<Vec<crate::mux_io::MuxDriver>>,
+        tasks: Mutex<Vec<JoinHandle<()>>>,
+        accepted: mpsc::UnboundedSender<crate::mux_io::MuxIo>,
+        peers: tokio::sync::Mutex<mpsc::UnboundedReceiver<crate::mux_io::MuxIo>>,
+    }
+
+    impl MuxPoolFixture {
+        fn new(silence_first: bool) -> Self {
+            Self::with_silent_outers(usize::from(silence_first))
+        }
+
+        fn with_silent_outers(silent_outers: usize) -> Self {
+            let (accepted, peers) = mpsc::unbounded_channel();
+            Self {
+                created: std::sync::atomic::AtomicUsize::new(0),
+                silent_outers,
+                drivers: Mutex::new(Vec::new()),
+                tasks: Mutex::new(Vec::new()),
+                accepted,
+                peers: tokio::sync::Mutex::new(peers),
+            }
+        }
+
+        async fn session(&self) -> Result<MuxSession<tokio::io::DuplexStream>, CoreError> {
+            let index = self.created.fetch_add(1, Ordering::SeqCst);
+            // Exercise contention while an outer is being established, before publication.
+            tokio::task::yield_now().await;
+            let (local, peer) = tokio::io::duplex(1024 * 1024);
+            let mut session = MuxSession::server(peer, &PadScheme::none())?;
+            let task = if index < self.silent_outers {
+                tokio::spawn(async move {
+                    let MuxEvent::Syn { stream_id, .. } = session.receive_next().await.unwrap()
+                    else {
+                        panic!("expected first SYN");
+                    };
+                    session.queue_accept(stream_id).unwrap();
+                    session.flush_pending().await.unwrap();
+                    std::future::pending::<()>().await;
+                    drop(session);
+                })
+            } else {
+                let (driver, mut incoming) = crate::mux_io::start_server(session)?;
+                self.drivers.lock().unwrap().push(driver);
+                let accepted = self.accepted.clone();
+                tokio::spawn(async move {
+                    let mut delayed = Vec::new();
+                    while let Ok(pending) = incoming.accept().await {
+                        if pending.target == mux_test_target(2) {
+                            pending.reject();
+                        } else if pending.target == mux_test_target(3) {
+                            delayed.push(pending);
+                        } else if let Ok(stream) = pending.accept().await {
+                            let _ = accepted.send(stream);
+                        }
+                    }
+                })
+            };
+            self.tasks.lock().unwrap().push(task);
+            MuxSession::client(local, &PadScheme::none()).map_err(CoreError::from)
+        }
+
+        async fn peer(&self) -> crate::mux_io::MuxIo {
+            self.peers.lock().await.recv().await.unwrap()
+        }
+    }
+
+    impl Drop for MuxPoolFixture {
+        fn drop(&mut self) {
+            for task in self.tasks.get_mut().unwrap().iter() {
+                task.abort();
+            }
+        }
+    }
+
+    fn mux_test_target(port: u16) -> TargetAddr {
+        TargetAddr::Ipv4(Ipv4Addr::LOCALHOST, port)
+    }
+
+    async fn pool_test_open(
+        pool: &ClientConnections,
+        fixture: &MuxPoolFixture,
+        port: u16,
+    ) -> Result<crate::mux_io::MuxIo, CoreError> {
+        pool.reserve_mux(|| fixture.session())
+            .await?
+            .open(
+                mux_test_target(port),
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+            )
+            .await
+            .map_err(CoreError::from)
+    }
+
+    async fn retain_one_draining_stream(
+        pool: &ClientConnections,
+        fixture: &MuxPoolFixture,
+    ) -> (crate::mux_io::MuxIo, crate::mux_io::ClientMux) {
+        let held = pool_test_open(pool, fixture, 1).await.unwrap();
+        let handle = pool.mux.lock().await.last().unwrap().1.clone();
+        let reservation = pool.reserve_mux(|| fixture.session()).await.unwrap();
+        let error = reservation
+            .open(
+                mux_test_target(1),
+                Duration::from_secs(1),
+                Duration::from_millis(20),
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(handle.is_healthy());
+        assert!(!handle.is_accepting());
+        assert!(handle.draining_since().is_some());
+        (held, handle)
+    }
+
+    #[tokio::test]
+    async fn scenario_four_draining_outers_with_one_stream_each_allow_recovery() {
+        timeout(Duration::from_secs(5), async {
+            let pool = ClientConnections::default();
+            let fixture = MuxPoolFixture::with_silent_outers(4);
+            let mut held = Vec::new();
+            for _ in 0..4 {
+                held.push(retain_one_draining_stream(&pool, &fixture).await);
+            }
+            assert_eq!(pool.mux.lock().await.len(), 4);
+            let _new = pool_test_open(&pool, &fixture, 1).await.unwrap();
+            assert_eq!(fixture.created.load(Ordering::SeqCst), 5);
+            assert_eq!(pool.mux.lock().await.len(), 5);
+            assert_eq!(
+                pool.mux
+                    .lock()
+                    .await
+                    .iter()
+                    .filter(|(_, handle)| handle.is_accepting())
+                    .count(),
+                1
+            );
+            assert!(
+                held.iter().all(|(_, handle)| handle.is_healthy()),
+                "spare retirement slots preserve old streams"
+            );
+            pool.shutdown().await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn scenario_full_retirement_budget_evicts_only_oldest_draining_outer() {
+        timeout(Duration::from_secs(5), async {
+            let pool = ClientConnections::default();
+            let fixture = MuxPoolFixture::with_silent_outers(4);
+            let mut old = Vec::new();
+            for _ in 0..4 {
+                old.push(retain_one_draining_stream(&pool, &fixture).await);
+            }
+            let mut healthy = Vec::new();
+            for _ in 0..127 {
+                healthy.push(pool_test_open(&pool, &fixture, 1).await.unwrap());
+            }
+            let last_slot = pool.reserve_mux(|| fixture.session()).await.unwrap();
+            assert_eq!(fixture.created.load(Ordering::SeqCst), MAX_MUX_TOTAL_OUTERS);
+            let handles = pool.mux.lock().await;
+            assert_eq!(handles.len(), MAX_MUX_TOTAL_OUTERS);
+            assert_eq!(
+                handles
+                    .iter()
+                    .filter(|(_, handle)| handle.is_accepting())
+                    .count(),
+                MAX_MUX_OUTERS
+            );
+            let newer = handles.last().unwrap().1.clone();
+            drop(handles);
+            let error = pool
+                .reserve_mux_with_timeout(|| fixture.session(), Duration::from_millis(10))
+                .await
+                .err()
+                .unwrap();
+            assert!(matches!(
+                error,
+                CoreError::IdleTimeout("mux pool admission")
+            ));
+            assert!(old.iter().all(|(_, handle)| handle.is_healthy()));
+            // Stop admission on one newer outer. The remaining three accepting
+            // outers are full, so recovery now needs a slot at the total bound.
+            assert!(last_slot
+                .open(
+                    mux_test_target(3),
+                    Duration::from_secs(1),
+                    Duration::from_millis(30),
+                )
+                .await
+                .is_err());
+            assert!(!newer.is_accepting());
+            let _replacement = pool_test_open(&pool, &fixture, 1).await.unwrap();
+            assert_eq!(
+                fixture.created.load(Ordering::SeqCst),
+                MAX_MUX_TOTAL_OUTERS + 1
+            );
+            assert_eq!(pool.mux.lock().await.len(), MAX_MUX_TOTAL_OUTERS);
+            assert_eq!(
+                pool.mux
+                    .lock()
+                    .await
+                    .iter()
+                    .filter(|(_, handle)| handle.is_accepting())
+                    .count(),
+                MAX_MUX_OUTERS
+            );
+            assert!(!old[0].1.is_healthy());
+            assert!(old[0].0.write(b"must not replay").await.is_err());
+            assert!(old[1..].iter().all(|(_, handle)| handle.is_healthy()));
+            assert!(
+                newer.is_healthy(),
+                "newer draining streams retain their owner"
+            );
+            healthy[0].write_all(b"live").await.unwrap();
+            let mut peer = fixture.peer().await;
+            let mut bytes = [0; 4];
+            peer.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(
+                &bytes, b"live",
+                "healthy accepting siblings survive retirement"
+            );
+            pool.shutdown().await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn scenario_tcp_mux_pool_reserves_capacity_and_deduplicates_concurrent_setup() {
+        timeout(Duration::from_secs(5), async {
+            let pool = Arc::new(ClientConnections::default());
+            let fixture = Arc::new(MuxPoolFixture::new(false));
+            let mut requests = JoinSet::new();
+            for _ in 0..40 {
+                let pool = pool.clone();
+                let fixture = fixture.clone();
+                requests.spawn(async move { pool_test_open(&pool, &fixture, 1).await.unwrap() });
+            }
+            let mut held = Vec::new();
+            while let Some(stream) = requests.join_next().await {
+                held.push(stream.unwrap());
+            }
+            assert_eq!(held.len(), 40);
+            assert_eq!(fixture.created.load(Ordering::SeqCst), 2);
+            assert_eq!(pool.mux.lock().await.len(), 2);
+            let mut peer = fixture.peer().await;
+            peer.write_all(b"response").await.unwrap();
+            // All forty SYN_ACKs completed without waiting for any held stream to close.
+            pool.shutdown().await;
+            assert!(pool.mux.lock().await.is_empty());
+            for mut stream in held {
+                assert!(stream.write(b"closed").await.is_err());
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn scenario_tcp_mux_pool_target_failure_preserves_sibling_and_reuse() {
+        timeout(Duration::from_secs(5), async {
+            let pool = ClientConnections::default();
+            let fixture = MuxPoolFixture::new(false);
+            let mut sibling = pool_test_open(&pool, &fixture, 1).await.unwrap();
+            let mut peer = fixture.peer().await;
+            assert!(pool_test_open(&pool, &fixture, 2).await.is_err());
+            let handles = pool.mux.lock().await;
+            assert_eq!(handles.len(), 1);
+            assert!(handles[0].1.is_accepting());
+            drop(handles);
+            sibling.write_all(b"live").await.unwrap();
+            let mut received = [0; 4];
+            peer.read_exact(&mut received).await.unwrap();
+            assert_eq!(&received, b"live");
+            let _later = pool_test_open(&pool, &fixture, 1).await.unwrap();
+            assert_eq!(fixture.created.load(Ordering::SeqCst), 1);
+            pool.shutdown().await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn scenario_tcp_mux_pool_stalled_outer_drains_without_aborting_sibling() {
+        timeout(Duration::from_secs(5), async {
+            let pool = ClientConnections::default();
+            let fixture = MuxPoolFixture::new(true);
+            let sibling = pool_test_open(&pool, &fixture, 1).await.unwrap();
+            let old = pool.mux.lock().await[0].1.clone();
+            let reservation = pool.reserve_mux(|| fixture.session()).await.unwrap();
+            let error = reservation
+                .open(
+                    mux_test_target(1),
+                    Duration::from_secs(1),
+                    Duration::from_millis(30),
+                )
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert!(error.to_string().contains("acknowledgement"));
+            assert!(old.is_healthy());
+            assert!(!old.is_accepting());
+            let _replacement = pool_test_open(&pool, &fixture, 1).await.unwrap();
+            assert_eq!(fixture.created.load(Ordering::SeqCst), 2);
+            assert!(
+                old.is_healthy(),
+                "existing sibling is not aborted by replacement"
+            );
+            drop(sibling);
+            let _next = pool_test_open(&pool, &fixture, 1).await.unwrap();
+            assert!(!old.is_healthy(), "idle draining outer is now reclaimed");
+            assert_eq!(pool.mux.lock().await.len(), 1);
+            pool.shutdown().await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn scenario_tcp_mux_pool_replaces_closed_outer_without_replaying_payload() {
+        timeout(Duration::from_secs(5), async {
+            let pool = ClientConnections::default();
+            let fixture = MuxPoolFixture::new(false);
+            let mut first = pool_test_open(&pool, &fixture, 1).await.unwrap();
+            let mut first_peer = fixture.peer().await;
+            first.write_all(b"before").await.unwrap();
+            let mut before = [0; 6];
+            first_peer.read_exact(&mut before).await.unwrap();
+            assert_eq!(&before, b"before");
+            let old = pool.mux.lock().await[0].1.clone();
+            let server = fixture.drivers.lock().unwrap().pop().unwrap();
+            server.shutdown().await;
+            while old.is_healthy() {
+                tokio::task::yield_now().await;
+            }
+            assert!(first.write(b"not replayed").await.is_err());
+            let mut next = pool_test_open(&pool, &fixture, 1).await.unwrap();
+            let mut next_peer = fixture.peer().await;
+            next.write_all(b"after").await.unwrap();
+            let mut after = [0; 5];
+            next_peer.read_exact(&mut after).await.unwrap();
+            assert_eq!(&after, b"after");
+            assert_eq!(fixture.created.load(Ordering::SeqCst), 2);
+            assert_eq!(pool.mux.lock().await.len(), 1);
+            pool.shutdown().await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn scenario_tcp_mux_pool_shutdown_wakes_capacity_and_establishment_waiters() {
+        timeout(Duration::from_secs(5), async {
+            let pool = Arc::new(ClientConnections::default());
+            let fixture = Arc::new(MuxPoolFixture::new(false));
+            let mut reservations = Vec::new();
+            for _ in 0..128 {
+                reservations.push(pool.reserve_mux(|| fixture.session()).await.unwrap());
+            }
+            assert_eq!(fixture.created.load(Ordering::SeqCst), MAX_MUX_OUTERS);
+            let waiting_pool = pool.clone();
+            let waiting_fixture = fixture.clone();
+            let waiter = tokio::spawn(async move {
+                waiting_pool.reserve_mux(|| waiting_fixture.session()).await
+            });
+            tokio::task::yield_now().await;
+            assert!(!waiter.is_finished());
+            pool.shutdown().await;
+            assert!(waiter.await.unwrap().is_err());
+            assert!(pool.mux.lock().await.is_empty());
+            drop(reservations);
+
+            let pool = Arc::new(ClientConnections::default());
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let opening_pool = pool.clone();
+            let pending = tokio::spawn(async move {
+                let mut started = Some(started);
+                opening_pool.reserve_mux(|| {
+                    started.take().unwrap().send(()).unwrap();
+                    std::future::pending::<Result<MuxSession<tokio::io::DuplexStream>, CoreError>>()
+                }).await
+            });
+            ready.await.unwrap();
+            pool.shutdown().await;
+            assert!(pending.await.unwrap().is_err());
+            assert!(pool.mux.lock().await.is_empty());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn scenario_mux_setup_failure_returns_a_socks_failure_reply() {
+        timeout(Duration::from_secs(5), async {
+            let (mut cfg, _server) = pooled_client_fixture().await;
+            cfg.transport = TransportKind::Tcp;
+            cfg.mux = true;
+            cfg.server = "127.0.0.1:invalid".to_owned();
+            let (mut client, mut socks) = tokio::io::duplex(64);
+            let task =
+                tokio::spawn(async move { client_session_from_config(&cfg, &mut socks).await });
+            client.write_all(&[5, 1, 0]).await.unwrap();
+            let mut method = [0; 2];
+            client.read_exact(&mut method).await.unwrap();
+            assert_eq!(method, [5, 0]);
+            client
+                .write_all(&[5, 1, 0, 1, 127, 0, 0, 1, 0, 80])
+                .await
+                .unwrap();
+            let mut reply = [0; 10];
+            client.read_exact(&mut reply).await.unwrap();
+            assert_eq!(reply, [5, 1, 0, 1, 0, 0, 0, 0, 0, 0]);
+            assert!(task.await.unwrap().is_err());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn scenario_tcp_mux_pool_has_a_bounded_admission_queue() {
+        timeout(Duration::from_secs(5), async {
+            let pool = Arc::new(ClientConnections::default());
+            let fixture = Arc::new(MuxPoolFixture::new(false));
+            let mut held = Vec::new();
+            for _ in 0..128 {
+                held.push(pool.reserve_mux(|| fixture.session()).await.unwrap());
+            }
+            let capacity_error = pool
+                .reserve_mux_with_timeout(|| fixture.session(), Duration::from_millis(10))
+                .await
+                .err()
+                .unwrap();
+            assert!(matches!(
+                capacity_error,
+                CoreError::IdleTimeout("mux pool admission")
+            ));
+            assert!(pool
+                .mux
+                .lock()
+                .await
+                .iter()
+                .all(|(_, handle)| handle.is_accepting()));
+            let mut waiting = JoinSet::new();
+            for _ in 0..MAX_MUX_QUEUED_OPENS {
+                let pool = pool.clone();
+                let fixture = fixture.clone();
+                waiting.spawn(async move { pool.reserve_mux(|| fixture.session()).await });
+            }
+            while pool.mux_waiters.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+            let error = pool.reserve_mux(|| fixture.session()).await.err().unwrap();
+            assert!(
+                matches!(error, CoreError::Io(error) if error.kind() == io::ErrorKind::WouldBlock)
+            );
+            assert_eq!(fixture.created.load(Ordering::SeqCst), MAX_MUX_OUTERS);
+            pool.shutdown().await;
+            while let Some(result) = waiting.join_next().await {
+                assert!(result.unwrap().is_err());
+            }
+            assert_eq!(pool.mux_waiters.available_permits(), MAX_MUX_QUEUED_OPENS);
+            drop(held);
+        })
+        .await
+        .unwrap();
     }
 
     async fn pooled_client_fixture() -> (ClientCfg, ServerRuntime) {

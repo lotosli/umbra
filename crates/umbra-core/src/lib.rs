@@ -20,6 +20,7 @@ pub(crate) mod quic_crypto;
 pub mod relay;
 pub mod runtime;
 pub mod socks;
+mod target_connect;
 pub mod tls_io;
 
 pub use error::CoreError;

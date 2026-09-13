@@ -72,17 +72,29 @@ where
 {
     tokio::spawn(async move {
         loop {
-            let Ok(Some(record)) = read_tls_record(&mut raw_read).await else {
-                let _ = plain_write.shutdown().await;
-                return;
+            let record = match read_tls_record(&mut raw_read).await {
+                Ok(Some(record)) => record,
+                Ok(None) => {
+                    let _ = plain_write.shutdown().await;
+                    return;
+                }
+                Err(error) => {
+                    report_bridge_error("TCP record read", &error);
+                    let _ = plain_write.shutdown().await;
+                    return;
+                }
             };
             let plaintext = match endpoint.lock() {
                 Ok(mut endpoint) => endpoint.open(&record).map_err(tls_to_io),
                 Err(_) => Err(io::Error::other("TLS endpoint mutex poisoned")),
             };
-            let Ok(plaintext) = plaintext else {
-                let _ = plain_write.shutdown().await;
-                return;
+            let plaintext = match plaintext {
+                Ok(plaintext) => plaintext,
+                Err(error) => {
+                    report_bridge_error("record decrypt", &error);
+                    let _ = plain_write.shutdown().await;
+                    return;
+                }
             };
             if plain_write.write_all(&plaintext).await.is_err() {
                 return;
@@ -116,18 +128,32 @@ where
                 Ok(mut endpoint) => endpoint.seal(&buf[..read]).map_err(tls_to_io),
                 Err(_) => Err(io::Error::other("TLS endpoint mutex poisoned")),
             };
-            let Ok(record) = record else {
-                let _ = raw_write.shutdown().await;
-                return;
+            let record = match record {
+                Ok(record) => record,
+                Err(error) => {
+                    report_bridge_error("record encrypt", &error);
+                    let _ = raw_write.shutdown().await;
+                    return;
+                }
             };
-            if raw_write.write_all(&record).await.is_err() {
+            if let Err(error) = raw_write.write_all(&record).await {
+                report_bridge_error("TCP record write", &error);
                 return;
             }
-            if raw_write.flush().await.is_err() {
+            if let Err(error) = raw_write.flush().await {
+                report_bridge_error("TCP flush", &error);
                 return;
             }
         }
     })
+}
+
+fn report_bridge_error(phase: &'static str, error: &io::Error) {
+    // Only the stage and OS error class are emitted, never peer or payload data.
+    eprintln!(
+        "umbra TLS bridge error: phase={phase}, kind={:?}",
+        error.kind()
+    );
 }
 
 /// Read one complete TLS record from an async reader.

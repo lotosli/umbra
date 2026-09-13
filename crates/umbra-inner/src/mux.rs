@@ -281,6 +281,14 @@ where
         self.streams.len()
     }
 
+    /// Maximum streams allowed by both the stream count and reserved receive budget.
+    #[must_use]
+    pub fn stream_capacity(&self) -> usize {
+        MAX_RECEIVE_BUFFER_BYTES
+            .checked_div(self.settings.initial_window)
+            .map_or(MAX_STREAMS, |limit| MAX_STREAMS.min(limit))
+    }
+
     /// Queue SYN without waiting for I/O or SYN_ACK (client only).
     ///
     /// The returned id belongs to the session immediately. Wait for its SynAck
@@ -795,9 +803,7 @@ where
     }
 
     fn check_stream_capacity(&self) -> Result<(), InnerError> {
-        if self.streams.len() >= MAX_STREAMS
-            || (self.streams.len() + 1) * self.settings.initial_window > MAX_RECEIVE_BUFFER_BYTES
-        {
+        if self.streams.len() >= self.stream_capacity() {
             return Err(would_block());
         }
         Ok(())

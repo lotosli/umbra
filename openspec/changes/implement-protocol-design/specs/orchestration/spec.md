@@ -29,7 +29,7 @@ The system SHALL support cancellation or signal-triggered shutdown for listeners
 - **THEN** listeners stop accepting new connections and active sessions are allowed to finish or are cancelled by policy
 
 ### Requirement: Shared authenticated outer connections
-A client runtime SHALL reuse a healthy authenticated TCP mux session or QUIC connection for compatible concurrent SOCKS CONNECT requests under the same validated configuration. Connection establishment SHALL be coordinated so concurrent requests do not independently create identical outer sessions. TCP solo streams SHALL retain exclusive outer connections.
+A client runtime SHALL reuse capacity-eligible healthy authenticated TCP mux sessions from a bounded pool, or a QUIC connection, for compatible concurrent SOCKS CONNECT requests under the same validated configuration. Connection establishment SHALL be coordinated so concurrent requests do not independently create identical outer sessions. TCP solo streams SHALL retain exclusive outer connections.
 
 #### Scenario: Concurrent SOCKS requests share one mux session
 - **WHEN** two SOCKS CONNECT requests arrive concurrently with TCP mux enabled
@@ -63,3 +63,57 @@ TCP mux UDP associations SHALL retain dedicated outer sessions while the wire pr
 #### Scenario: Concurrent UDP associations remain separate
 - **WHEN** two SOCKS UDP associations coexist with pooled CONNECT streams
 - **THEN** each association receives only its own replies, and closing one association does not close the other association or the CONNECT session
+
+
+### Requirement: Capacity-aware mux admission
+A TCP client SHALL reserve actual session capacity before submitting a logical open. When one session has no capacity and the bounded outer-session budget permits another session, the client SHALL coordinate a new outer rather than wait only on the full session. Session, reserved-stream, and waiting-open counts SHALL remain bounded.
+
+#### Scenario: More than one outer of held streams
+- **WHEN** forty successful CONNECT streams remain open under default receive-credit settings
+- **THEN** they share two authenticated outer sessions and all complete setup without waiting for an unrelated stream to close
+
+#### Scenario: Capacity reclaimed after close
+- **WHEN** a closed or reset stream releases its inner receive reservation
+- **THEN** a waiting compatible open can reserve that capacity without exceeding the configured bounds
+
+#### Scenario: Bounded admission and shutdown
+- **WHEN** all outer capacities and the bounded admission queue are occupied, or runtime shutdown begins
+- **THEN** excess requests fail explicitly and shutdown wakes every queued waiter and cancels pending establishment
+
+### Requirement: Recoverable mux opening progress
+The client SHALL distinguish admission, SYN transmission, and target acknowledgement failure. An outer that stops making opening progress SHALL stop accepting new streams so later requests can use a replacement, while a single target rejection SHALL NOT terminate unrelated healthy streams. No business payload SHALL be replayed.
+
+#### Scenario: Silent outer after a successful stream
+- **WHEN** an established outer stops returning opening acknowledgements without EOF or RST
+- **THEN** an opening deadline makes that outer ineligible for new streams and a later request can establish a replacement without replaying prior business data
+
+#### Scenario: A slow target and a healthy sibling
+- **WHEN** one target rejects or delays setup while another stream continues normally
+- **THEN** the healthy sibling survives and ordinary target rejection does not invalidate its entire outer
+
+### Requirement: Bounded multi-address target connection
+Production TCP target connection SHALL resolve and attempt candidate addresses within a total setup budget. A black-holed first candidate SHALL NOT prevent trying a reachable later candidate. DNS and TCP errors SHALL identify their stage without revealing target or credential values.
+
+#### Scenario: First candidate is unreachable
+- **WHEN** the first address stays pending and a later resolved address is reachable
+- **THEN** a staggered bounded attempt connects to the reachable address without waiting for the first address's full operating-system timeout
+
+#### Scenario: All attempts or DNS fail
+- **WHEN** DNS fails, the candidate set is empty, or all bounded TCP attempts fail or time out
+- **THEN** the operation returns a stage-specific error and its owned attempts are cancelled and reaped
+
+#### Scenario: A single slow address remains viable
+- **WHEN** no untried candidate needs a connection slot
+- **THEN** the remaining attempt retains the overall setup budget instead of being prematurely removed by a slot-recycling deadline
+
+
+### Requirement: Bounded retirement does not starve fresh connections
+Retiring outers SHALL have a separate bounded allowance from accepting outers. A small number of old streams SHALL NOT occupy every accepting slot indefinitely. If the total outer bound is exhausted and a replacement is needed, the runtime MAY terminate the oldest retiring outer, reporting terminal stream errors without replay; it SHALL NOT evict a healthy accepting outer under this rule.
+
+#### Scenario: Four retiring outers still have old streams
+- **WHEN** four non-accepting outers each retain one old stream and a new CONNECT arrives
+- **THEN** the client establishes an accepting replacement while preserving the old streams within the separate retirement budget
+
+#### Scenario: Total retirement budget is exhausted
+- **WHEN** a new accepting outer is needed at the total bounded outer count and at least one outer is retiring
+- **THEN** the oldest retiring outer is terminated and replaced, unrelated accepting outers survive, and no business data is replayed

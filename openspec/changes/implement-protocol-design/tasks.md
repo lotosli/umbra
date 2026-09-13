@@ -166,3 +166,15 @@ Sections 1–12 are historical implementation records. Their checked state does 
 - [x] 19.5 Replace the pre-existing archived `crypto-primitives` Purpose placeholder with an accurate capability description, then run `cargo deny check`, `cargo xtask fingerprint-check`, and OpenSpec `validate --all --strict`; distinguish passing available checks from missing capture evidence.
 - [ ] 19.6 Update the existing protocol review and user-facing configuration/support descriptions with actual verified behavior, paired-endpoint migration, and remaining evidence gaps; do not mark unsupported raw Geneva or unmeasured fingerprint parity complete.
 - [x] 19.7 Review diffs for secrets, unintended configuration/CI changes, and dependency graph violations; report fixes, exact verification commands/results, and any uncompleted tasks without committing or publishing unless requested.
+
+
+## 20. Runtime Setup Reliability Follow-up (2026-09-13)
+
+- [x] 20.1 Expose effective mux capacity and reserve slots before bounded pooled admission; cover default receive-budget limits and zero/small-window boundaries.
+- [x] 20.2 Preserve multiplexing across up to four accepting TCP outers plus four bounded retiring outers; bound queued opens and cover forty held streams, small-flow retirement replacement, budget exhaustion, capacity return, and shutdown.
+- [x] 20.3 Separate opening phases and deadlines; retire non-progressing opening paths while preserving healthy siblings and never replaying business payload.
+- [x] 20.4 Add bounded DNS/multi-address TCP attempts, fair family ordering, black-hole fallback, and cancellation/loser cleanup with controlled local tests.
+- [x] 20.5 Add correct SOCKS CONNECT failure replies and non-sensitive TLS bridge error-stage diagnostics.
+- [x] 20.6 Run formatting, strict clippy, complete workspace/ignored tests, cargo-deny, fingerprint checks, strict OpenSpec validation, and line coverage >=90% without exclusions or reduced gates.
+- [x] 20.7 Verify parser impact: this follow-up changes no network input parser or wire format; retain existing property/fuzz targets and execute the existing assertion-bearing parser regressions.
+- [x] 20.8 Build both deployment targets and validate the actual multiplexing product path, held concurrency, target fallback, and recovery; record evidence and remaining limits honestly.

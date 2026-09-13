@@ -28,6 +28,31 @@ use umbra_proto::{
 #[derive(Clone)]
 struct Control(Arc<Mutex<Script>>);
 
+#[test]
+fn effective_stream_capacity_accounts_for_reserved_receive_credit() {
+    for (window, expected) in [
+        (0, MAX_STREAMS),
+        (1, MAX_STREAMS),
+        (64 * 1024, MAX_STREAMS),
+        (256 * 1024, 32),
+        (MAX_RECEIVE_BUFFER_BYTES, 1),
+    ] {
+        let (io, _control) = Control::new();
+        let session = MuxSession::with_settings(
+            io,
+            MuxRole::Client,
+            &PadScheme::none(),
+            MuxSettings {
+                initial_window: window,
+                ..MuxSettings::default()
+            },
+        )
+        .expect("bounded settings accepted");
+        assert_eq!(session.stream_capacity(), expected);
+        assert_eq!(session.active_stream_count(), 0);
+    }
+}
+
 enum FlushMode {
     Ready,
     Blocked,

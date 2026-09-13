@@ -1058,7 +1058,7 @@ async fn scenario_udp_associate_rejects_generic_quic_outer() {
 }
 
 #[tokio::test]
-async fn scenario_socks_request_opens_solo_vision_preface() {
+async fn scenario_solo_requires_owned_record_transport() {
     let cfg = ClientCfg::from_toml_str_with_overrides(
         &client_toml(),
         ClientConfigOverrides {
@@ -1066,66 +1066,21 @@ async fn scenario_socks_request_opens_solo_vision_preface() {
             ..ClientConfigOverrides::default()
         },
     )
-    .expect("client config loads");
-    let (mut socks_client, mut socks_server) = io::duplex(4096);
-    let (outer_client, mut outer_server) = io::duplex(4096);
-    socks_client
-        .write_all(&socks_connect_domain("solo.example", 443, 0x01))
+    .expect("config");
+    let (mut peer, mut socks) = io::duplex(256);
+    peer.write_all(&socks_connect_domain("solo.example", 443, 0x01))
         .await
-        .expect("write SOCKS request");
-
-    let session_task = tokio::spawn(async move {
-        Box::pin(client_session_with_outer(
-            &cfg,
-            &mut socks_server,
-            |_plan| async move { Ok::<_, CoreError>(outer_client) },
-        ))
+        .expect("request");
+    let error =
+        client_session_with_outer::<_, io::DuplexStream, _, _>(&cfg, &mut socks, |_| async {
+            panic!("plaintext outer must not be opened for Vision")
+        })
         .await
-    });
-    let mut replies = [0_u8; 12];
-    socks_client
-        .read_exact(&mut replies)
-        .await
-        .expect("read SOCKS replies");
-    assert_eq!(&replies[..2], &[0x05, 0x00]);
-    assert_eq!(&replies[2..4], &[0x05, 0x00]);
-    let mut preface = [0_u8; 16];
-    outer_server
-        .read_exact(&mut preface)
-        .await
-        .expect("read solo preface");
-    assert_eq!(preface[0], 0x03);
-    socks_client
-        .write_all(b"solo")
-        .await
-        .expect("write solo data");
-    socks_client
-        .shutdown()
-        .await
-        .expect("close solo socks side");
-    let mut observed = [0_u8; 4];
-    outer_server
-        .read_exact(&mut observed)
-        .await
-        .expect("outer receives solo data");
-    assert_eq!(&observed, b"solo");
-    outer_server
-        .write_all(b"done")
-        .await
-        .expect("write response");
-    outer_server.shutdown().await.expect("close outer side");
-    let mut response = [0_u8; 4];
-    socks_client
-        .read_exact(&mut response)
-        .await
-        .expect("socks receives response");
-    assert_eq!(&response, b"done");
-    let session = timeout(Duration::from_secs(1), session_task)
-        .await
-        .expect("solo session completes")
-        .expect("session task")
-        .expect("client session opens solo");
-    assert_eq!(session.mode, ClientInnerMode::VisionSolo);
+        .expect_err("record ownership required");
+    assert!(matches!(
+        error,
+        CoreError::InvalidConfig("Vision requires established TLS record ownership")
+    ));
 }
 
 #[tokio::test]

@@ -13,10 +13,6 @@ use umbra_inner::{
     mux::{MuxEvent, MuxSession, MuxSettings},
     padding::{is_padding, parse_pad_scheme, PaddingPlanner},
     spider::{spider, spider_request},
-    vision::{
-        is_tls_handshake_start, read_solo_preface, send_solo_preface, shape_handshake_bytes,
-        vision_relay, VisionDirection, VisionPhase, VisionTracker,
-    },
 };
 use umbra_proto::{
     addr::TargetAddr,
@@ -367,157 +363,6 @@ async fn scenario_fin_and_ping_do_not_close_unrelated_streams() {
 }
 
 #[tokio::test]
-async fn scenario_server_receives_solo_target_address_first() {
-    let target = TargetAddr::domain("solo.example", 443).expect("target");
-    let (mut client, mut server) = io::duplex(128);
-
-    send_solo_preface(&mut client, &target)
-        .await
-        .expect("send solo preface");
-    let decoded = read_solo_preface(&mut server)
-        .await
-        .expect("read solo preface");
-
-    assert_eq!(decoded, target);
-}
-
-#[test]
-fn scenario_tls_handshake_enters_shaping_phase() {
-    let handshake = [0x16, 0x03, 0x03, 0x00, 0x04, 1, 2, 3, 4];
-    assert!(is_tls_handshake_start(&handshake));
-
-    let mut tracker = VisionTracker::new();
-    tracker.observe(VisionDirection::ClientToTarget, &handshake);
-    assert_eq!(tracker.phase(), VisionPhase::Shaping);
-
-    let chunks = shape_handshake_bytes(&handshake, 3).expect("shape bytes");
-    assert_eq!(chunks.len(), 3);
-    assert!(chunks.iter().all(|chunk| chunk.len() <= 3));
-    assert!(shape_handshake_bytes(&handshake, 0).is_err());
-}
-
-#[test]
-fn scenario_splice_after_bidirectional_application_data() {
-    let mut tracker = VisionTracker::new();
-    tracker.observe(
-        VisionDirection::ClientToTarget,
-        &[0x16, 0x03, 0x03, 0x00, 0x00],
-    );
-    tracker.observe(
-        VisionDirection::ClientToTarget,
-        &[0x17, 0x03, 0x03, 0x00, 0x00],
-    );
-    assert_eq!(tracker.phase(), VisionPhase::Shaping);
-
-    tracker.observe(
-        VisionDirection::TargetToClient,
-        &[0x17, 0x03, 0x03, 0x00, 0x00],
-    );
-    assert_eq!(tracker.phase(), VisionPhase::Splice);
-}
-
-#[tokio::test]
-async fn scenario_non_tls_stream_bypasses_tls_shaping() {
-    let (mut client, relay_client) = io::duplex(64);
-    let (relay_target, mut target) = io::duplex(64);
-    let mut relay = Box::pin(vision_relay(relay_client, relay_target));
-
-    client.write_all(b"GET").await.expect("write non-TLS bytes");
-    client.shutdown().await.expect("shutdown client write half");
-
-    let mut target_received = vec![0_u8; 3];
-    {
-        let mut read_target = Box::pin(target.read_exact(&mut target_received));
-        timeout(Duration::from_secs(1), async {
-            tokio::select! {
-                read = &mut read_target => read.expect("target reads client bytes"),
-                outcome = &mut relay => panic!("relay finished before target read: {outcome:?}"),
-            }
-        })
-        .await
-        .expect("target receives non-TLS bytes");
-    }
-    assert_eq!(target_received, b"GET");
-
-    target
-        .write_all(b"HTTP")
-        .await
-        .expect("write target response");
-    target.shutdown().await.expect("shutdown target");
-
-    let outcome = timeout(Duration::from_secs(1), &mut relay)
-        .await
-        .expect("relay finishes")
-        .expect("vision relay succeeds");
-    assert_eq!(outcome.phase, VisionPhase::NonTls);
-    assert_eq!(outcome.client_to_target, 3);
-    assert_eq!(outcome.target_to_client, 4);
-
-    let mut response = Vec::new();
-    client
-        .read_to_end(&mut response)
-        .await
-        .expect("read response");
-    assert_eq!(response, b"HTTP");
-}
-
-#[tokio::test]
-async fn scenario_vision_relay_splices_after_bidirectional_application_data() {
-    let (mut client, relay_client) = io::duplex(128);
-    let (relay_target, mut target) = io::duplex(128);
-    let mut relay = Box::pin(vision_relay(relay_client, relay_target));
-    let client_records = [tls_record(0x16), tls_record(0x17)].concat();
-
-    client
-        .write_all(&client_records)
-        .await
-        .expect("write TLS records");
-
-    let mut forwarded = vec![0_u8; client_records.len()];
-    {
-        let mut read_target = Box::pin(target.read_exact(&mut forwarded));
-        timeout(Duration::from_secs(1), async {
-            tokio::select! {
-                read = &mut read_target => read.expect("target receives TLS records"),
-                outcome = &mut relay => panic!("relay finished before target read: {outcome:?}"),
-            }
-        })
-        .await
-        .expect("target receives shaped TLS bytes");
-    }
-    assert_eq!(forwarded, client_records);
-
-    let target_records = [tls_record(0x17), b"raw".to_vec()].concat();
-    target
-        .write_all(&target_records)
-        .await
-        .expect("write target app data");
-    target.shutdown().await.expect("shutdown target");
-    client.shutdown().await.expect("shutdown client");
-
-    let outcome = timeout(Duration::from_secs(1), &mut relay)
-        .await
-        .expect("relay finishes")
-        .expect("vision relay succeeds");
-    assert_eq!(outcome.phase, VisionPhase::Splice);
-    assert_eq!(
-        outcome.client_to_target,
-        u64::try_from(client_records.len()).expect("len fits")
-    );
-    assert_eq!(
-        outcome.target_to_client,
-        u64::try_from(target_records.len()).expect("len fits")
-    );
-
-    let mut response = Vec::new();
-    client
-        .read_to_end(&mut response)
-        .await
-        .expect("read target records");
-    assert_eq!(response, target_records);
-}
-
-#[tokio::test]
 async fn scenario_realsite_spider_sends_normal_request_and_closes() {
     let (client_io, mut server_io) = io::duplex(4096);
     let mut spider = Box::pin(spider(client_io, "/probe"));
@@ -597,8 +442,4 @@ impl RngCore for FixedRng {
         self.fill_bytes(dest);
         Ok(())
     }
-}
-
-fn tls_record(content_type: u8) -> Vec<u8> {
-    vec![content_type, 0x03, 0x03, 0x00, 0x00]
 }

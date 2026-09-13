@@ -1,0 +1,60 @@
+{
+  "scope": "Proposed plaintext wire vector layout only; not a production codec or encryption/handoff test",
+  "vectors": [
+    {
+      "name": "target 127.0.0.1:443",
+      "encoded_bytes": 7,
+      "layout_verified": true
+    },
+    {
+      "name": "HELLO raw v1",
+      "encoded_bytes": 12,
+      "layout_verified": true
+    },
+    {
+      "name": "HELLO_ACK raw v1, target success",
+      "encoded_bytes": 12,
+      "layout_verified": true
+    },
+    {
+      "name": "HELLO_ACK wrapped only, target success",
+      "encoded_bytes": 12,
+      "layout_verified": true
+    },
+    {
+      "name": "DATA abc, two synthetic padding bytes",
+      "encoded_bytes": 13,
+      "layout_verified": true
+    },
+    {
+      "name": "SWITCH_REQ id=1,C=256",
+      "encoded_bytes": 20,
+      "layout_verified": true
+    },
+    {
+      "name": "SWITCH_ACK id=1,C=256,S=512",
+      "encoded_bytes": 28,
+      "layout_verified": true
+    },
+    {
+      "name": "COMMIT id=1,C=256,S=512",
+      "encoded_bytes": 28,
+      "layout_verified": true
+    },
+    {
+      "name": "COMMIT_ACK id=1,C=256,S=512",
+      "encoded_bytes": 28,
+      "layout_verified": true
+    },
+    {
+      "name": "FIN final_offset=3",
+      "encoded_bytes": 16,
+      "layout_verified": true
+    },
+    {
+      "name": "SWITCH_REJECT id=1,C=256,S=512, reason=2 (FIN already sent)",
+      "encoded_bytes": 29,
+      "layout_verified": true
+    }
+  ]
+}

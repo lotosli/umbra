@@ -64,3 +64,9 @@ Verified with:
 ## Review Result
 
 No protocol-behavior divergence remains against `docs/protocol-design.md`. The repository-layout wording in lines 491-551 is implemented through the workspace crate map required by `AGENTS.md` and `docs/architecture.md`, while keeping the documented component boundaries and function responsibilities.
+
+## 0.0.7 Vision runtime completion (2026-09-13)
+
+The former isolated Vision helper was not production raw splice. It and the old solo relay were removed at the user’s request. TCP `mux=false` now uses authenticated mode selection, bounded TLS observation/envelopes, controlled record ownership, a four-message handoff, and original protected-record forwarding. `mux=true` retains encrypted mux; QUIC and UDP paths do not raw-splice. The new behavior requires both solo endpoints upgraded.
+
+Production proof is `crates/umbra-core/tests/vision_runtime.rs`, not the removed synthetic helper tests. It exchanges 256 KiB each way with independent rustls peers, compares captured inner/outer raw suffix bytes, asserts stopped outer cryptographic counters, and covers TLS1.2/non-TLS fallback and failed targets. `vision_io_tests.rs`, owned-TLS tests, property tests, and both ASAN fuzz targets cover protocol/error boundaries. Workspace: 475 tests passed, line coverage 94.77%. Online Mac/server requests additionally confirmed raw-splice activation and unchanged encryption counters. Performance comparisons were explicitly omitted; full Chrome capture-parity limitations remain unchanged.

@@ -105,7 +105,8 @@ Sections 1–12 are historical implementation records. Their checked state does 
 
 - [x] 13.1 Obtain human approval of the revised proposal, design, and scenarios, including paired-endpoint upgrades, prebuild semantics, unsupported Geneva rejection, and the Vision protocol change.
 - [x] 13.2 Amend `docs/protocol-design.md` to match approved HELLO0, TLS secret boundaries, replay retention, RealSite authorization, probing/timing, fallback, and implemented sending-policy semantics before changing the corresponding code.
-- [ ] 13.3 Define and approve the exact Vision capability, envelope, directional switch/ack wire layouts, limits, state transitions, simultaneous-switch handling, and test vectors before implementing Vision framing or splice.
+- [x] 13.3 Define and approve the exact Vision capability, envelope, directional switch/ack wire layouts, limits, state transitions, simultaneous-switch handling, and test vectors before implementing Vision framing or splice.
+  - Concrete draft prepared 2026-09-13 in `docs/vision-runtime-wire-v2.md` and change `integrate-vision-runtime`; the user explicitly confirmed this exact proposal on 2026-09-13. Implementation remains tracked separately and is not implied by approval.
 - [x] 13.4 Map the verified findings and every revised scenario to a regression test; retain withdrawn review claims as exclusions rather than inventing fixes for them.
 
 ## 14. Authentication, TLS Secrets, And Secret Handling
@@ -153,18 +154,18 @@ Sections 1–12 are historical implementation records. Their checked state does 
 - [x] 18.3 Measure destination connection-to-first-TLS-response separately from HTTP latency, subtract comparable local preparation, and test nonnegative best-effort delay.
 - [x] 18.4 Reject programmatically configured unauthenticated early-close actions and reject unimplemented Geneva policies from file/CLI before startup; test byte-preserving segmentation and no resend after partial writes without adding new configuration fields.
 - [x] 18.5 Keep TCP RealSite requests compatible with negotiated HTTP protocols and prohibit proxy bytes; fail QUIC RealSite locally without downgrade or a fabricated HTTP/3 spider.
-- [ ] 18.6 After 13.3 approval, implement bounded bidirectional inner TLS reassembly and authenticated Vision envelopes with removable padding and controlled outer TLS record boundaries.
-- [ ] 18.7 Implement negotiated directional switch barriers, drain outer TLS output, transfer read-ahead bytes, and connect the real solo runtime to raw TCP handoff; do not treat `0x17` as verified Finished.
-- [ ] 18.8 Test actual on-wire raw handoff, simultaneous/failed negotiation, coalesced switch boundaries, non-TLS and ineligible TLS fallback, half-close, cancellation, and secret cleanup.
+- [x] 18.6 After 13.3 approval, implement bounded bidirectional inner TLS reassembly and authenticated Vision envelopes with removable padding and controlled outer TLS record boundaries.
+- [x] 18.7 Implement negotiated directional switch barriers, drain outer TLS output, transfer read-ahead bytes, and connect the real solo runtime to raw TCP handoff; do not treat `0x17` as verified Finished.
+- [x] 18.8 Test actual on-wire raw handoff, simultaneous/failed negotiation, coalesced switch boundaries, non-TLS and ineligible TLS fallback, half-close, cancellation, and secret cleanup.
 
 ## 19. Verification And Completion Evidence
 
-- [ ] 19.1 Add property/fuzz regressions for changed network parsers and state transitions, including mux, fragmented ClientHello, compressed certificates, Vision envelopes, and QUIC UDP framing.
+- [x] 19.1 Add property/fuzz regressions for changed network parsers and state transitions, including mux, fragmented ClientHello, compressed certificates, Vision envelopes, and QUIC UDP framing.
 - [x] 19.2 Run `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings`.
 - [x] 19.3 Run `cargo nextest run --workspace --run-ignored all` and investigate any failure or leaky-test report without suppressing it.
 - [x] 19.4 Run `cargo xtask coverage`; keep measured line coverage >= 90% without lowering thresholds or excluding changed paths.
 - [x] 19.5 Replace the pre-existing archived `crypto-primitives` Purpose placeholder with an accurate capability description, then run `cargo deny check`, `cargo xtask fingerprint-check`, and OpenSpec `validate --all --strict`; distinguish passing available checks from missing capture evidence.
-- [ ] 19.6 Update the existing protocol review and user-facing configuration/support descriptions with actual verified behavior, paired-endpoint migration, and remaining evidence gaps; do not mark unsupported raw Geneva or unmeasured fingerprint parity complete.
+- [x] 19.6 Update the existing protocol review and user-facing configuration/support descriptions with actual verified behavior, paired-endpoint migration, and remaining evidence gaps; do not mark unsupported raw Geneva or unmeasured fingerprint parity complete.
 - [x] 19.7 Review diffs for secrets, unintended configuration/CI changes, and dependency graph violations; report fixes, exact verification commands/results, and any uncompleted tasks without committing or publishing unless requested.
 
 
@@ -178,3 +179,5 @@ Sections 1–12 are historical implementation records. Their checked state does 
 - [x] 20.6 Run formatting, strict clippy, complete workspace/ignored tests, cargo-deny, fingerprint checks, strict OpenSpec validation, and line coverage >=90% without exclusions or reduced gates.
 - [x] 20.7 Verify parser impact: this follow-up changes no network input parser or wire format; retain existing property/fuzz targets and execute the existing assertion-bearing parser regressions.
 - [x] 20.8 Build both deployment targets and validate the actual multiplexing product path, held concurrency, target fallback, and recovery; record evidence and remaining limits honestly.
+
+Vision 0.0.7 verification: 475 workspace tests passed, line coverage 94.77%, both new parsers completed 10,000 AddressSanitizer fuzz runs each, and the actual Mac/server pair completed online requests with raw-splice counters unchanged. See `integrate-vision-runtime/verification.md` for bounded evidence; performance comparisons were explicitly omitted at user request.

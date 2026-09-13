@@ -10,7 +10,10 @@ use umbra_crypto::{
 
 use crate::{replay::ReplayCache, RealityError};
 
-const VERSION: u8 = 0x01;
+/// Authentication version for mux and UDP sessions.
+pub const AUTH_VERSION_V1: u8 = 0x01;
+/// Authentication version for the negotiated TCP Vision solo protocol.
+pub const AUTH_VERSION_V2: u8 = 0x02;
 const SALT: &[u8] = b"umbra-reality-v1";
 const PLAINTEXT_LEN: usize = 16;
 const SESSION_ID_LEN: usize = 32;
@@ -52,6 +55,8 @@ impl core::fmt::Debug for ShortId {
 /// Opened REALITY authentication token.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AuthOk {
+    /// Validated authentication mode version, either [`AUTH_VERSION_V1`] or [`AUTH_VERSION_V2`].
+    pub version: u8,
     /// Token flags byte.
     pub flags: u8,
     /// Token timestamp in seconds.
@@ -72,7 +77,22 @@ pub fn try_seal_session_id(
     seal_session_id_with_flags(shared, short_id, hello0, now, 0)
 }
 
-/// Seal a REALITY token with a caller-provided flags byte.
+/// Seal a zero-flag token for an explicitly selected authentication version.
+///
+/// The 16-byte plaintext layout, KDF, nonce, and ClientHello binding are shared
+/// by both versions. Unsupported versions fail before a token is produced.
+pub fn try_seal_session_id_with_version(
+    shared: &[u8; 32],
+    short_id: &[u8],
+    hello0: &[u8],
+    now: u64,
+    version: u8,
+) -> Result<[u8; SESSION_ID_LEN], RealityError> {
+    validate_version(version)?;
+    seal_session_id_version_flags(shared, short_id, hello0, now, version, 0)
+}
+
+/// Seal a version-1 REALITY token with a caller-provided flags byte.
 pub fn seal_session_id_with_flags(
     shared: &[u8; 32],
     short_id: &[u8],
@@ -80,10 +100,21 @@ pub fn seal_session_id_with_flags(
     now: u64,
     flags: u8,
 ) -> Result<[u8; SESSION_ID_LEN], RealityError> {
+    seal_session_id_version_flags(shared, short_id, hello0, now, AUTH_VERSION_V1, flags)
+}
+
+fn seal_session_id_version_flags(
+    shared: &[u8; 32],
+    short_id: &[u8],
+    hello0: &[u8],
+    now: u64,
+    version: u8,
+    flags: u8,
+) -> Result<[u8; SESSION_ID_LEN], RealityError> {
     let timestamp = u32::try_from(now).map_err(|_| RealityError::TimestampOutOfRange)?;
     let short_id = ShortId::from_slice(short_id)?;
     let (auth_key, nonce) = auth_key_nonce(shared)?;
-    let plaintext = Secret::new(plaintext(flags, timestamp, short_id));
+    let plaintext = Secret::new(plaintext(version, flags, timestamp, short_id));
     let sealed = aead::seal(
         AeadAlgorithm::Aes128Gcm,
         auth_key.expose_secret(),
@@ -169,9 +200,9 @@ fn auth_key_nonce(shared: &[u8; 32]) -> Result<(SecretBytes, SecretBytes), Reali
     Ok((key, nonce))
 }
 
-fn plaintext(flags: u8, timestamp: u32, short_id: ShortId) -> [u8; PLAINTEXT_LEN] {
+fn plaintext(version: u8, flags: u8, timestamp: u32, short_id: ShortId) -> [u8; PLAINTEXT_LEN] {
     let mut out = [0_u8; PLAINTEXT_LEN];
-    out[0] = VERSION;
+    out[0] = version;
     out[1] = flags;
     out[2..6].copy_from_slice(&timestamp.to_be_bytes());
     out[6..14].copy_from_slice(short_id.as_bytes());
@@ -183,10 +214,8 @@ fn parse_plaintext(input: &[u8]) -> Result<AuthOk, RealityError> {
         return Err(RealityError::AuthenticationFailed);
     }
     let version = input[0];
-    if version != VERSION {
-        return Err(RealityError::InvalidVersion(version));
-    }
-    if input[14..16] != [0, 0] {
+    validate_version(version)?;
+    if input[14..16] != [0, 0] || (version == AUTH_VERSION_V2 && input[1] != 0) {
         return Err(RealityError::AuthenticationFailed);
     }
     let timestamp = u32::from_be_bytes(
@@ -200,10 +229,18 @@ fn parse_plaintext(input: &[u8]) -> Result<AuthOk, RealityError> {
             .map_err(|_| RealityError::AuthenticationFailed)?,
     );
     Ok(AuthOk {
+        version,
         flags: input[1],
         timestamp,
         short_id,
     })
+}
+
+fn validate_version(version: u8) -> Result<(), RealityError> {
+    match version {
+        AUTH_VERSION_V1 | AUTH_VERSION_V2 => Ok(()),
+        _ => Err(RealityError::InvalidVersion(version)),
+    }
 }
 
 fn validate_time(timestamp: u32, now: u64, max_diff: u64) -> Result<u64, RealityError> {
@@ -232,16 +269,17 @@ fn validate_short_id(short_id: ShortId, allowed: &[Vec<u8>]) -> Result<(), Reali
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_plaintext, plaintext, ShortId};
+    use super::{parse_plaintext, plaintext, ShortId, AUTH_VERSION_V1, AUTH_VERSION_V2};
     use crate::RealityError;
 
     #[test]
     fn plaintext_parser_rejects_nonzero_reserved_bytes() {
         let short_id = ShortId::from_slice(b"sid").expect("short id");
-        let mut token = plaintext(7, 100, short_id);
+        let mut token = plaintext(AUTH_VERSION_V1, 7, 100, short_id);
 
         let parsed = parse_plaintext(&token).expect("reserved zeros parse");
         assert_eq!(parsed.flags, 7);
+        assert_eq!(parsed.version, AUTH_VERSION_V1);
         assert_eq!(parsed.timestamp, 100);
 
         token[14] = 1;
@@ -249,5 +287,62 @@ mod tests {
             parse_plaintext(&token).expect_err("reserved byte must fail"),
             RealityError::AuthenticationFailed
         );
+    }
+
+    #[test]
+    fn vision_plaintext_requires_zero_flags_and_reserved_bytes() {
+        let short_id = ShortId::from_slice(b"sid").expect("short id");
+        let token = plaintext(AUTH_VERSION_V2, 0, 100, short_id);
+        let parsed = parse_plaintext(&token).expect("v2 parses");
+        assert_eq!(parsed.version, AUTH_VERSION_V2);
+        assert_eq!(parsed.flags, 0);
+        for index in [1, 14, 15] {
+            for value in [1, 0x80, 0xff] {
+                let mut changed = token;
+                changed[index] = value;
+                assert_eq!(
+                    parse_plaintext(&changed),
+                    Err(RealityError::AuthenticationFailed)
+                );
+            }
+        }
+        for flags in 0..=u8::MAX {
+            let legacy = plaintext(AUTH_VERSION_V1, flags, 100, short_id);
+            assert_eq!(
+                parse_plaintext(&legacy)
+                    .expect("legacy flags stay accepted")
+                    .flags,
+                flags
+            );
+        }
+    }
+
+    #[test]
+    fn plaintext_versions_and_lengths_are_strict() {
+        let short_id = ShortId::from_slice(b"sid").expect("short id");
+        let token = plaintext(AUTH_VERSION_V2, 0, 100, short_id);
+        for len in 0..token.len() {
+            assert_eq!(
+                parse_plaintext(&token[..len]),
+                Err(RealityError::AuthenticationFailed)
+            );
+        }
+        let mut too_long = token.to_vec();
+        too_long.push(0);
+        assert_eq!(
+            parse_plaintext(&too_long),
+            Err(RealityError::AuthenticationFailed)
+        );
+        for version in 0..=u8::MAX {
+            if matches!(version, AUTH_VERSION_V1 | AUTH_VERSION_V2) {
+                continue;
+            }
+            let mut unknown = token;
+            unknown[0] = version;
+            assert_eq!(
+                parse_plaintext(&unknown),
+                Err(RealityError::InvalidVersion(version))
+            );
+        }
     }
 }

@@ -332,18 +332,25 @@ cmd: 0x01 SYN(payload=目标地址) | 0x02 SYN_ACK | 0x03 DATA | 0x04 WINDOW_UPD
   业务帧前后夹带随机 PADDING，从而**打乱内层 TLS 握手的确定性长度/方向序列**。
 - 之后按低频概率插入 PADDING（防长期统计特征）。
 
-### F.3 Vision 真拼接（solo 模式）
-借鉴 XTLS-Vision，消灭 TLS-in-TLS 而非仅靠填充：
-1. 客户端首帧发目标地址（同 SYN.payload 格式），服务端 connect 目标。
-2. **内层协议嗅探**：读内层首字节，若为 `0x16 0x03`（TLS 记录）→ 进入“内层握手整形期”：
-   对内层 TLS 握手的记录做**填充/切分**以掩盖长度序列；
-3. **握手结束检测**：统计两方向内层 TLS 记录，直到出现 `application_data(0x17)` 且双向各已完成握手 →
-   转入 **splice 期**：此后**原始直传**（`copy_bidirectional`），不再加任何封装/填充——因为内层 app-data
-   记录本身就是正常 TLS 流量，与“外层是一条直连 TLS”不可区分。
-4. 若内层非 TLS → 直接中继（可加轻填充）。
+### F.3 Vision 真拼接（solo 模式，0.0.7）
 
-> mux 与 splice 互斥：mux 需要分帧、splice 要求裸流。**选择逻辑**：默认走 mux；当某连接被标记为“单流大吞吐/已知
-> TLS 内层”（配置或启发式）→ 客户端为其**新建一条不启用 mux 的 solo 连接**并走 Vision。二者共享同一 REALITY 握手能力。
+TCP 的 `mux=false` 使用独占连接的新 Vision 实现；`mux=true` 保留加密多路复用。客户端与服务端需同时支持0.0.7。
+旧的普通 solo 中继和未接入运行时的 helper 已删除，不再增加一个独立 Vision 配置开关。
+
+1. 认证格式中的模式标识把新 solo 与 mux 区分；未认证/旧端回落不接收目标或业务控制数据。
+2. 客户端先发送目标地址，再交换已认证的能力；服务端目标连接成功后才允许 SOCKS success 和业务 DATA。
+3. 通过有界双向重组观察有效 TLS 1.3 ClientHello/ServerHello 及完整受保护记录；不符合条件的流量保留外层加密。
+4. 客户端协调请求、确认、提交、最终确认，分别核对两方向字节边界；排空外层写入，保留读入前缀，再移交原始 TCP。
+5. 原始阶段转发原内层受保护 TLS 记录，不再增加外层 TLS 加密、envelope 或 padding；保留记录结构检查和半关闭。
+
+`0x17` 也可能承载加密握手或 alert；被动观察不能验证内层 Finished 或证明恶意模拟应用的字节确实已加密。
+应用自己的端到端 TLS 仍负责目标认证和机密性。原始转发使用用户态 I/O，不声称内核零拷贝或固定性能提升。
+
+精确线格式、上限、拒绝/提交状态、EOF/取消及向量见[已批准的 wire 规范](vision-runtime-wire-v2.md)。
+真实运行时测试使用独立 rustls 端点，确认双向256 KiB业务完整、线上后缀与内层密文逐字节一致，且切换后外层seal/open计数停止。
+实际Mac与服务器0.0.7线上请求也已验证拼接；详见[验收记录](../openspec/changes/integrate-vision-runtime/verification.md)。
+
+> mux 与 raw splice 互斥；QUIC 不进入此 TCP 移交路径。没有按业务自动另建 solo 的启发式。
 
 ### F.4 模块与签名
 ```rust

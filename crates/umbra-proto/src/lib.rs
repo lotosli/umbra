@@ -9,5 +9,6 @@ pub mod consts;
 pub mod error;
 pub mod frame;
 pub mod udp;
+pub mod vision;
 
 pub use error::ProtocolError;

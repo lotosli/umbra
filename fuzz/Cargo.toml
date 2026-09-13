@@ -76,3 +76,17 @@ path = "fuzz_targets/socks_udp.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "vision_envelope"
+path = "fuzz_targets/vision_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vision_observer"
+path = "fuzz_targets/vision_observer.rs"
+test = false
+doc = false
+bench = false

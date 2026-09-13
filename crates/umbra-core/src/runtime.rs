@@ -32,11 +32,12 @@ use umbra_inner::{
     mux::{MuxEvent, MuxSession},
     padding::PadScheme,
     spider::spider,
-    vision::{read_solo_preface, send_solo_preface},
 };
 use umbra_proto::{addr::TargetAddr, consts::MUX_VERSION, frame::MuxCommand};
 use umbra_reality::{
-    auth::try_seal_session_id,
+    auth::{
+        try_seal_session_id, try_seal_session_id_with_version, AUTH_VERSION_V1, AUTH_VERSION_V2,
+    },
     cert::{classify_peer_certificate, PeerKind as RealityPeerKind},
     prebuild::DestProfile,
     replay::ReplayCache,
@@ -917,7 +918,7 @@ pub struct ClientConnectPlan {
 pub enum ClientInnerMode {
     /// Mux stream over the authenticated outer connection.
     Mux,
-    /// Solo mode with Vision preface.
+    /// Dedicated authenticated Vision stream with raw TLS handoff.
     VisionSolo,
     /// Direct QUIC bidirectional stream carrying the target prefix.
     QuicStream,
@@ -932,6 +933,8 @@ pub struct ClientSessionOutcome {
     pub transport: TransportKind,
     /// Inner mode used for the stream.
     pub mode: ClientInnerMode,
+    /// Measured raw-handoff evidence for a TCP solo connection.
+    pub vision: Option<crate::vision_io::VisionOutcome>,
 }
 
 /// Client-side QUIC first flight built from runtime configuration.
@@ -993,8 +996,14 @@ where
             target: associate.client_addr,
             transport: cfg.transport,
             mode,
+            vision: None,
         });
     };
+    if cfg.transport == TransportKind::Tcp && !cfg.mux {
+        return Err(CoreError::InvalidConfig(
+            "Vision requires established TLS record ownership",
+        ));
+    }
     let mode = selected_client_inner_mode(cfg);
     let plan = ClientConnectPlan {
         target: target.clone(),
@@ -1009,6 +1018,7 @@ where
         target,
         transport: cfg.transport,
         mode,
+        vision: None,
     })
 }
 
@@ -1064,9 +1074,11 @@ where
             target: associate.client_addr,
             transport: cfg.transport,
             mode,
+            vision: None,
         });
     };
     let mode = selected_client_inner_mode(cfg);
+    let mut vision = None;
     match cfg.transport {
         TransportKind::Tcp if mode == ClientInnerMode::Mux => {
             let mut stream = match connections.open_mux(cfg, target.clone()).await {
@@ -1083,15 +1095,30 @@ where
                 .await?;
         }
         TransportKind::Tcp => {
-            let plan = ClientConnectPlan {
-                target: target.clone(),
-                server: cfg.server.clone(),
-                transport: cfg.transport,
-                mode,
-                server_name: cfg.server_name.clone(),
+            let opening = async {
+                let (stream, mut endpoint) = open_authenticated_tcp(cfg, AUTH_VERSION_V2).await?;
+                let pending = endpoint.take_pending_input();
+                let owned = crate::owned_tls::EstablishedTcp::new(
+                    stream,
+                    TlsAppEndpoint::Client(Box::new(endpoint)),
+                    pending,
+                )?;
+                crate::vision_io::client_open(owned, &target)
+                    .await
+                    .map_err(CoreError::from)
+            }
+            .await;
+            let session = match opening {
+                Ok(session) => session,
+                Err(error) => {
+                    let _ =
+                        tokio::time::timeout(Duration::from_secs(2), write_failure_reply(socks))
+                            .await;
+                    return Err(error);
+                }
             };
-            let outer = open_outer_from_config(cfg, &plan).await?;
-            Box::pin(client_stream_over_outer(cfg, socks, &target, mode, outer)).await?;
+            write_success_reply(socks).await?;
+            vision = Some(session.relay(socks, DEFAULT_SESSION_IDLE_TIMEOUT).await?);
         }
         TransportKind::Quic => {
             let connection = connections.quic(cfg).await?;
@@ -1102,6 +1129,7 @@ where
         target,
         transport: cfg.transport,
         mode,
+        vision,
     })
 }
 
@@ -1132,15 +1160,9 @@ where
             result?;
         }
         ClientInnerMode::VisionSolo => {
-            let mut outer = outer;
-            send_solo_preface(&mut outer, target).await?;
-            write_success_reply(socks).await?;
-            Box::pin(relay_bidirectional_until_idle(
-                socks,
-                &mut outer,
-                DEFAULT_SESSION_IDLE_TIMEOUT,
-            ))
-            .await?;
+            return Err(CoreError::InvalidConfig(
+                "Vision requires established TLS record ownership",
+            ));
         }
         ClientInnerMode::QuicStream => {
             return Err(CoreError::InvalidConfig(
@@ -1226,7 +1248,10 @@ pub async fn open_outer_from_config(
     plan: &ClientConnectPlan,
 ) -> Result<tokio::io::DuplexStream, CoreError> {
     match plan.transport {
-        TransportKind::Tcp => open_tcp_outer(cfg).await,
+        TransportKind::Tcp if plan.mode == ClientInnerMode::Mux => open_tcp_outer(cfg).await,
+        TransportKind::Tcp => Err(CoreError::InvalidConfig(
+            "Vision requires established TLS record ownership",
+        )),
         TransportKind::Quic => Err(CoreError::InvalidConfig(
             "QUIC direct stream is not a byte-stream outer",
         )),
@@ -1502,12 +1527,30 @@ fn require_http1_spider(alpn: Option<&[u8]>) -> Result<(), CoreError> {
 }
 
 async fn open_tcp_outer(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream, CoreError> {
-    tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, open_tcp_outer_inner(cfg))
-        .await
-        .map_err(|_| CoreError::IdleTimeout("outer TCP connection setup"))?
+    let (stream, mut endpoint) = open_authenticated_tcp(cfg, AUTH_VERSION_V1).await?;
+    let pending = endpoint.take_pending_input();
+    Ok(spawn_tls_app_io(
+        PrefixedStream::new(pending, stream),
+        TlsAppEndpoint::Client(Box::new(endpoint)),
+    ))
 }
 
-async fn open_tcp_outer_inner(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream, CoreError> {
+async fn open_authenticated_tcp(
+    cfg: &ClientCfg,
+    version: u8,
+) -> Result<(TcpStream, Tls13Client), CoreError> {
+    tokio::time::timeout(
+        DEFAULT_OUTER_CONNECT_TIMEOUT,
+        open_authenticated_tcp_inner(cfg, version),
+    )
+    .await
+    .map_err(|_| CoreError::IdleTimeout("outer TCP connection setup"))?
+}
+
+async fn open_authenticated_tcp_inner(
+    cfg: &ClientCfg,
+    version: u8,
+) -> Result<(TcpStream, Tls13Client), CoreError> {
     let profile = load_profile(&cfg.fingerprint)?;
     let keypair = x25519::generate_keypair();
     let shared = x25519::agree(&keypair.private, cfg.public_key.as_bytes())?;
@@ -1524,11 +1567,12 @@ async fn open_tcp_outer_inner(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream
         mlkem.key_exchange.clone(),
     ))?;
     let aad = hello0(&zero_hello)?;
-    let session_id = try_seal_session_id(
+    let session_id = try_seal_session_id_with_version(
         shared.expose_secret(),
         &cfg.short_id,
         &aad,
         current_unix_time()?,
+        version,
     )?;
     let tls_params = tls_client_hello_params(cfg, &keypair, session_id, profile, random, mlkem);
     let (mut tls_client, client_hello) = Tls13Client::start(tls_params)?;
@@ -1554,10 +1598,7 @@ async fn open_tcp_outer_inner(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream
     stream.write_all(&out.outbound).await?;
     stream.flush().await?;
     match out.peer_kind {
-        Some(TlsPeerKind::UmbraTrusted) => Ok(spawn_tls_app_io(
-            stream,
-            TlsAppEndpoint::Client(Box::new(tls_client)),
-        )),
+        Some(TlsPeerKind::UmbraTrusted) => Ok((stream, tls_client)),
         Some(TlsPeerKind::RealSite) => {
             require_http1_spider(tls_client.negotiated_alpn())?;
             let tls_io = spawn_tls_app_io(stream, TlsAppEndpoint::Client(Box::new(tls_client)));
@@ -1821,18 +1862,27 @@ where
             conn.flush().await?;
             let client_finished = read_required_non_ccs_tls_record(&mut conn).await?;
             authenticated.tls_server.drive(&client_finished)?;
-            let tls_io = spawn_tls_app_io(
-                conn,
-                TlsAppEndpoint::Server(Box::new(authenticated.tls_server)),
-            );
             let server_flight_len = authenticated.server_flight.len();
-            relay_one_server_inner_stream(
-                tls_io,
-                connect_dest_or_target,
-                padding_scheme,
-                DEFAULT_SESSION_IDLE_TIMEOUT,
-            )
-            .await?;
+            let endpoint = TlsAppEndpoint::Server(Box::new(authenticated.tls_server));
+            if authenticated.version == AUTH_VERSION_V2 {
+                let owned = crate::owned_tls::EstablishedTcp::new(conn, endpoint, Vec::new())?;
+                let (session, mut target) = crate::vision_io::server_open(owned, |target| {
+                    connect_dest_or_target(target_to_host_port(&target))
+                })
+                .await?;
+                session
+                    .relay(&mut target, DEFAULT_SESSION_IDLE_TIMEOUT)
+                    .await?;
+            } else {
+                let tls_io = spawn_tls_app_io(conn, endpoint);
+                relay_one_server_inner_stream(
+                    tls_io,
+                    connect_dest_or_target,
+                    padding_scheme,
+                    DEFAULT_SESSION_IDLE_TIMEOUT,
+                )
+                .await?;
+            }
             Ok(DispatchOutcome::Authenticated {
                 sni: authenticated.sni,
                 server_flight_len,
@@ -2755,7 +2805,7 @@ fn add_quic_byte_count(total: u64, increment: usize) -> Result<u64, CoreError> {
 
 async fn relay_one_server_inner_stream<D, Connect, ConnectFuture>(
     mut tls_io: tokio::io::DuplexStream,
-    mut connect_target: Connect,
+    connect_target: Connect,
     padding_scheme: &PadScheme,
     idle_timeout: Duration,
 ) -> Result<(), CoreError>
@@ -2786,20 +2836,9 @@ where
                 _ => Err(CoreError::InvalidConfig("unexpected mux opening frame")),
             }
         }
-        ServerInnerMode::VisionSolo => {
-            let mut solo = tls_io;
-            let target = read_solo_preface(&mut solo).await?;
-            let target_io = connect_target(target_to_host_port(&target)).await?;
-            let mut solo = solo;
-            let mut target_io = target_io;
-            Box::pin(relay_bidirectional_until_idle(
-                &mut solo,
-                &mut target_io,
-                idle_timeout,
-            ))
-            .await?;
-            Ok(())
-        }
+        ServerInnerMode::VisionSolo => Err(CoreError::InvalidConfig(
+            "legacy solo mode was removed; upgrade both endpoints",
+        )),
     }
 }
 
@@ -4245,58 +4284,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scenario_server_inner_stream_accepts_vision_solo_preface() {
+    async fn scenario_legacy_solo_is_rejected_without_target_connection() {
         let (mut client, server) = tokio::io::duplex(4096);
-        let (target_io, mut target_peer) = tokio::io::duplex(4096);
         let target = TargetAddr::domain("solo.example", 443).expect("target");
-        let server_task = tokio::spawn(async move {
-            let mut target_io = Some(target_io);
-            relay_one_server_inner_stream(
-                server,
-                |dest| {
-                    assert_eq!(dest, "solo.example:443");
-                    let io = target_io.take().expect("one solo target");
-                    async move { Ok::<_, std::io::Error>(io) }
-                },
-                &PadScheme::none(),
-                DEFAULT_SESSION_IDLE_TIMEOUT,
-            )
-            .await
-        });
-
-        send_solo_preface(&mut client, &target)
-            .await
-            .expect("send solo preface");
-        client.write_all(b"ping").await.expect("write request");
-        client.shutdown().await.expect("close client write half");
-
-        let mut observed = [0_u8; 4];
-        target_peer
-            .read_exact(&mut observed)
-            .await
-            .expect("target receives request");
-        assert_eq!(&observed, b"ping");
-        target_peer
-            .write_all(b"pong")
-            .await
-            .expect("write response");
-        target_peer
-            .shutdown()
-            .await
-            .expect("close target write half");
-
-        let mut response = [0_u8; 4];
         client
-            .read_exact(&mut response)
+            .write_all(&target.encode().expect("preface"))
             .await
-            .expect("client receives response");
-        assert_eq!(&response, b"pong");
-
-        timeout(Duration::from_secs(1), server_task)
-            .await
-            .expect("server task completes")
-            .expect("server task joins")
-            .expect("server relay succeeds");
+            .expect("write");
+        client.shutdown().await.expect("shutdown");
+        let error = relay_one_server_inner_stream::<tokio::io::DuplexStream, _, _>(
+            server,
+            |_| async { panic!("legacy solo must never connect a target") },
+            &PadScheme::none(),
+            DEFAULT_SESSION_IDLE_TIMEOUT,
+        )
+        .await
+        .expect_err("removed mode rejected");
+        assert!(matches!(
+            error,
+            CoreError::InvalidConfig("legacy solo mode was removed; upgrade both endpoints")
+        ));
     }
 
     #[tokio::test]

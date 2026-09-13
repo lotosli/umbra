@@ -308,6 +308,13 @@ transport = "tcp"
 - 适用于大多数防火墙，因为 443 端口 TCP 很少被封。
 - 配合 `tcp_evasion = "segment"` 进行保守的 TCP 分段。
 
+
+#### TCP Vision solo（0.0.7）
+
+使用 `transport = "tcp"`、`mux = false` 即可选择独占连接的 Vision；客户端和服务端都需升级到 0.0.7。符合条件的内层 TLS 1.3 流量经过双方确认切换边界后，原始受保护记录不再增加外层 TLS 加密或帧封装。非 TLS 和不符合条件的 TLS 仍加密传输。旧 solo 实现已删除，`mux = true` 继续提供加密多路复用；不需要额外 Vision 开关。原始转发使用用户态 I/O，不宣称内核零拷贝或未经测量的速度提升。
+
+成功切换会记录 `umbra vision splice active`；连接完成后记录原始字节数及 `outer_records_unchanged=true`，不包含目标地址或凭据。
+
 #### TCP mux 容量与恢复（当前源码）
 
 `mux = true` 时，客户端保留复用，最多使用4条接收新流的外层连接，并在选择连接前预留实际流容量。默认每流256 KiB窗口、每条outer的8 MiB接收预算，对应每outer 32条流，接收新流的outer合计最多128条；连接池另限制最多128个准入等待者。额外4个退休槽位用于保留draining连接上的旧流，所有outer总数最多8条。总预算已满且需要新建接收连接时，只退役最早进入draining的outer；其剩余旧流终止并报错，不重放业务请求或数据。

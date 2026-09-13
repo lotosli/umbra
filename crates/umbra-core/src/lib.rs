@@ -14,6 +14,7 @@ pub mod config;
 pub mod dispatch;
 pub mod error;
 pub(crate) mod mux_io;
+pub mod owned_tls;
 pub mod prefixed;
 pub mod probe;
 pub(crate) mod quic_crypto;
@@ -22,5 +23,6 @@ pub mod runtime;
 pub mod socks;
 mod target_connect;
 pub mod tls_io;
+pub mod vision_io;
 
 pub use error::CoreError;

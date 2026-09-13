@@ -27,14 +27,14 @@ pub enum TlsAppEndpoint {
 }
 
 impl TlsAppEndpoint {
-    fn seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, TlsError> {
+    pub(crate) fn seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, TlsError> {
         match self {
             Self::Client(client) => client.app_seal(plaintext),
             Self::Server(server) => server.app_seal(plaintext),
         }
     }
 
-    fn open(&mut self, record: &[u8]) -> Result<Vec<u8>, TlsError> {
+    pub(crate) fn open(&mut self, record: &[u8]) -> Result<Vec<u8>, TlsError> {
         match self {
             Self::Client(client) => client.app_open(record),
             Self::Server(server) => server.app_open(record),

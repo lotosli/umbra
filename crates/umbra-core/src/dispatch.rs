@@ -141,6 +141,8 @@ pub struct AuthenticatedQuicDispatch {
 
 /// Authenticated dispatch state for the local TLS server path.
 pub struct AuthenticatedDispatch {
+    /// Authenticated protocol mode version.
+    pub version: u8,
     /// Accepted SNI.
     pub sni: String,
     /// Client compatibility session id used for certificate binding.
@@ -325,7 +327,7 @@ pub fn classify_client_hello(
         return Ok(fallback(FallbackReason::MissingKeyShare, chello_raw));
     };
     let aad = hello0(&handshake)?;
-    if open_session_id(
+    let authenticated = open_session_id(
         shared.expose_secret(),
         &session_id,
         &aad,
@@ -333,11 +335,10 @@ pub fn classify_client_hello(
         ctx.now_unix,
         ctx.cfg.max_time_diff,
         ctx.replay,
-    )
-    .is_err()
-    {
+    );
+    let Ok(authenticated) = authenticated else {
         return Ok(fallback(FallbackReason::AuthenticationRejected, chello_raw));
-    }
+    };
 
     let forged = forge_leaf_certificate(
         ctx.profile,
@@ -353,6 +354,7 @@ pub fn classify_client_hello(
 
     Ok(DispatchDecision::Authenticated(Box::new(
         AuthenticatedDispatch {
+            version: authenticated.version,
             sni,
             session_id,
             shared_secret: shared,
@@ -429,8 +431,9 @@ pub fn classify_quic_client_hello(
         ctx.cfg.max_time_diff,
         ctx.replay,
     )
-    .is_err()
-    {
+    .map_or(true, |auth| {
+        auth.version != umbra_reality::auth::AUTH_VERSION_V1
+    }) {
         return Ok(fallback_quic(
             FallbackReason::AuthenticationRejected,
             datagram,

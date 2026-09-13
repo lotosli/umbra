@@ -34,3 +34,5 @@ bytes.workspace = true
 # umbra-testkit（回环 e2e）
 rcgen.workspace = true
 proptest.workspace = true
+rustls = { workspace = true, features = ["tls12"] }
+tokio-rustls.workspace = true

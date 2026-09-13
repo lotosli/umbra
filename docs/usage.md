@@ -308,6 +308,13 @@ transport = "tcp"
 - Works through most firewalls since port 443 TCP is rarely blocked.
 - Use with `tcp_evasion = "segment"` for conservative TCP segmentation.
 
+
+#### TCP Vision solo (0.0.7)
+
+Set `transport = "tcp"` and `mux = false` to use dedicated Vision connections. Upgrade both client and server to 0.0.7. After an authenticated boundary exchange on eligible inner TLS 1.3 traffic, the runtime forwards the original protected records without outer TLS encryption or extra framing. Non-TLS and unsupported TLS remain encrypted. The legacy solo implementation was removed; `mux = true` continues to provide encrypted multiplexing. No extra Vision flag is needed. Raw forwarding is userspace I/O, not a claim of kernel zero-copy or a measured speed increase.
+
+Successful sessions log `umbra vision splice active` and, on completion, raw byte counts plus `outer_records_unchanged=true`, without targets or credentials.
+
 #### TCP mux capacity and recovery (current source)
 
 With `mux = true`, the client reuses up to four accepting outer connections and reserves real stream capacity before choosing one. The default 256 KiB per-stream window and 8 MiB per-outer receive budget allow 32 streams per outer, or up to 128 across accepting outers. Pool admission has a separate limit of 128 waiters. Four additional retirement slots allow draining outers to keep existing streams, with a hard limit of eight outers in total. If a new accepting outer is needed at that limit, only the oldest draining outer is retired; its remaining streams fail, and business requests or payloads are never replayed.

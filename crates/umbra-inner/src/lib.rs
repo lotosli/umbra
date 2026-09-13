@@ -17,6 +17,6 @@ pub mod error;
 pub mod mux;
 pub mod padding;
 pub mod spider;
-pub mod vision;
+pub mod vision_observer;
 
 pub use error::InnerError;

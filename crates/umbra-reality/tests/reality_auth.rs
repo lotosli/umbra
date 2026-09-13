@@ -4,7 +4,8 @@ use proptest::prelude::*;
 use umbra_reality::{
     auth::{
         open_session_id, seal_session_id, seal_session_id_with_flags, try_seal_session_id,
-        validate_server_name, ShortId,
+        try_seal_session_id_with_version, validate_server_name, ShortId, AUTH_VERSION_V1,
+        AUTH_VERSION_V2,
     },
     replay::ReplayCache,
     RealityError,
@@ -29,6 +30,7 @@ fn scenario_sealed_token_opens_with_same_hello() {
     .expect("session id should open");
 
     assert_eq!(opened.flags, 0);
+    assert_eq!(opened.version, AUTH_VERSION_V1);
     assert_eq!(opened.timestamp, 100);
     assert!(opened
         .short_id
@@ -435,11 +437,128 @@ fn scenario_infallible_protocol_seal_surface_matches_checked_output() {
     assert!(!redacted.contains("sid"));
 }
 
+#[test]
+fn scenario_vision_authentication_preserves_layout_and_all_authentication_checks() {
+    let shared = shared_secret();
+    let hello = b"synthetic zeroed client hello";
+    let token = try_seal_session_id_with_version(&shared, b"sid", hello, 100, AUTH_VERSION_V2)
+        .expect("v2 seals");
+    let key = umbra_crypto::kdf::hkdf_sha256(b"umbra-reality-v1", &shared, b"key", 16)
+        .expect("original KDF key");
+    let nonce = umbra_crypto::kdf::hkdf_sha256(b"umbra-reality-v1", &shared, b"nonce", 12)
+        .expect("original KDF nonce");
+    let clear = umbra_crypto::aead::open(
+        umbra_crypto::aead::AeadAlgorithm::Aes128Gcm,
+        &key,
+        &nonce,
+        &token,
+        hello,
+    )
+    .expect("original cryptographic format opens v2");
+    assert_eq!(
+        clear,
+        [2, 0, 0, 0, 0, 100, b's', b'i', b'd', 0, 0, 0, 0, 0, 0, 0]
+    );
+    // This is the old peer's strict discriminator: only version 1 is accepted.
+    assert_ne!(clear[0], AUTH_VERSION_V1);
+    let allowed = [b"sid".to_vec()];
+    let cache = ReplayCache::new(1, 120).expect("cache");
+    for (test_shared, aad, ids, now, skew, expected) in [
+        (
+            [0x33; 32],
+            hello.as_slice(),
+            allowed.as_slice(),
+            100,
+            120,
+            RealityError::AuthenticationFailed,
+        ),
+        (
+            shared,
+            b"changed".as_slice(),
+            allowed.as_slice(),
+            100,
+            120,
+            RealityError::AuthenticationFailed,
+        ),
+        (
+            shared,
+            hello.as_slice(),
+            [].as_slice(),
+            100,
+            120,
+            RealityError::ShortIdRejected,
+        ),
+        (
+            shared,
+            hello.as_slice(),
+            allowed.as_slice(),
+            221,
+            120,
+            RealityError::Expired,
+        ),
+        (
+            shared,
+            hello.as_slice(),
+            allowed.as_slice(),
+            100,
+            0,
+            RealityError::InvalidTimeWindow,
+        ),
+    ] {
+        assert_eq!(
+            open_session_id(&test_shared, &token, aad, ids, now, skew, &cache),
+            Err(expected)
+        );
+        assert!(cache
+            .is_empty()
+            .expect("failure never reserves replay capacity"));
+    }
+    let opened = open_session_id(&shared, &token, hello, &allowed, 100, 120, &cache)
+        .expect("correct v2 authentication");
+    assert_eq!(
+        (opened.version, opened.flags, opened.timestamp),
+        (AUTH_VERSION_V2, 0, 100)
+    );
+    assert_eq!(
+        open_session_id(&shared, &token, hello, &allowed, 100, 120, &cache),
+        Err(RealityError::Replay)
+    );
+}
+
+#[test]
+fn scenario_versioned_sealer_retains_legacy_bytes_and_rejects_invalid_inputs() {
+    let shared = shared_secret();
+    assert_eq!(
+        try_seal_session_id_with_version(&shared, b"sid", b"hello", 100, AUTH_VERSION_V1),
+        try_seal_session_id(&shared, b"sid", b"hello", 100),
+    );
+    for version in [0, 3, 255] {
+        assert_eq!(
+            try_seal_session_id_with_version(&shared, b"sid", b"hello", 100, version),
+            Err(RealityError::InvalidVersion(version))
+        );
+    }
+    assert_eq!(
+        try_seal_session_id_with_version(&shared, &[0; 9], b"hello", 100, AUTH_VERSION_V2),
+        Err(RealityError::InvalidShortIdLength)
+    );
+    assert_eq!(
+        try_seal_session_id_with_version(
+            &shared,
+            b"sid",
+            b"hello",
+            u64::from(u32::MAX) + 1,
+            AUTH_VERSION_V2
+        ),
+        Err(RealityError::TimestampOutOfRange)
+    );
+}
+
 proptest! {
     #[test]
-    fn prop_tampered_session_id_does_not_open(byte_index in 0_usize..32, bit in 0_u8..8) {
+    fn prop_tampered_session_id_does_not_open(byte_index in 0_usize..32, bit in 0_u8..8, version in 1_u8..=2) {
         let shared = shared_secret();
-        let mut session_id = try_seal_session_id(&shared, b"sid", b"hello0", 100)
+        let mut session_id = try_seal_session_id_with_version(&shared, b"sid", b"hello0", 100, version)
             .expect("session id should seal");
         session_id[byte_index] ^= 1 << bit;
         let replay = ReplayCache::new(4, 100).expect("cache should build");

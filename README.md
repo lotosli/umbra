@@ -106,7 +106,7 @@ Pushing a `v*` tag triggers the `Dist` workflow. It builds macOS, Linux, and Win
 
 Regular branch pushes run `CI` only. This keeps every branch validated without spending release-build minutes on every development commit.
 
-For the explicitly requested manual 0.0.8 release, binaries were built locally and commits include `[skip ci]`. No Actions build is needed to publish those existing artifacts. This release includes Apple Silicon/Intel macOS and x86_64/aarch64 Linux binaries, with SHA-256 checksums. See the [verification record](openspec/changes/fix-standard-quic-tls/verification.md) for the exact scope of completed checks and the final deployment.
+For the explicitly requested manual 0.0.8 release, binaries were built locally and commits include `[skip ci]`. No Actions build is needed to publish those existing artifacts. This release includes Apple Silicon/Intel macOS and x86_64/aarch64 Linux binaries, with SHA-256 checksums. See the [verification record](openspec/changes/archive/2026-09-14-fix-standard-quic-tls/verification.md) for the exact scope of completed checks and the final deployment.
 
 ## Development Model
 

@@ -39,3 +39,7 @@ The user subsequently selected a true single SOCKS client with `transport="tcp"`
 Before the user's instruction to stop further testing, targeted core/CLI nextest passed 226 tests, the two ignored core end-to-end tests passed, and strict core/CLI clippy and formatting passed. The full workspace coverage figure above was measured before this final addition; it was not rerun and must not be presented as a final-revision measurement.
 
 The final four binaries were rebuilt. The Mac now runs only `com.umbra.client` with one config and SOCKS1080. The server now runs only the main Umbra service with both TCP and QUIC listeners, behind Caddy. The temporary dedicated QUIC service/config and Mac agent/config were removed after backup. Final deployment checked executable versions/hashes and service/listener startup only; no additional functional or performance retest was run, as explicitly requested by the user.
+
+## Publication
+
+Published v0.0.8 manually from local artifacts and merged the implementation into main as `ddcb302`. All four executable assets and SHA256SUMS match the uploaded GitHub SHA-256 digests. Commits contain `[skip ci]` as explicitly requested; no Actions run was created for the implementation commit. README and both language editions of the client/server guide were updated.

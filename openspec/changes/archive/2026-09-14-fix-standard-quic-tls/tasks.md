@@ -14,8 +14,8 @@
 ## 3. Release and deployment
 
 - [x] 3.1 Document standard layout and coordinated upgrade, bump workspace to 0.0.8 and build/checksum release artifacts; verify binary versions.
-- [ ] 3.2 Commit and publish the authorized release with validation evidence; verify remote release assets and report any external CI limitation accurately.
+- [x] 3.2 Commit and publish the authorized release with validation evidence; verify remote release assets and report any external CI limitation accurately.
 - [x] 3.3 Deploy 0.0.8 to both endpoints with retained rollback files; verify TCP Vision, mux/QUIC and authenticated HTTPS behavior.
 - [x] 3.4 Rebuild and test Caddy with the corrected client on the server; if compatible, migrate web/QUIC/TCP endpoints, certificate renewal and service dependencies to public 80/443, then verify the live Clash path.
-- [ ] 3.5 Verify final service state, remove failed temporary deployment components if necessary, and deliver usage/recovery notes and test evidence.
+- [x] 3.5 Verify final service state, remove failed temporary deployment components if necessary, and deliver usage/recovery notes and test evidence.
 - [x] 3.6 Rebuild/redeploy the single-instance client change, consolidate configuration on SOCKS1080 and verify process/listener startup; omit further functional tests per the user's explicit instruction.

@@ -121,6 +121,7 @@ cargo deny check
 
 ## 文档
 
+- 使用手册：[`docs/usage.md`](docs/usage.md)（[中文](docs/usage.zh-CN.md)）
 - 协议设计：[`docs/protocol-design.md`](docs/protocol-design.md)
 - 架构：[`docs/architecture.md`](docs/architecture.md)
 - 贡献者与 AI 代理规则：[`AGENTS.md`](AGENTS.md)

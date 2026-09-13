@@ -18,15 +18,16 @@ use std::{
     io,
     pin::{pin, Pin},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex, MutexGuard,
     },
     task::{Context, Poll, Waker},
+    time::{Duration, Instant},
 };
 
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::{mpsc, Notify},
+    sync::{mpsc, Notify, OwnedSemaphorePermit, Semaphore},
     task::JoinHandle,
 };
 use umbra_inner::{
@@ -69,6 +70,10 @@ pub(crate) struct ClientMux {
     opens: mpsc::Sender<OpenRequest>,
     notify: Arc<Notify>,
     healthy: Arc<AtomicBool>,
+    accepting: Arc<AtomicBool>,
+    progress: Arc<AtomicU64>,
+    target_timeouts: Arc<AtomicUsize>,
+    capacity: Arc<Capacity>,
 }
 
 impl ClientMux {
@@ -78,12 +83,63 @@ impl ClientMux {
         self.healthy.load(Ordering::Acquire)
     }
 
+    /// Whether this connection may receive new streams, independently of existing I/O.
+    pub(crate) fn is_accepting(&self) -> bool {
+        self.is_healthy() && self.accepting.load(Ordering::Acquire)
+    }
+
+    /// Count caller-owned reserved, opening, and established pooled streams.
+    pub(crate) fn live_streams(&self) -> usize {
+        self.capacity.live.load(Ordering::Acquire)
+    }
+
+    /// When this outer first stopped accepting streams, for bounded retirement ordering.
+    pub(crate) fn draining_since(&self) -> Option<Instant> {
+        *self
+            .capacity
+            .draining_since
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Atomically reserve one real session slot before selecting this pooled outer.
+    pub(crate) fn try_reserve(&self) -> Option<MuxReservation> {
+        if !self.is_accepting() {
+            return None;
+        }
+        let permit = self.capacity.slots.clone().try_acquire_owned().ok()?;
+        self.capacity.live.fetch_add(1, Ordering::AcqRel);
+        Some(MuxReservation {
+            client: self.clone(),
+            permit: CapacityPermit {
+                permit: Some(permit),
+                capacity: self.capacity.clone(),
+            },
+            lease: StreamLease(self.capacity.clone()),
+        })
+    }
+
+    fn drain(&self) {
+        let mut since = self
+            .capacity
+            .draining_since
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        since.get_or_insert_with(Instant::now);
+        // This is the admission boundary: a caller that read the old accepting
+        // flag cannot acquire a new slot after the semaphore closes.
+        self.capacity.slots.close();
+        self.accepting.store(false, Ordering::Release);
+        drop(since);
+        self.capacity.changed.notify_waiters();
+    }
+
     /// Open a stream, returning only after the peer's SYN_ACK.
     ///
     /// Cancellation resets an already submitted open. It never repeats SYN or
     /// transfers the cancelled stream to a later caller.
     pub(crate) async fn open(&self, target: TargetAddr) -> io::Result<MuxIo> {
-        if !self.is_healthy() {
+        if !self.is_accepting() {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
         let stream = MuxIo::new(0, Phase::Opening, self.notify.clone());
@@ -99,6 +155,97 @@ impl ClientMux {
         stream.ready().await?;
         Ok(stream)
     }
+}
+
+struct Capacity {
+    slots: Arc<Semaphore>,
+    live: AtomicUsize,
+    changed: Arc<Notify>,
+    draining_since: Mutex<Option<Instant>>,
+}
+
+struct CapacityPermit {
+    permit: Option<OwnedSemaphorePermit>,
+    capacity: Arc<Capacity>,
+}
+
+impl Drop for CapacityPermit {
+    fn drop(&mut self) {
+        self.permit.take();
+        self.capacity.changed.notify_waiters();
+    }
+}
+
+struct StreamLease(Arc<Capacity>);
+
+impl Drop for StreamLease {
+    fn drop(&mut self) {
+        self.0.live.fetch_sub(1, Ordering::AcqRel);
+        self.0.changed.notify_waiters();
+    }
+}
+
+/// A single admission slot, released on cancellation or complete inner reclamation.
+pub(crate) struct MuxReservation {
+    client: ClientMux,
+    permit: CapacityPermit,
+    lease: StreamLease,
+}
+
+impl MuxReservation {
+    /// Submit one SYN without replay, then allow the server's target deadline plus feedback.
+    pub(crate) async fn open(
+        self,
+        target: TargetAddr,
+        syn_timeout: Duration,
+        target_timeout: Duration,
+    ) -> io::Result<MuxIo> {
+        let mut stream = MuxIo::new(0, Phase::Opening, self.client.notify.clone());
+        stream.shared.lock().reservation = Some(self.permit);
+        stream.lease = Some(self.lease);
+        let request = OpenRequest {
+            target,
+            shared: stream.shared.clone(),
+            armed: true,
+        };
+        let sent = tokio::time::timeout(syn_timeout, async {
+            self.client
+                .opens
+                .send(request)
+                .await
+                .map_err(|_| io::ErrorKind::BrokenPipe)?;
+            stream.syn_sent().await
+        })
+        .await;
+        let Ok(sent) = sent else {
+            self.client.drain();
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "mux SYN transmission timed out",
+            ));
+        };
+        sent.map_err(|error| open_stage_error("mux SYN setup failed", &error))?;
+        let progress = self.client.progress.load(Ordering::Acquire);
+        let Ok(ready) = tokio::time::timeout(target_timeout, stream.ready()).await else {
+            // One delayed target with sibling progress is not enough to drain.
+            // Repeated failures without a successful open also detect a broken
+            // opening direction while existing peer DATA still arrives.
+            let repeated = self.client.target_timeouts.fetch_add(1, Ordering::AcqRel) != 0;
+            if self.client.progress.load(Ordering::Acquire) == progress || repeated {
+                self.client.drain();
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "mux target acknowledgement timed out",
+            ));
+        };
+        ready.map_err(|error| open_stage_error("mux target acknowledgement failed", &error))?;
+        Ok(stream)
+    }
+}
+
+fn open_stage_error(stage: &str, error: &io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{stage}: {error}"))
 }
 
 /// Receiver of server-side SYNs. Target connections should be made concurrently
@@ -182,13 +329,35 @@ pub(crate) fn start_client<IO>(session: MuxSession<IO>) -> io::Result<(MuxDriver
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    start_client_with_notifier(session, Arc::new(Notify::new()))
+}
+
+/// Start a pooled client whose slot changes wake the owning connection pool.
+pub(crate) fn start_client_with_notifier<IO>(
+    session: MuxSession<IO>,
+    changed: Arc<Notify>,
+) -> io::Result<(MuxDriver, ClientMux)>
+where
+    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     check_session(&session, MuxRole::Client)?;
+    let capacity = Arc::new(Capacity {
+        slots: Arc::new(Semaphore::new(session.stream_capacity())),
+        live: AtomicUsize::new(0),
+        changed: changed.clone(),
+        draining_since: Mutex::new(None),
+    });
     let (opens, receiver) = mpsc::channel(MAX_STREAMS);
-    let driver = Driver::new(session, Some(receiver), None);
+    let mut driver = Driver::new(session, Some(receiver), None);
+    driver.pool_changed = Some(changed);
     let client = ClientMux {
         opens,
         notify: driver.notify.clone(),
         healthy: driver.healthy.clone(),
+        accepting: driver.accepting.clone(),
+        progress: driver.progress.clone(),
+        target_timeouts: driver.target_timeouts.clone(),
+        capacity,
     };
     Ok((spawn(driver), client))
 }
@@ -303,6 +472,8 @@ struct State {
     reader: Option<Waker>,
     writer: Option<Waker>,
     opener: Option<Waker>,
+    syn_sent: bool,
+    reservation: Option<CapacityPermit>,
 }
 
 impl State {
@@ -323,6 +494,8 @@ impl State {
             reader: None,
             writer: None,
             opener: None,
+            syn_sent: false,
+            reservation: None,
         }
     }
 
@@ -341,6 +514,7 @@ impl State {
         self.inbound = VecDeque::new();
         self.outbound = None;
         self.consumed = 0;
+        self.reservation.take();
         self.wake_all();
     }
 
@@ -397,6 +571,7 @@ fn register(slot: &mut Option<Waker>, cx: &Context<'_>) {
 /// of a pending flush/shutdown retains accepted bytes and FIN in driver state.
 pub(crate) struct MuxIo {
     shared: Arc<Shared>,
+    lease: Option<StreamLease>,
 }
 
 impl MuxIo {
@@ -406,6 +581,7 @@ impl MuxIo {
                 state: Mutex::new(State::new(id, phase)),
                 notify,
             }),
+            lease: None,
         }
     }
 
@@ -420,6 +596,20 @@ impl MuxIo {
             let mut state = self.shared.lock();
             state.check()?;
             if state.phase == Phase::Established {
+                Poll::Ready(Ok(()))
+            } else {
+                register(&mut state.opener, cx);
+                Poll::Pending
+            }
+        })
+        .await
+    }
+
+    async fn syn_sent(&self) -> io::Result<()> {
+        poll_fn(|cx| {
+            let mut state = self.shared.lock();
+            state.check()?;
+            if state.syn_sent || state.phase == Phase::Established {
                 Poll::Ready(Ok(()))
             } else {
                 register(&mut state.opener, cx);
@@ -554,6 +744,10 @@ struct Driver<IO> {
     incoming: Option<mpsc::Sender<PendingMux>>,
     notify: Arc<Notify>,
     healthy: Arc<AtomicBool>,
+    accepting: Arc<AtomicBool>,
+    progress: Arc<AtomicU64>,
+    target_timeouts: Arc<AtomicUsize>,
+    pool_changed: Option<Arc<Notify>>,
     need_flush: bool,
     first_stream: usize,
 }
@@ -580,6 +774,10 @@ where
             incoming,
             notify: Arc::new(Notify::new()),
             healthy: Arc::new(AtomicBool::new(true)),
+            accepting: Arc::new(AtomicBool::new(true)),
+            progress: Arc::new(AtomicU64::new(0)),
+            target_timeouts: Arc::new(AtomicUsize::new(0)),
+            pool_changed: None,
             need_flush: false,
             first_stream: 0,
         }
@@ -625,6 +823,10 @@ where
                         self.need_flush = false;
                         for shared in self.streams.values() {
                             let mut state = shared.lock();
+                            if state.phase == Phase::Opening {
+                                state.syn_sent = true;
+                                wake(&mut state.opener);
+                            }
                             state.flushed = state.submitted;
                             if state.send_phase == SendPhase::FinQueued {
                                 state.send_phase = SendPhase::FinFlushed;
@@ -698,6 +900,7 @@ where
     }
 
     fn dispatch(&mut self, event: MuxEvent) -> Result<(), InnerError> {
+        self.progress.fetch_add(1, Ordering::AcqRel);
         match event {
             MuxEvent::Syn { stream_id, target } => {
                 let stream = MuxIo::new(stream_id, Phase::Accepting, self.notify.clone());
@@ -710,6 +913,7 @@ where
                 }
             }
             MuxEvent::SynAck { stream_id } => {
+                self.target_timeouts.store(0, Ordering::Release);
                 if let Some(shared) = self.streams.get(&stream_id) {
                     let mut state = shared.lock();
                     state.phase = Phase::Established;
@@ -751,6 +955,9 @@ where
 impl<IO> Drop for Driver<IO> {
     fn drop(&mut self) {
         self.healthy.store(false, Ordering::Release);
+        if let Some(changed) = &self.pool_changed {
+            changed.notify_waiters();
+        }
         for shared in self.streams.values() {
             let mut state = shared.lock();
             // Gracefully closed streams keep their retained inbound for draining.
@@ -834,6 +1041,7 @@ where
         && matches!(session.send_credit(id), Err(InnerError::StreamReset))
     {
         state.inbound = VecDeque::new();
+        state.reservation.take();
         return Ok(true);
     }
     Ok(false)
@@ -917,12 +1125,14 @@ mod tests {
 
     async fn connect(client: &ClientMux, server: &mut ServerMux, port: u16) -> (MuxIo, MuxIo) {
         timeout(DEADLINE, async {
-            let (client, server) = tokio::join!(client.open(target(port)), async {
-                let pending = server.accept().await.unwrap();
-                assert_eq!(pending.target, target(port));
-                assert_ne!(pending.stream_id(), 0);
-                pending.accept().await
-            });
+            let reservation = client.try_reserve().expect("test session has capacity");
+            let (client, server) =
+                tokio::join!(reservation.open(target(port), DEADLINE, DEADLINE), async {
+                    let pending = server.accept().await.unwrap();
+                    assert_eq!(pending.target, target(port));
+                    assert_ne!(pending.stream_id(), 0);
+                    pending.accept().await
+                });
             let client = client.unwrap();
             let server = server.unwrap();
             assert_eq!(client.stream_id(), server.stream_id());
@@ -1282,6 +1492,156 @@ mod tests {
             assert!(!client.is_healthy());
             assert!(client.open(target(3)).await.is_err());
             assert!(!server.is_healthy());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reserved_syn_timeout_drains_but_does_not_abort_the_outer() {
+        timeout(DEADLINE, async {
+            let (left, _peer) = duplex(64);
+            let gate = Arc::new(Gate::default());
+            let (owner, client) =
+                start_client(session(GatedIo { io: left, gate }, MuxRole::Client, 8)).unwrap();
+            let reservation = client.try_reserve().unwrap();
+            assert_eq!(client.live_streams(), 1);
+            let error = reservation
+                .open(target(1), Duration::from_millis(10), DEADLINE)
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert!(error.to_string().contains("SYN transmission"));
+            assert!(client.is_healthy());
+            assert!(!client.is_accepting());
+            assert!(client.try_reserve().is_none());
+            assert!(client.open(target(2)).await.is_err());
+            assert_eq!(client.live_streams(), 0);
+            owner.shutdown().await;
+            assert!(!client.is_healthy());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delayed_target_with_sibling_progress_keeps_accepting_new_streams() {
+        timeout(DEADLINE, async {
+            let (_co, client, _so, mut server) = pair(8, 64);
+            let (mut sibling, mut peer) = connect(&client, &mut server, 1).await;
+            let reservation = client.try_reserve().unwrap();
+            let slow = tokio::spawn(async move {
+                reservation
+                    .open(target(2), DEADLINE, Duration::from_millis(50))
+                    .await
+            });
+            let pending = server.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            peer.write_all(b"live").await.unwrap();
+            let mut bytes = [0; 4];
+            sibling.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(&bytes, b"live");
+            let error = slow.await.unwrap().err().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert!(error.to_string().contains("acknowledgement"));
+            assert!(client.is_accepting());
+            drop(pending);
+            let (_new, _new_peer) = connect(&client, &mut server, 3).await;
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reservation_cancellation_and_driver_shutdown_release_all_capacity() {
+        timeout(DEADLINE, async {
+            let (owner, client, _so, mut server) = pair(8, 64);
+            let mut held = Vec::new();
+            for _ in 0..MAX_STREAMS {
+                held.push(client.try_reserve().unwrap());
+            }
+            assert!(client.try_reserve().is_none());
+            assert_eq!(client.live_streams(), MAX_STREAMS);
+            drop(held.pop());
+            let reservation = client.try_reserve().unwrap();
+            let mut opening = Box::pin(reservation.open(target(1), DEADLINE, DEADLINE));
+            assert_pending(opening.as_mut()).await;
+            let pending = server.accept().await.unwrap();
+            drop(opening);
+            until(|| pending.stream.shared.lock().error.is_some()).await;
+            assert!(client.try_reserve().is_some());
+            let reserved = held.pop().unwrap();
+            owner.shutdown().await;
+            assert!(reserved.open(target(2), DEADLINE, DEADLINE).await.is_err());
+            drop(held);
+            assert_eq!(client.live_streams(), 0);
+            assert!(client.try_reserve().is_none());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn repeated_open_timeouts_drain_even_when_old_streams_receive_data() {
+        timeout(DEADLINE, async {
+            let (_co, client, _so, mut server) = pair(8, 64);
+            let (mut sibling, mut peer) = connect(&client, &mut server, 1).await;
+            for port in 2..=3 {
+                let reservation = client.try_reserve().unwrap();
+                let opening = tokio::spawn(async move {
+                    reservation
+                        .open(target(port), DEADLINE, Duration::from_millis(100))
+                        .await
+                });
+                let pending = server.accept().await.unwrap();
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                peer.write_all(b"live").await.unwrap();
+                let mut bytes = [0; 4];
+                sibling.read_exact(&mut bytes).await.unwrap();
+                assert_eq!(&bytes, b"live");
+                assert_eq!(
+                    opening.await.unwrap().err().unwrap().kind(),
+                    io::ErrorKind::TimedOut
+                );
+                assert_eq!(client.is_accepting(), port == 2);
+                drop(pending);
+            }
+            assert!(client.try_reserve().is_none());
+            assert!(client.is_healthy());
+            sibling.write_all(b"kept").await.unwrap();
+            let mut bytes = [0; 4];
+            peer.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(&bytes, b"kept", "draining never aborts existing stream I/O");
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn draining_closes_admission_but_keeps_a_prior_reservation_valid() {
+        timeout(DEADLINE, async {
+            let (_co, client, _so, mut server) = pair(8, 64);
+            let reservation = client.try_reserve().unwrap();
+            let slots = client.capacity.slots.clone();
+            assert!(client.is_accepting());
+            client.drain();
+            assert!(
+                slots.try_acquire_owned().is_err(),
+                "a stale flag read cannot admit after drain"
+            );
+            assert!(client.try_reserve().is_none());
+            let (stream, peer) =
+                tokio::join!(reservation.open(target(1), DEADLINE, DEADLINE), async {
+                    server.accept().await.unwrap().accept().await
+                });
+            let mut stream = stream.unwrap();
+            let mut peer = peer.unwrap();
+            stream.write_all(b"kept").await.unwrap();
+            let mut bytes = [0; 4];
+            peer.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(&bytes, b"kept");
+            assert!(client.is_healthy());
         })
         .await
         .unwrap();

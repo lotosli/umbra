@@ -121,6 +121,7 @@ cargo deny check
 
 ## Documentation
 
+- User guide: [`docs/usage.md`](docs/usage.md) ([中文](docs/usage.zh-CN.md))
 - Protocol design: [`docs/protocol-design.md`](docs/protocol-design.md)
 - Architecture: [`docs/architecture.md`](docs/architecture.md)
 - Contributor rules: [`CONTRIBUTING.md`](CONTRIBUTING.md)

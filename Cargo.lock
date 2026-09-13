@@ -1944,7 +1944,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "umbra"
-version = "0.0.0"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "base64",
@@ -1956,7 +1956,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-core"
-version = "0.0.0"
+version = "0.0.6"
 dependencies = [
  "base64",
  "bytes",
@@ -1980,7 +1980,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-crypto"
-version = "0.0.0"
+version = "0.0.6"
 dependencies = [
  "aes-gcm",
  "chacha20 0.9.1",
@@ -2002,7 +2002,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-fingerprint"
-version = "0.0.0"
+version = "0.0.6"
 dependencies = [
  "md-5",
  "serde",
@@ -2014,7 +2014,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-inner"
-version = "0.0.0"
+version = "0.0.6"
 dependencies = [
  "proptest",
  "rand 0.8.6",
@@ -2026,7 +2026,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-proto"
-version = "0.0.0"
+version = "0.0.6"
 dependencies = [
  "proptest",
  "thiserror 2.0.18",
@@ -2034,7 +2034,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-reality"
-version = "0.0.0"
+version = "0.0.6"
 dependencies = [
  "proptest",
  "rcgen",
@@ -2052,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-testkit"
-version = "0.0.0"
+version = "0.0.6"
 dependencies = [
  "tokio",
  "umbra-core",
@@ -2064,7 +2064,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-tls"
-version = "0.0.0"
+version = "0.0.6"
 dependencies = [
  "hkdf",
  "hmac",
@@ -2085,7 +2085,7 @@ dependencies = [
 
 [[package]]
 name = "umbra-transport"
-version = "0.0.0"
+version = "0.0.6"
 dependencies = [
  "bytes",
  "quinn",
@@ -2389,7 +2389,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.0.0"
+version = "0.0.6"
 
 [[package]]
 name = "yasna"

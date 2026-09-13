@@ -70,3 +70,10 @@ The user approved this revision for implementation on 2026-09-12. The sections a
 ### Acceptance
 
 Every new or changed scenario requires an assertion-bearing regression test. Use loopback peers, controlled clocks/I/O, independent TLS/reference cryptography, and reviewed non-secret fixtures; do not test against third-party infrastructure. Keep strict linting, all workspace tests including ignored loopback tests, line coverage >= 90%, cargo-deny, fingerprint checks, and strict OpenSpec validation. Update protocol and review documents to match actual supported behavior, and leave unverifiable claims or unimplemented tasks visibly incomplete.
+
+
+## Runtime Reliability Follow-up — User Requested (2026-09-13)
+
+The user requested fixing the runtime `mux target setup` failure and delivering a usable client/server, rather than stopping at analysis or merely disabling multiplexing. The follow-up stays within orchestration/inner-mux/TCP reliability and revises the earlier single-TCP-outer design to a bounded, capacity-aware pool. It adds bounded multi-address target connection attempts and explicit failure stages. There is no new authentication fallback, wire-format change, dependency, or application-payload replay.
+
+Impact: `umbra-core` mux/runtime/TCP target connection and SOCKS failure paths; `umbra-inner` effective-capacity reporting; regression tests and operational documentation. No raw Vision/Geneva redesign or fingerprint claim is included.

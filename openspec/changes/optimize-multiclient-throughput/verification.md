@@ -76,3 +76,30 @@ Private endpoints, credentials, detailed logs and recovery files remain outside 
 ## Published artifacts
 
 [v0.0.9](https://github.com/lotosli/umbra/releases/tag/v0.0.9) is published at source commit `07a97db` (implementation tree `e9c4f6d`; the intervening commit changes documentation only). GitHub-reported SHA-256 digests for all four binaries and SHA256SUMS match the local release artifacts. Both deployed binaries match those same artifacts.
+
+## Completion-audit measurements
+
+The later audit adds evidence without changing production code or replacing the deployed binaries. See completion-audit.md for requirements still open; publication/deployment is not treated as completion of those requirements.
+
+`cargo test --release -p umbra-inner --test mixed_throughput -- --ignored --nocapture` exercises four outers in three groups. Two outers share one credential group and use four/one streams. All upload through a common 500Mbps serializer; path RTT/rate pairs are 20ms/100Mbps, 20ms/100Mbps, 100ms/1000Mbps and 200ms/10Mbps. Each outer sends 4MiB. The last receiver retains actual payload chunks without returning credit until the 100ms client's complete payload has arrived. The server commitment pool is 64MiB with 32MiB group caps, and the adaptive aggregate maximum is 8MiB. Reverse control traffic has independent serialization.
+
+| Client | Fixed mux Mbps | Adaptive mux Mbps | Credit-wait time fixed / adaptive |
+|---|---:|---:|---:|
+| 0: 20ms, 100Mbps, four streams | 95.563 | 96.118 | 272 / 104 ms |
+| 1: same group, 20ms, 100Mbps, one stream | 78.413 | 94.391 | 408 / 114 ms |
+| 2: 100ms, 1000Mbps, one stream | 20.528 | 68.914 | 1573 / 334 ms |
+| 3: initially paused, 200ms, 10Mbps | 6.328 | 8.685 | 5164 / 1470 ms |
+
+All bytes matched; the paused receiver held at most its initial 256KiB stream credit, other groups completed, and all commitments returned to zero. Aggregate goodput over the full makespan was 25.313 / 34.740Mbps; this includes the deliberate pause and long slow-client tail and is not a link-utilization measurement. Full per-client/group output, output-flush wait and receive windows are in final-mixed.txt. Credit wait counts are repeated waits for incoming control when all unfinished streams lack credit, not distinct stalls or network packet counts. These results show progress and isolation, not equal group scheduling shares.
+
+Full `cargo xtask ci` passed again: 514 tests including the new diagnostic, 94.94% line coverage; fmt, clippy, dependency and fingerprint checks passed. The additional test changes no production executable source.
+
+### Current TCP Vision bottleneck observation
+
+A further 64MiB synthetic TLS1.3 download through the installed TCP Vision client yielded 26.464Mbps. Over approximately 20.3 seconds the Mac client used 0.32 CPU seconds (1.58% of one core); server Umbra used 0.08 CPU seconds over the approximately 20.75-second sampling period (0.39% of one core). Peak sampled server Umbra RSS was about 11.9MiB. Caddy and the temporary target each used about 0.05 CPU seconds. These are one-transfer process observations, not CPU cost predictions under full server saturation.
+
+Public TCP samples showed BBR, roughly 171ms RTT, a peer receive window reaching 4,194,240 bytes, and delivery-rate samples near 28Mbps. A late established-state sample reported 57,958,008 transmitted bytes, 42,132,340 acknowledged bytes and 14,465,428 retransmitted bytes. These counters are not a packet-loss percentage; sampling stops covering a socket when it leaves ESTABLISHED, and no full-transfer retransmission ratio is asserted. The evidence points toward network congestion/loss in this observation, not a saturated Umbra CPU or the old mux window (Vision does not use it).
+
+An adjacent direct SSH TCP transfer from the same server, with compression disabled and every one of the 64MiB zero bytes verified, yielded 25.729Mbps including SSH setup. It uses a different port and encryption stack, so it is only a same-endpoint reference, not a controlled port-identical baseline or proof of the host's maximum bandwidth. Together these observations do not justify a TLS bridge rewrite to improve the currently observed Vision download.
+
+The temporary TLS target, keys, certificate and sampler marker were removed. The service remains active with the same verified 0.0.9 Linux executable hash; no application or host network configuration changed. Private addresses, credentials and detailed per-sample operational data remain outside the repository.

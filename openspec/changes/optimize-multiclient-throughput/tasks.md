@@ -23,7 +23,7 @@ Every implementation item requires a preceding entry in `prechange-review.md` re
 
 ## 4. Measurements, tests and coverage >= 90%
 
-- [x] 4.1 Run reproducible baseline/new-version throughput and heterogeneous-client scenarios; report measured results and remaining bottlenecks without invented gains.
+- [x] 4.1 Run reproducible baseline/new-version throughput and heterogeneous-client scenarios; report measured results and remaining bottlenecks without invented gains. Completion audit added mixed_throughput.rs with simultaneous heterogeneous RTT/rate, unequal stream counts, shared credentials/link/budget, held receive payloads and per-client/group goodput. This verifies progress and resource isolation, not group scheduling fairness; that gap is tracked in completion-audit.md.
 - [x] 4.2 Run fmt, clippy, nextest including required e2e, cargo deny, fingerprint verification and strict OpenSpec validation; resolve failures.
 - [x] 4.3 Run cargo xtask coverage with line coverage >=90% and targeted parser fuzzing; add meaningful missing scenario/edge tests.
 
@@ -35,3 +35,9 @@ Every implementation item requires a preceding entry in `prechange-review.md` re
 - [ ] 5.4 Record sanitized verification, final service state and recovery instructions; archive completed change after final source integration.
 
 Final service/recovery evidence is recorded in verification.md. Archive awaits source integration; current remote Actions are blocked by account billing, and no remote gate is bypassed.
+
+## 6. Completion audit follow-up
+
+- [ ] 6.1 Resolve the mismatch between fixed 64MiB QUIC admission and valid lower memory limits; review native QUIC credit/storage ownership before choosing a fix.
+- [ ] 6.2 Complete or provide sufficient evidence to resolve the original active-group scheduling and per-direction bottleneck-observation requirements; memory caps and per-outer round robin alone do not prove these.
+- [ ] 6.3 Reconcile any further implementation with the published/deployed 0.0.9 source and artifacts, then repeat the completion audit against the full original plan.

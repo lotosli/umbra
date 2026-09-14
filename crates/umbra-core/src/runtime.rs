@@ -2240,6 +2240,11 @@ async fn dispatch_quic_runtime(
             ctx.timing.wait_started_at(started_at, ctx.profile).await;
             let client_hello_len = authenticated.client_hello.len();
             let sni = authenticated.sni.clone();
+            let group = crate::resources::ResourceGroup {
+                resources: ctx.resources.clone(),
+                id: authenticated.credential_group,
+            };
+            let budget = crate::quic_resources::QuicBudget::new(&group)?;
             Box::pin(run_authenticated_quic_stream(
                 ctx.endpoint_socket,
                 inbox,
@@ -2247,14 +2252,8 @@ async fn dispatch_quic_runtime(
                 prefetched.dcid_len,
                 ctx.idle_timeout,
                 AuthenticatedQuicRuntime {
-                    group: crate::resources::ResourceGroup {
-                        resources: ctx.resources.clone(),
-                        id: authenticated.credential_group,
-                    },
-                    lease: Arc::new(
-                        ctx.resources
-                            .reserve(authenticated.credential_group, 64 * 1024 * 1024)?,
-                    ),
+                    group,
+                    budget,
                     sni: authenticated.sni,
                     session_id: authenticated.session_id,
                     shared_secret: authenticated.shared_secret,
@@ -2435,7 +2434,7 @@ fn read_quic_u24(input: &[u8]) -> Result<usize, CoreError> {
 /// Authenticated QUIC values passed from dispatch into the quinn server runtime.
 struct AuthenticatedQuicRuntime {
     group: crate::resources::ResourceGroup,
-    lease: Arc<umbra_inner::budget::BudgetLease>,
+    budget: crate::quic_resources::QuicBudget,
     sni: String,
     session_id: [u8; 32],
     shared_secret: Secret<32>,
@@ -2456,8 +2455,9 @@ async fn run_authenticated_quic_stream(
     let runtime = quinn::default_runtime()
         .ok_or_else(|| CoreError::Quic("no async runtime available for QUIC".to_owned()))?;
     let cids = Arc::clone(&inbox.cids);
+    let mut budget = authenticated.budget;
     let socket = Arc::new(PrefetchedUdpSocket {
-        _lease: Some(authenticated.lease),
+        _lease: Some(Arc::new(budget.lease())),
         inner: endpoint_socket,
         peer: inbox.peer,
         pending: Mutex::new(QuicSocketQueue {
@@ -2475,6 +2475,7 @@ async fn run_authenticated_quic_stream(
             mldsa_seed: authenticated.mldsa_seed,
         },
         authenticated.group.resources.config.quic_congestion,
+        &budget,
     );
     server_config.migration(false);
     let mut endpoint_config = quinn::EndpointConfig::default();
@@ -2504,19 +2505,32 @@ async fn run_authenticated_quic_stream(
     })
     .await
     .map_err(|_| CoreError::IdleTimeout("server QUIC handshake"))??;
+    let mut growth = tokio::time::interval(Duration::from_millis(50));
+    growth.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             () = cids.exhausted.notified() => {
                 return Err(CoreError::Quic("QUIC CID budget exhausted".to_owned()));
             }
             _ = connection.closed() => break,
+            _ = growth.tick() => {
+                if let Some(window) = budget.grow(connection.rtt(), Instant::now()) {
+                    connection.set_receive_window(window.into());
+                }
+            }
             joined = streams.join_next(), if !streams.is_empty() => {
                 // One failed target must not terminate other streams or associations.
                 report_session_result("server QUIC stream", joined);
             }
             accepted = connection.accept_bi(), if streams.len() < QUIC_MAX_STREAMS => {
-                let Ok((send, recv)) = accepted else { break };
+                let Ok((mut send, mut recv)) = accepted else { break };
                 let group = authenticated.group.clone();
+                let Ok(storage) = group.reserve(crate::quic_resources::STREAM_STORAGE_BYTES) else {
+                    let _ = send.reset(0_u32.into());
+                    let _ = recv.stop(0_u32.into());
+                    continue;
+                };
+                let recv = crate::resources::ResourceIo::new(budget.reader(recv), storage);
                 streams.spawn(async move {
                     Box::pin(run_quic_accepted_bi_stream(send, recv, drain_timeout, group)).await
                 });
@@ -2537,7 +2551,7 @@ impl Drop for QuicEndpointGuard {
 
 async fn run_quic_accepted_bi_stream(
     send: quinn::SendStream,
-    mut recv: quinn::RecvStream,
+    mut recv: impl AsyncRead + Unpin,
     drain_timeout: Duration,
     group: crate::resources::ResourceGroup,
 ) -> Result<(), CoreError> {
@@ -2604,7 +2618,7 @@ async fn relay_quic_server_stream(
 
 async fn relay_quic_server_udp_association(
     mut send: quinn::SendStream,
-    mut recv: quinn::RecvStream,
+    mut recv: impl AsyncRead + Unpin,
     idle_timeout: Duration,
     group: Option<crate::resources::ResourceGroup>,
 ) -> Result<(), CoreError> {
@@ -4247,6 +4261,65 @@ mod tests {
             stop.send(()).unwrap();
             running.await.unwrap().unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn native_quic_admits_and_transfers_with_minimum_memory() {
+        let (cfg, mut server) = pooled_client_fixture().await;
+        server.resources = crate::resources::Resources::new(crate::resources::PerformanceCfg {
+            memory_mib: 16,
+            group_memory_mib: 16,
+            ..crate::resources::PerformanceCfg::default()
+        })
+        .unwrap();
+        let pool = server.resources.pool.clone();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let running = tokio::spawn(async move {
+            server
+                .run_until_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+        });
+        let outcome = timeout(Duration::from_secs(5), async {
+            let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let destination = TargetAddr::Ipv4(
+                std::net::Ipv4Addr::LOCALHOST,
+                target.local_addr().unwrap().port(),
+            );
+            let echo = tokio::spawn(async move {
+                let (mut stream, _) = target.accept().await.unwrap();
+                let mut bytes = vec![0; 512 * 1024];
+                stream.read_exact(&mut bytes).await.unwrap();
+                assert!(bytes.iter().all(|byte| *byte == 0x63));
+                stream.write_all(&bytes).await.unwrap();
+                stream.shutdown().await.unwrap();
+            });
+            let client = QuicClientConnection::connect(&cfg).await.unwrap();
+            assert!(pool.committed() > 0 && pool.committed() <= 16 * 1024 * 1024);
+            let (mut send, mut recv) = client.connection.open_bi().await.unwrap();
+            write_target_stream(&mut send, &destination, &[])
+                .await
+                .unwrap();
+            let payload = vec![0x63; 512 * 1024];
+            send.write_all(&payload).await.unwrap();
+            send.finish().unwrap();
+            let received = recv.read_to_end(payload.len()).await.unwrap();
+            assert_eq!(received, payload);
+            echo.await.unwrap();
+            drop(client);
+        })
+        .await;
+        let _ = stop.send(());
+        running.await.unwrap().unwrap();
+        outcome.expect("minimum memory must allow authenticated QUIC progress");
+        timeout(Duration::from_secs(2), async {
+            while pool.committed() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("last connection owner releases commitment");
     }
 
     async fn pooled_client_fixture() -> (ClientCfg, ServerRuntime) {

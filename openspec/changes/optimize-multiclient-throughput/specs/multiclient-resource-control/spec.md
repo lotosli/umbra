@@ -36,3 +36,14 @@ A blocked client SHALL NOT suspend unrelated clients or the opposite relay direc
 #### Scenario: Unauthenticated fallback
 - **WHEN** a request fails authentication while authenticated budgets are in use
 - **THEN** it follows the existing transparent fallback contract
+
+### Requirement: Funded native QUIC receive growth
+The server MUST admit a native QUIC connection within the supported minimum memory budget when sufficient initial capacity is free. Its receive commitment SHALL grow only after demonstrated consumption and successful group/process funding; existing grants MUST remain owned until all transport and retained receive owners are gone. Native application stream storage SHALL be charged separately.
+
+#### Scenario: Low-memory native connection
+- **WHEN** an authenticated QUIC client connects to a server with the valid 16MiB group/process budget
+- **THEN** the connection can transfer an exact payload within that budget and release all commitments after shutdown
+
+#### Scenario: Native growth and retained owners
+- **WHEN** a native receiver consumes rapidly, exhausts its growth budget, and later drops its connection before a retained reader
+- **THEN** only funded growth is granted, no live commitment shrinks, and the final reader releases its owned commitment

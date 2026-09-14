@@ -38,6 +38,6 @@ Final service/recovery evidence is recorded in verification.md. Archive awaits s
 
 ## 6. Completion audit follow-up
 
-- [ ] 6.1 Resolve the mismatch between fixed 64MiB QUIC admission and valid lower memory limits; review native QUIC credit/storage ownership before choosing a fix.
+- [x] 6.1 Resolve the mismatch between fixed 64MiB QUIC admission and valid lower memory limits; R13 reviews native credit/storage ownership. The actual 16MiB connection test failed with budget exhaustion before the change and now transfers an exact 512KiB echo; growth, limits and retained-reader ownership tests also pass. Artifact/deployment reconciliation remains under 6.3.
 - [ ] 6.2 Complete or provide sufficient evidence to resolve the original active-group scheduling and per-direction bottleneck-observation requirements; memory caps and per-outer round robin alone do not prove these.
 - [ ] 6.3 Reconcile any further implementation with the published/deployed 0.0.9 source and artifacts, then repeat the completion audit against the full original plan.

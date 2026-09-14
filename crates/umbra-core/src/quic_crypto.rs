@@ -68,12 +68,13 @@ pub(crate) struct AuthenticatedServerCrypto {
 pub(crate) fn server_config(
     authenticated: AuthenticatedServerCrypto,
     congestion: crate::resources::QuicCongestion,
+    budget: &crate::quic_resources::QuicBudget,
 ) -> quinn::ServerConfig {
     let mut config =
         quinn::ServerConfig::with_crypto(Arc::new(UmbraQuicServerConfig { authenticated }));
     let mut transport = quinn_transport_base();
     congestion.apply(&mut transport);
-    transport.receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024));
+    budget.configure(&mut transport);
     config.transport_config(Arc::new(transport));
     config
 }

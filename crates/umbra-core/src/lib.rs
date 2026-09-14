@@ -18,6 +18,7 @@ pub mod owned_tls;
 pub mod prefixed;
 pub mod probe;
 pub(crate) mod quic_crypto;
+pub(crate) mod quic_resources;
 pub mod relay;
 pub mod resources;
 pub mod runtime;

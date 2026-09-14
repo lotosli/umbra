@@ -43,7 +43,7 @@ pub struct PerformanceCfg {
     pub memory_mib: usize,
     /// Ceiling shared by all connections using one canonical credential group.
     pub group_memory_mib: usize,
-    /// Largest automatically selected aggregate mux receive window, in MiB.
+    /// Largest adaptive mux or native QUIC aggregate receive window, in MiB.
     pub max_window_mib: u32,
     /// Enable client opt-in to adaptive flow control for new TCP CONNECT mux sessions.
     pub adaptive_mux: bool,

@@ -45,4 +45,8 @@ Validate specs before implementation. Build and test the exact release source, r
 
 ## BBR extension
 
+### Native QUIC resource correction
+
+The completion audit found that the initial fixed 64MiB reservation prevents any native QUIC admission under otherwise valid smaller budgets. Replace it with explicit storage, send and receive terms. Reserve 3MiB connection staging plus Quinn's existing 10,000,000-byte send limit; start aggregate receive credit at min(2,500,000, configured maximum) bytes and stream credit at min(1,250,000, aggregate/2). Account for 64KiB application storage on each accepted bidirectional stream, in addition to UDP-specific leases. Grow aggregate receive credit after demonstrated application consumption within a few RTTs, only after funding the full additional commitment. Do not revoke prior credit or change client transport parameters. Both native receive wrappers and the Quinn socket retain the growing connection lease. The 50ms local observation uses aggregate read counters; native per-stream credit remains fixed at its reviewed default maximum.
+
 Quinn congestion selection is local sender policy, not a new ClientHello transport parameter. Add `performance.quic_congestion` with `bbr`, `cubic`, and `new-reno`; default to BBR following the user's explicit experimental preference. Apply the selection to client and server transport configs. Existing Linux TCP BBR/fq remains unchanged and governs different TCP sockets; it does not control the outer UDP flow. No kernel upgrade or global sysctl change is required. Benchmark claims must distinguish whole-version observations from causally isolated algorithm comparisons.

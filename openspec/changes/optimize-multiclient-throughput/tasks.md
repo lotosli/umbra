@@ -30,7 +30,7 @@ Every implementation item requires a preceding entry in `prechange-review.md` re
 ## 5. Release and online deployment
 
 - [x] 5.1 Update protocol/usage docs and version 0.0.9; build supported Mac/Linux artifacts and verify versions/checksums.
-- [ ] 5.2 Publish exact-source release artifacts with change/test evidence and inspect remote CI status; do not claim unavailable CI passed.
+- [x] 5.2 Publish exact-source release artifacts with change/test evidence and inspect remote CI status; do not claim unavailable CI passed.
 - [x] 5.3 Back up privately and deploy both endpoints, verify matching versions/hashes and real TCP Vision, mux and QUIC routing plus online throughput.
 - [ ] 5.4 Record sanitized verification, final service state and recovery instructions; archive completed change after final source integration.
 

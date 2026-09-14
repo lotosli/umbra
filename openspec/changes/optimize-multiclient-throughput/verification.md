@@ -72,3 +72,7 @@ eb48c7e7f1d948936ba878cf7090e65c5371ac1421fffddb56083e89a53343f2  umbra-x86_64-u
 PR #7 contains the implementation and evidence. Its GitHub Actions jobs were not started because of account billing/spending restrictions; the check annotations explicitly report failed payments or a spending limit. These are not remotely executed test failures, and no remote CI pass is claimed. Full local gates passed as recorded above. Main-branch integration and OpenSpec archive remain pending the remote-CI/human integration step; no protected gate is bypassed.
 
 Private endpoints, credentials, detailed logs and recovery files remain outside the repository.
+
+## Published artifacts
+
+[v0.0.9](https://github.com/lotosli/umbra/releases/tag/v0.0.9) is published at source commit `07a97db` (implementation tree `e9c4f6d`; the intervening commit changes documentation only). GitHub-reported SHA-256 digests for all four binaries and SHA256SUMS match the local release artifacts. Both deployed binaries match those same artifacts.

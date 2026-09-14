@@ -357,7 +357,7 @@ where
         target_timeouts: driver.target_timeouts.clone(),
         capacity,
     };
-    Ok((spawn(driver), client))
+    Ok((spawn(driver, None), client))
 }
 
 /// Start a server driver over a fresh authenticated CONNECT-only session.
@@ -374,13 +374,14 @@ where
         incoming: receiver,
         healthy: driver.healthy.clone(),
     };
-    Ok((spawn(driver), server))
+    Ok((spawn(driver, None), server))
 }
 
 pub(crate) fn start_server_after_syn<IO>(
     session: MuxSession<IO>,
     stream_id: u32,
     target: TargetAddr,
+    work: Option<&crate::work::WorkGroup>,
 ) -> io::Result<(MuxDriver, ServerMux)>
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -397,7 +398,7 @@ where
         incoming: receiver,
         healthy: driver.healthy.clone(),
     };
-    Ok((spawn(driver), server))
+    Ok((spawn(driver, work), server))
 }
 
 fn check_session<IO>(session: &MuxSession<IO>, role: MuxRole) -> io::Result<()>
@@ -413,14 +414,14 @@ where
     Ok(())
 }
 
-fn spawn<IO>(mut driver: Driver<IO>) -> MuxDriver
+fn spawn<IO>(mut driver: Driver<IO>, work: Option<&crate::work::WorkGroup>) -> MuxDriver
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let healthy = driver.healthy.clone();
     // The guard exists before spawn, so aborting even before the first poll
     // drops all queues and publishes failure rather than detaching any work.
-    let task = tokio::spawn(async move {
+    let task = crate::work::spawn(work, async move {
         let _ = driver.run().await;
     });
     MuxDriver { task, healthy }

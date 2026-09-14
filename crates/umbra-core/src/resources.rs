@@ -5,6 +5,8 @@ use serde::Deserialize;
 use umbra_inner::budget::{BudgetLease, BudgetPool};
 use umbra_proto::flow::FlowSettings;
 
+pub use crate::work::WorkGroupSnapshot;
+
 /// Local QUIC sender congestion policy, independent of Linux TCP settings.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
@@ -91,6 +93,7 @@ impl PerformanceCfg {
 pub(crate) struct Resources {
     pub(crate) pool: BudgetPool,
     pub(crate) config: PerformanceCfg,
+    pub(crate) scheduler: crate::work::Scheduler,
 }
 
 impl Resources {
@@ -102,6 +105,7 @@ impl Resources {
                 config.group_memory_mib * 1024 * 1024,
             )?,
             config,
+            scheduler: crate::work::Scheduler::new(),
         })
     }
 
@@ -173,6 +177,10 @@ pub(crate) struct ResourceGroup {
 }
 
 impl ResourceGroup {
+    pub(crate) fn work(&self) -> crate::work::WorkGroup {
+        self.resources.scheduler.group(self.id)
+    }
+
     pub(crate) fn reserve(&self, bytes: usize) -> Result<BudgetLease, CoreError> {
         self.resources.reserve(self.id, bytes)
     }

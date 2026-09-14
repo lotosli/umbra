@@ -26,5 +26,6 @@ pub mod socks;
 mod target_connect;
 pub mod tls_io;
 pub mod vision_io;
+mod work;
 
 pub use error::CoreError;

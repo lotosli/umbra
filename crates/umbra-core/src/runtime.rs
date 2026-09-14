@@ -248,6 +248,11 @@ impl ServerRuntime {
         self.resources.pool.committed()
     }
 
+    /// Anonymous per-credential ready-work counts and scheduling wait time.
+    pub fn scheduling_snapshot(&self) -> Vec<crate::resources::WorkGroupSnapshot> {
+        self.resources.scheduler.snapshot()
+    }
+
     /// Return the bound TCP listener address.
     pub fn local_addr(&self) -> Result<SocketAddr, CoreError> {
         self.tcp_listener.local_addr().map_err(CoreError::from)
@@ -1943,26 +1948,34 @@ where
             let lease = resources.reserve(group, storage)?;
             let conn = crate::resources::ResourceIo::new(conn, lease.clone());
             let endpoint = TlsAppEndpoint::Server(Box::new(authenticated.tls_server));
-            if authenticated.version == AUTH_VERSION_V2 {
-                let owned = crate::owned_tls::EstablishedTcp::new(conn, endpoint, Vec::new())?;
-                let (session, mut target) = crate::vision_io::server_open(owned, |target| {
-                    connect_dest_or_target(target_to_host_port(&target))
-                })
-                .await?;
-                session
-                    .relay(&mut target, DEFAULT_SESSION_IDLE_TIMEOUT)
+            let version = authenticated.version;
+            let work = resources.scheduler.group(group);
+            let workers = work.clone();
+            work.wrap(async move {
+                if version == AUTH_VERSION_V2 {
+                    let owned = crate::owned_tls::EstablishedTcp::new(conn, endpoint, Vec::new())?;
+                    let (session, mut target) = crate::vision_io::server_open(owned, |target| {
+                        connect_dest_or_target(target_to_host_port(&target))
+                    })
                     .await?;
-            } else {
-                let tls_io = spawn_tls_app_io(conn, endpoint);
-                relay_one_server_inner_stream(
-                    tls_io,
-                    connect_dest_or_target,
-                    padding_scheme,
-                    DEFAULT_SESSION_IDLE_TIMEOUT,
-                    Some((resources, group, lease)),
-                )
-                .await?;
-            }
+                    session
+                        .relay(&mut target, DEFAULT_SESSION_IDLE_TIMEOUT)
+                        .await?;
+                } else {
+                    let tls_io =
+                        crate::tls_io::spawn_tls_app_io_scheduled(conn, endpoint, Some(&workers));
+                    relay_one_server_inner_stream(
+                        tls_io,
+                        connect_dest_or_target,
+                        padding_scheme,
+                        DEFAULT_SESSION_IDLE_TIMEOUT,
+                        Some((resources, group, lease)),
+                    )
+                    .await?;
+                }
+                Ok::<(), CoreError>(())
+            })
+            .await?;
             Ok(DispatchOutcome::Authenticated {
                 sni: authenticated.sni,
                 server_flight_len,
@@ -2245,7 +2258,8 @@ async fn dispatch_quic_runtime(
                 id: authenticated.credential_group,
             };
             let budget = crate::quic_resources::QuicBudget::new(&group)?;
-            Box::pin(run_authenticated_quic_stream(
+            let work = group.work();
+            work.wrap(run_authenticated_quic_stream(
                 ctx.endpoint_socket,
                 inbox,
                 prefetched.datagrams,
@@ -2454,6 +2468,10 @@ async fn run_authenticated_quic_stream(
 ) -> Result<(), CoreError> {
     let runtime = quinn::default_runtime()
         .ok_or_else(|| CoreError::Quic("no async runtime available for QUIC".to_owned()))?;
+    let runtime = Arc::new(crate::work::GroupRuntime {
+        inner: runtime,
+        group: authenticated.group.work(),
+    });
     let cids = Arc::clone(&inbox.cids);
     let mut budget = authenticated.budget;
     let socket = Arc::new(PrefetchedUdpSocket {
@@ -2531,9 +2549,9 @@ async fn run_authenticated_quic_stream(
                     continue;
                 };
                 let recv = crate::resources::ResourceIo::new(budget.reader(recv), storage);
-                streams.spawn(async move {
+                streams.spawn(group.work().wrap(async move {
                     Box::pin(run_quic_accepted_bi_stream(send, recv, drain_timeout, group)).await
-                });
+                }));
             }
         }
     }
@@ -2939,9 +2957,14 @@ where
             }
             match mux.receive_next().await? {
                 MuxEvent::Syn { stream_id, target } => {
-                    let (driver, incoming) =
-                        crate::mux_io::start_server_after_syn(mux, stream_id, target)?;
-                    relay_mux_targets(driver, incoming, connect_target, idle_timeout).await
+                    let work = group.as_ref().map(crate::resources::ResourceGroup::work);
+                    let (driver, incoming) = crate::mux_io::start_server_after_syn(
+                        mux,
+                        stream_id,
+                        target,
+                        work.as_ref(),
+                    )?;
+                    relay_mux_targets(driver, incoming, connect_target, idle_timeout, work).await
                 }
                 MuxEvent::UdpDatagram { target, payload } => {
                     Box::pin(relay_mux_server_udp_association(
@@ -2970,6 +2993,7 @@ async fn relay_mux_targets<D, Connect, ConnectFuture>(
     mut incoming: crate::mux_io::ServerMux,
     mut connect_target: Connect,
     idle_timeout: Duration,
+    work: Option<crate::work::WorkGroup>,
 ) -> Result<(), CoreError>
 where
     D: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -2990,7 +3014,7 @@ where
                     break Ok(());
                 };
                 let connect = connect_target(target_to_host_port(&pending.target));
-                streams.spawn(async move {
+                let transfer = async move {
                     let mut target = match tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, connect).await {
                         Ok(Ok(target)) => target,
                         Ok(Err(error)) => {
@@ -3005,7 +3029,9 @@ where
                     let mut stream = pending.accept().await?;
                     relay_bidirectional_until_idle(&mut target, &mut stream, idle_timeout).await?;
                     Ok(())
-                });
+                };
+                if let Some(work) = &work { streams.spawn(work.wrap(transfer)); }
+                else { streams.spawn(transfer); }
             }
         }
     };
@@ -3177,7 +3203,8 @@ async fn connect_udp_target(
     let socket = Arc::new(UdpSocket::bind(bind_addr).await?);
     socket.connect(resolved).await?;
     let reader = Arc::clone(&socket);
-    let task = tokio::spawn(async move {
+    let work = group.as_ref().map(crate::resources::ResourceGroup::work);
+    let task = crate::work::spawn(work.as_ref(), async move {
         let _storage = storage;
         let mut buf = vec![0_u8; UDP_RELAY_BUF_LEN];
         while let Ok(read) = reader.recv(&mut buf).await {
@@ -4273,6 +4300,8 @@ mod tests {
         })
         .unwrap();
         let pool = server.resources.pool.clone();
+        let server = Arc::new(server);
+        let observer = server.clone();
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let running = tokio::spawn(async move {
             server
@@ -4296,6 +4325,10 @@ mod tests {
                 stream.shutdown().await.unwrap();
             });
             let client = QuicClientConnection::connect(&cfg).await.unwrap();
+            assert!(observer
+                .scheduling_snapshot()
+                .iter()
+                .any(|group| group.polls > 0));
             assert!(pool.committed() > 0 && pool.committed() <= 16 * 1024 * 1024);
             let (mut send, mut recv) = client.connection.open_bi().await.unwrap();
             write_target_stream(&mut send, &destination, &[])
@@ -4320,6 +4353,17 @@ mod tests {
         })
         .await
         .expect("last connection owner releases commitment");
+        timeout(Duration::from_secs(2), async {
+            while observer
+                .scheduling_snapshot()
+                .iter()
+                .any(|group| group.tasks != 0)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("native driver gates close with their tasks");
     }
 
     async fn pooled_client_fixture() -> (ClientCfg, ServerRuntime) {

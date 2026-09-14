@@ -47,3 +47,18 @@ The server MUST admit a native QUIC connection within the supported minimum memo
 #### Scenario: Native growth and retained owners
 - **WHEN** a native receiver consumes rapidly, exhausts its growth budget, and later drops its connection before a retained reader
 - **THEN** only funded growth is granted, no live commitment shrinks, and the final reader releases its owned commitment
+
+### Requirement: Work-conserving credential-group readiness
+Authenticated task processing SHALL rotate ready credential groups before their individual ready tasks. Waiting I/O SHALL NOT occupy a processing permit, cancellation MUST return permits and remove queued work, and a sole ready group SHALL be able to use all process permits. Unauthenticated classification and fallback MUST retain their existing scheduling semantics.
+
+#### Scenario: Unequal ready task counts
+- **WHEN** one credential has eight continuously ready tasks and another has one equivalent task competing for one processing permit
+- **THEN** both groups receive balanced poll opportunities rather than shares proportional to task count
+
+#### Scenario: Blocked or cancelled work
+- **WHEN** a task waits for input or is cancelled while queued or permitted
+- **THEN** other ready groups progress and the scheduler retains no leaked processing permit or cancelled queue entry
+
+#### Scenario: One group borrows idle processing capacity
+- **WHEN** only one credential group has ready work and multiple process permits are free
+- **THEN** it may use all permits concurrently without an artificial one-worker ceiling

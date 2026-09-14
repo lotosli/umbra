@@ -40,4 +40,6 @@ Final service/recovery evidence is recorded in verification.md. Archive awaits s
 
 - [x] 6.1 Resolve the mismatch between fixed 64MiB QUIC admission and valid lower memory limits; R13 reviews native credit/storage ownership. The actual 16MiB connection test failed with budget exhaustion before the change and now transfers an exact 512KiB echo; growth, limits and retained-reader ownership tests also pass. Artifact/deployment reconciliation remains under 6.3.
 - [ ] 6.2 Complete or provide sufficient evidence to resolve the original active-group scheduling and per-direction bottleneck-observation requirements; memory caps and per-outer round robin alone do not prove these.
+- [x] 6.2.1 Implement and verify ready-task group scheduling across authenticated TCP/Vision/QUIC/UDP paths, with cancellation-safe ownership, concurrent wake handling, idle-permit borrowing and per-group scheduler snapshots (R14).
+- [ ] 6.2.2 Complete data-path credit/socket/target/budget observations by group, mode and direction; scheduling snapshots alone do not cover these causes.
 - [ ] 6.3 Reconcile any further implementation with the published/deployed 0.0.9 source and artifacts, then repeat the completion audit against the full original plan.

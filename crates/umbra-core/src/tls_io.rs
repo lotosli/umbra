@@ -97,13 +97,24 @@ pub fn spawn_tls_app_io<IO>(io: IO, endpoint: TlsAppEndpoint) -> TlsAppIo
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    spawn_tls_app_io_scheduled(io, endpoint, None)
+}
+
+pub(crate) fn spawn_tls_app_io_scheduled<IO>(
+    io: IO,
+    endpoint: TlsAppEndpoint,
+    group: Option<&crate::work::WorkGroup>,
+) -> TlsAppIo
+where
+    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let endpoint = Arc::new(Mutex::new(endpoint));
     let (plain_local, plain_remote) = tokio::io::duplex(DUPLEX_BUFFER_LEN);
     let (raw_read, raw_write) = split(io);
     let (plain_read, plain_write) = split(plain_remote);
 
-    let opening = spawn_open_task(raw_read, plain_write, Arc::clone(&endpoint));
-    let sealing = spawn_seal_task(plain_read, raw_write, endpoint);
+    let opening = spawn_open_task(raw_read, plain_write, Arc::clone(&endpoint), group);
+    let sealing = spawn_seal_task(plain_read, raw_write, endpoint, group);
     TlsAppIo {
         io: plain_local,
         workers: [opening, sealing],
@@ -115,11 +126,12 @@ fn spawn_open_task<R>(
     mut raw_read: ReadHalf<R>,
     mut plain_write: WriteHalf<DuplexStream>,
     endpoint: Arc<Mutex<TlsAppEndpoint>>,
+    group: Option<&crate::work::WorkGroup>,
 ) -> JoinHandle<()>
 where
     R: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    crate::work::spawn(group, async move {
         let mut record = Vec::new();
         loop {
             match read_tls_record_into(&mut raw_read, &mut record).await {
@@ -160,11 +172,12 @@ fn spawn_seal_task<W>(
     mut plain_read: ReadHalf<DuplexStream>,
     mut raw_write: WriteHalf<W>,
     endpoint: Arc<Mutex<TlsAppEndpoint>>,
+    group: Option<&crate::work::WorkGroup>,
 ) -> JoinHandle<()>
 where
     W: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    tokio::spawn(async move {
+    crate::work::spawn(group, async move {
         let mut buf = [0_u8; APP_IO_BUFFER_LEN];
         loop {
             let read = match plain_read.read(&mut buf).await {

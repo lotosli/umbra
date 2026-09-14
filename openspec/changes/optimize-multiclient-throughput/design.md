@@ -28,6 +28,8 @@ Retain persistent record/frame scratch buffers. Encode borrowed DATA directly in
 
 ### Observability and evaluation
 
+Authenticated task readiness is coordinated through one process-wide credential-group gate. The scheduler rotates ready credential groups and then their ready tasks, with parallel permits matching the Tokio worker count. It wraps task polling rather than moving future ownership to detached workers. Pending I/O relinquishes its permit; cancellation removes queued work and returns granted permits. A sole active group can use all permits. The gate applies at task boundaries to Vision, mux drivers/targets/TLS workers and native QUIC drivers/streams; unauthenticated work is excluded. This balances processing opportunities without fixed bandwidth shares or equal-Mbps guarantees. Do not nest gates inside the same Tokio task.
+
 Use synthetic data and anonymous identifiers. Record payload goodput, elapsed time, CPU/byte where available, window stalls, granted versus buffered bytes and lifecycle reclamation. Compare 0.0.8 and 0.0.9 in the same environment, separately for mux, Vision and QUIC. Heterogeneous clients, slow readers, changing demand and competing credential groups must be exercised. Report unavailable metrics and limitations honestly.
 
 ## Risks / Trade-offs

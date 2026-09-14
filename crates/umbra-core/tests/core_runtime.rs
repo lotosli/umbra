@@ -2535,6 +2535,13 @@ async fn scenario_multiple_credential_clients_release_shared_server_commitments(
     .unwrap();
     assert!(server.committed_memory() >= 3 * 13 * 1024 * 1024);
     assert!(server.committed_memory() <= 512 * 1024 * 1024);
+    let scheduled = server.scheduling_snapshot();
+    assert_eq!(
+        scheduled.len(),
+        2,
+        "shared credentials share a scheduler identity"
+    );
+    assert!(scheduled.iter().all(|group| group.polls > 0));
     for (stop, task) in clients {
         stop.send(()).unwrap();
         task.await.unwrap().unwrap();
@@ -2542,10 +2549,19 @@ async fn scenario_multiple_credential_clients_release_shared_server_commitments(
     stop.send(()).unwrap();
     server_task.await.unwrap().unwrap();
     timeout(Duration::from_secs(2), async {
-        while server.committed_memory() != 0 {
+        while server.committed_memory() != 0
+            || server
+                .scheduling_snapshot()
+                .iter()
+                .any(|group| group.tasks != 0)
+        {
             tokio::task::yield_now().await;
         }
     })
     .await
     .expect("all retained connection resources released");
+    assert!(server
+        .scheduling_snapshot()
+        .iter()
+        .all(|group| group.active == 0 && group.queued == 0));
 }

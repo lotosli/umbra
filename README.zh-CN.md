@@ -106,7 +106,7 @@ git push origin v0.0.1
 
 普通分支 push 只触发 `CI`。这样每个分支都能被验证，同时不会为每个开发提交消耗完整 release 构建时间。
 
-本次按明确要求手动发布 0.0.8：本地构建二进制，提交使用 `[skip ci]`，发布已有产物，不经过 Actions 构建。提供 macOS Apple Silicon/Intel 和 Linux x86_64/aarch64 四个程序及 SHA-256 校验文件。检查范围和最终部署情况见[验证记录](openspec/changes/archive/2026-09-14-fix-standard-quic-tls/verification.md)。
+0.0.9 的四个 macOS/Linux 发布包由本地完整验证的源代码构建，并附 SHA-256 校验和。两端部署与测试范围见[验证记录](openspec/changes/optimize-multiclient-throughput/verification.md)。当前 GitHub Actions 因账户支付/额度限制未启动，不宣称远程 CI 已通过。
 
 ## 开发模型
 

@@ -12,7 +12,7 @@ Every implementation item requires a preceding entry in `prechange-review.md` re
 - [x] 2.3 Use owned receive chunks, incremental buffering and reusable scheduling state; verify multiplexing fairness and queue limits.
 - [x] 2.4 Batch QUIC receive delivery while preserving per-flow metadata and boundaries; verify mixed transport and datagram tests.
 
-- [ ] 2.5 Apply the user-requested BBR selector to both Quinn endpoints and verify supported/invalid policies and live QUIC traffic.
+- [x] 2.5 Apply the user-requested BBR selector to both Quinn endpoints and verify supported/invalid policies and live QUIC traffic.
 
 ## 3. Shared resources and adaptive flow control
 
@@ -29,7 +29,9 @@ Every implementation item requires a preceding entry in `prechange-review.md` re
 
 ## 5. Release and online deployment
 
-- [ ] 5.1 Update protocol/usage docs and version 0.0.9; build supported Mac/Linux artifacts and verify versions/checksums.
+- [x] 5.1 Update protocol/usage docs and version 0.0.9; build supported Mac/Linux artifacts and verify versions/checksums.
 - [ ] 5.2 Publish exact-source release artifacts with change/test evidence and inspect remote CI status; do not claim unavailable CI passed.
-- [ ] 5.3 Back up privately and deploy both endpoints, verify matching versions/hashes and real TCP Vision, mux and QUIC routing plus online throughput.
+- [x] 5.3 Back up privately and deploy both endpoints, verify matching versions/hashes and real TCP Vision, mux and QUIC routing plus online throughput.
 - [ ] 5.4 Record sanitized verification, final service state and recovery instructions; archive completed change after final source integration.
+
+Final service/recovery evidence is recorded in verification.md. Archive awaits source integration; current remote Actions are blocked by account billing, and no remote gate is bypassed.

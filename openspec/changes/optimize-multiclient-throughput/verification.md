@@ -40,4 +40,35 @@ Before deployment, the installed 0.0.8 pair completed authenticated requests to 
 
 ## Release and deployment
 
-Pending final artifact publication and paired deployment verification. Private endpoints, credentials, logs and recovery files stay outside the repository. The previous GitHub Actions jobs did not start because of account billing/spending restrictions; no remote CI pass is claimed.
+Implementation commit: `e9c4f6d`. Four release binaries were built for Apple Silicon, Intel macOS, Linux x86_64 and Linux aarch64. Apple Silicon and Linux x86_64 were executed on the actual endpoints; the other architectures were build/link verified.
+
+Both the existing Linux service and Mac LaunchAgent now run 0.0.9. Running executable paths/versions and SHA-256 hashes match the built artifacts. Original configurations, service definitions and versioned executables were retained privately for recovery. The single SOCKS1080 setup keeps TCP Vision plus QUIC UDP, with QUIC BBR explicitly selected on both endpoints; Linux TCP BBR/fq was already enabled and was not changed.
+
+Online checks after deployment:
+
+- An actual HTTPS request through SOCKS1080 returned HTTP 200 with normal certificate verification.
+- A 320-byte UDP payload traversed the main SOCKS association over QUIC and matched its echo exactly.
+- Each mode completed a 64MiB download from the same temporary loopback TLS1.3 target on the server.
+
+| Mode | Observed 0.0.9 goodput |
+|---|---:|
+| Main TCP Vision | 25.395 Mbps |
+| Adaptive TCP mux | 26.462 Mbps |
+| QUIC BBR | 21.607 Mbps |
+
+The earlier TCP mux sample was about 10Mbps, but the WAN varied during collection, so the online values are observations rather than controlled speedup claims. In particular, the QUIC result was below the earlier Cubic sample: this does not establish a BBR benefit. The explicit BBR trial remains selected with Cubic available as a configuration alternative. Vision logs confirm raw-splice completion with stopped outer-record counters. Temporary benchmark targets and temporary client processes were removed.
+
+Deployed artifact hashes:
+
+```text
+c5d3dfa07db57cbdf83d3b3b6e123ebab00f182669223f3006cc18aabe2d7fe5  umbra-aarch64-apple-darwin
+3852acec03d1d325dc0a05a6609e0604ed3b95173b55f0cdf5313c9628b8586f  umbra-aarch64-unknown-linux-gnu
+967f003dfc7b0b038273bbe4bb485547620212aa97f25254b36d93ffa21ba8b8  umbra-x86_64-apple-darwin
+eb48c7e7f1d948936ba878cf7090e65c5371ac1421fffddb56083e89a53343f2  umbra-x86_64-unknown-linux-gnu
+```
+
+## Remote CI and integration
+
+PR #7 contains the implementation and evidence. Its GitHub Actions jobs were not started because of account billing/spending restrictions; the check annotations explicitly report failed payments or a spending limit. These are not remotely executed test failures, and no remote CI pass is claimed. Full local gates passed as recorded above. Main-branch integration and OpenSpec archive remain pending the remote-CI/human integration step; no protected gate is bypassed.
+
+Private endpoints, credentials, detailed logs and recovery files remain outside the repository.

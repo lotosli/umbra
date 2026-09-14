@@ -1,5 +1,7 @@
 # 0.0.9 verification
 
+Current implementation: `201bca93746c850274115636eaf1f30955025e4e`. The final binaries are built, deployed and checked against their uploaded SHA-256 digests. Their identity and final online checks are recorded in the last section. Earlier release sections retain the initial cut's historical evidence and hashes, which the final bundle supersedes.
+
 ## Scope and authorization
 
 The user authorized the discussed throughput/resource optimization, direct deployment and testing on the unused product, and the BBR trial with quinn 0.11.12 / quinn-proto 0.11.18. Each implementation point has a preceding code review and evidence in prechange-review.md. A single strong evidence point was used rather than an exhaustive performance matrix.
@@ -75,7 +77,7 @@ Private endpoints, credentials, detailed logs and recovery files remain outside 
 
 ## Published artifacts
 
-[v0.0.9](https://github.com/lotosli/umbra/releases/tag/v0.0.9) is published at source commit `07a97db` (implementation tree `e9c4f6d`; the intervening commit changes documentation only). GitHub-reported SHA-256 digests for all four binaries and SHA256SUMS match the local release artifacts. Both deployed binaries match those same artifacts.
+The initial v0.0.9 cut used source commit `07a97db` (implementation tree `e9c4f6d`; the intervening commit changed documentation only). Its five uploaded digests matched that initial bundle. The final bundle below supersedes those artifacts; original binaries, metadata and tag reference were retained privately for recovery.
 
 ## Completion-audit measurements
 
@@ -104,7 +106,7 @@ An adjacent direct SSH TCP transfer from the same server, with compression disab
 
 The temporary TLS target, keys, certificate and sampler marker were removed. The service remains active with the same verified 0.0.9 Linux executable hash; no application or host network configuration changed. Private addresses, credentials and detailed per-sample operational data remain outside the repository.
 
-## Native QUIC admission correction (not yet in deployed artifacts)
+## Native QUIC admission correction (included in the final bundle)
 
 The `native_quic_admits_and_transfers_with_minimum_memory` regression first failed on the released implementation: a valid 16MiB configuration produced `authenticated resource budget exhausted` and could not finish the QUIC handshake within five seconds. After the reviewed correction, the same real authenticated connection completes a byte-exact 512KiB upload and echo, keeps commitments within 16MiB, and releases all owners after shutdown (about 0.21 seconds in the focused local run).
 
@@ -112,11 +114,11 @@ The initial native connection now reserves 3MiB transport staging + 10,000,000 b
 
 The receive controller counts actual native stream reads, observes consumption and RTT every 50ms, and funds an increase before calling Quinn's cumulative aggregate receive setter. Focused tests verify growth from 2,500,000 to 5,000,000 and 10,000,000 bytes, rejection of an unfunded increase, no idle/slow-consumer growth, configured maxima and retention of the entire grant until the last reader drops. Client QUIC transport parameters are unchanged. The default native per-stream limit remains 1,250,000 bytes; this correction does not claim to remove the separate single-stream high-BDP ceiling.
 
-The new production source requires fresh release artifacts and paired deployment before those installed endpoints can be described as containing this fix. The original published/deployed hashes above remain accurate for the prior implementation.
+This correction is included in the final rebuilt/deployed bundle below. The earlier hashes remain historical evidence of the initial implementation.
 
 For the corrected source, `cargo xtask ci` completed successfully: 517 tests passed and line coverage was 94.97% (22,678 lines, 1,141 uncovered). The new quic_resources module reached 100% line coverage. Strict OpenSpec validation passed all eight items. Two pre-existing configuration tests received nextest `LEAK` labels in the full instrumented run (a process-output pipe observation, not a heap-leak diagnosis); their assertions passed. Their code only parses configuration, and targeted sequential reruns both with and without LLVM instrumentation passed without the label. No test or gate configuration was relaxed.
 
-## Credential-group ready-work scheduling (not yet in deployed artifacts)
+## Credential-group ready-work scheduling (included in the final bundle)
 
 The preceding R14 review identified that independent Tokio tasks have no credential identity. A deterministic single-worker fixture with 90,000 equivalent continuously ready polls measured 80,000 for the group with eight tasks and 10,000 for the group with one task. With the shared ready-work gate, the same fixture measured 45,001 / 44,999. Tests also verify that blocked work relinquishes permits, dropping queued/granted work removes it, concurrent duplicate wakes do not lose permits, and one ready group can obtain all four permits in a four-permit fixture.
 
@@ -133,3 +135,35 @@ R15 precedes the optional diagnostic implementation. The registry contains only 
 Focused evidence includes a duplex I/O test with a cancelled pending read, exact two-byte read, partial four-byte write, blocked follow-up write and eventual five-byte output; separate target counters remain 3/4 bytes. Last-observer drop closes the record, and 200 completed observations retain only the newest 128. The real three-client TCP test verifies two credential groups, separate transport/target counters, exactly 48 bytes in each target direction and closed records after shutdown. The real low-memory QUIC test verifies exactly 512KiB in both target directions, nonzero outer bytes and native credit samples; callback wait duration remains explicitly unavailable. Budget tests verify refusal causes and zero final commitments.
 
 The full run found a pre-existing injected-outer test race: its fake server dropped the outer immediately after one logical stream FIN. It now retains that outer until client completion, preserving all byte, target, half-close and success assertions; production errors are not suppressed. The final `cargo xtask ci` run passed all 525 tests with no failed/leaky tests and 95.02% line coverage (23,772 lines, 1,183 uncovered). The diagnostics module reached 99.32% line coverage. No test/gate thresholds were changed. Release artifacts and paired deployment still require reconciliation with this final implementation.
+
+## Final bundle and online verification
+
+`cargo xtask dist` built all four Mac/Linux targets from clean implementation commit `201bca9`. The final documentation changes do not modify that production source tree. Both deployed executables identify as 0.0.9. The Linux running executable was hashed through `/proc/<pid>/exe`; the Mac running text inode matches the installed file. Both match the new bundle, and the upload API reports matching digests for all four binaries and SHA256SUMS.
+
+```text
+2949caef2a4321f60ad340f6b457e2a874ba79ebf0fc68e208e96d67bd2f62b1  umbra-aarch64-apple-darwin
+6a516003fb3b27b3faf7bcef97f3e910d08bc4d26ea1b37cf678007e410c8a64  umbra-aarch64-unknown-linux-gnu
+6e5c3d923d03af3bb7f48c9558f66d94234fdd7506d2fc50082bccd6b41a07aa  umbra-x86_64-apple-darwin
+22dee3681f6ffec0bd3cdca25563ce60e863eb8fc92dcef950f1fed547c24dfd  umbra-x86_64-unknown-linux-gnu
+```
+
+Online acceptance on the final implementation:
+
+- Normal certificate-verified HTTPS through the main SOCKS listener returned 200.
+- Each transport completed a 64MiB TLS1.3 download from the temporary server-loopback target. The main Vision download also checked every payload byte.
+- Main-listener QUIC UDP echoed both a 320-byte payload and an empty payload exactly.
+- 135 diagnostic reports were observed, including TcpVision, TcpMux and Quic, positive target-byte counters and native credit samples. Reports were checked against private configuration values and contained no addresses/credential/session fields.
+- Diagnostic collection was then disabled by restoring the original configuration. A restoration-script permission mistake temporarily prevented the unprivileged service from reading it; original permissions were restored from backup, startup failure state cleared, and readiness and the running binary hash rechecked. With diagnostics disabled, Vision, TCP mux and native QUIC each passed a new certificate-verified HTTPS 200 check.
+- Server and Mac services are active, existing TCP Vision plus QUIC UDP routing is retained, both Quinn endpoints select BBR, and existing Linux TCP BBR remains unchanged. Temporary targets, keys/certificates, client processes and credential-bearing test configurations were removed. Private backups retain original executable/configuration state for recovery.
+
+| Final online mode | Observed goodput |
+|---|---:|
+| TCP Vision | 25.921 Mbps |
+| Adaptive TCP mux | 26.850 Mbps |
+| QUIC BBR | 22.625 Mbps |
+
+These are one-path observations, not controlled speedup claims; in particular, BBR has not demonstrated an advantage over the earlier Cubic sample. The current Vision result remains close to the adjacent same-endpoint direct SSH reference (25.729Mbps). No claim is made that a code change can exceed the measured path capacity.
+
+The final-source release-mode mux diagnostic was rerun serially with the same 8MiB/1Gbps model. Medians over three samples were fixed/adaptive: 593.676/960.007Mbps at zero added RTT, 38.132/218.652Mbps at 50ms, and 20.058/116.010Mbps at 100ms. Exact samples are in final-mux-after-audit.txt. These demonstrate the window mechanism on the emulator, not physical WAN bandwidth.
+
+Public release visibility and final tag identity are verified as the delivery step. GitHub Actions annotations still state that jobs were not started because account payments/spending limits block execution; the PR remains unmerged. All required local gates passed, and no remote CI success or protected-gate bypass is claimed. Archive follows any later source integration.

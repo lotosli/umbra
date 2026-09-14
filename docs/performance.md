@@ -93,4 +93,4 @@ Validation includes asymmetric bidirectional windows, multiple real client runti
 
 A later four-client shared-link diagnostic verifies different RTTs, path rates, stream counts and a paused receiver; it reports per-client/group goodput and credit/output wait time. Run it with `cargo test --release -p umbra-inner --test mixed_throughput -- --ignored --nocapture`. A live Vision profile also found low Umbra CPU use and throughput comparable to an adjacent same-endpoint SSH transfer. Full conditions and limitations are in the change's verification.md.
 
-The [completion audit](../openspec/changes/optimize-multiclient-throughput/completion-audit.md) remains open until final artifact/deployment reconciliation: native QUIC admission, group scheduling and opt-in pipeline observations are implemented in source. Earlier deployed artifacts do not yet contain those final corrections.
+The final implementation includes native QUIC admission, group scheduling and opt-in pipeline observations. See the [verification record](../openspec/changes/optimize-multiclient-throughput/verification.md) for source/build identity, measured conditions, deployment checks and limitations.

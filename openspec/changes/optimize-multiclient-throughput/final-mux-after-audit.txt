@@ -1,0 +1,28 @@
+   Compiling umbra-inner v0.0.9 (/Users/lotosli/Documents/Projects/umbra/crates/umbra-inner)
+    Finished `release` profile [optimized] target(s) in 3.56s
+     Running tests/throughput.rs (target/release/deps/throughput-b73437cf54a39ddb)
+
+running 2 tests
+test measure_adaptive_window_throughput ... mode=adaptive-mux rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=0.071441 goodput_mbps=939.366
+mode=adaptive-mux rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=0.069754 goodput_mbps=962.074
+mode=adaptive-mux rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=0.069905 goodput_mbps=960.007
+mode=adaptive-mux rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=0.306018 goodput_mbps=219.297
+mode=adaptive-mux rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=0.309165 goodput_mbps=217.065
+mode=adaptive-mux rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=0.306922 goodput_mbps=218.652
+mode=adaptive-mux rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=0.578402 goodput_mbps=116.025
+mode=adaptive-mux rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=0.578474 goodput_mbps=116.010
+mode=adaptive-mux rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=0.583721 goodput_mbps=114.967
+ok
+test measure_fixed_window_throughput ... mode=legacy-mux window=262144 rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=0.109152 goodput_mbps=614.819
+mode=legacy-mux window=262144 rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=0.116698 goodput_mbps=575.065
+mode=legacy-mux window=262144 rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=0.113040 goodput_mbps=593.676
+mode=legacy-mux window=262144 rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=1.759913 goodput_mbps=38.132
+mode=legacy-mux window=262144 rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=1.755304 goodput_mbps=38.232
+mode=legacy-mux window=262144 rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=1.766637 goodput_mbps=37.987
+mode=legacy-mux window=262144 rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=3.340223 goodput_mbps=20.091
+mode=legacy-mux window=262144 rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=3.355901 goodput_mbps=19.997
+mode=legacy-mux window=262144 rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=3.345700 goodput_mbps=20.058
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.53s
+

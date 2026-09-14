@@ -12,6 +12,7 @@ memory_mib = 512
 group_memory_mib = 256
 max_window_mib = 64
 adaptive_mux = true
+diagnostics_interval_secs = 0 # server: set e.g. 10 to collect/report pipeline observations
 quic_congestion = "bbr" # "cubic" or "new-reno" are also supported
 ```
 
@@ -34,6 +35,24 @@ Authenticated connections use an opaque group derived from the canonical configu
 Ready authenticated task polls rotate across credential groups and then their queued tasks. The gate covers Vision relay, TCP mux drivers/targets/TLS record workers, native QUIC drivers/streams and UDP target readers. Its parallel permit count follows the Tokio worker count; one ready group can use all permits, and waiting I/O releases a permit immediately. Original Tokio tasks retain future ownership, so abort/join semantics remain available. Classification and unauthenticated fallback keep their original scheduling path. This balances processing opportunities; different poll costs, path capacities and RTTs still produce different throughput.
 
 `ServerRuntime::scheduling_snapshot()` exposes anonymous per-group live/queued/active task counts, completed polls, cumulative ready-queue wait and wall time inside polls. Poll wall time is not a process CPU measurement. No target, credential bytes, peer address or session identifier is included. Group deques are reused while tasks remain and freed after the last task closes.
+
+## Optional pipeline diagnostics
+
+Set `performance.diagnostics_interval_secs` on the server to 1–3600 seconds (for example 10). Zero disables pipeline collection and reporting. `ServerRuntime::performance_snapshot()` returns the same typed observations alongside budget and scheduler snapshots. Budget refusal counts and scheduling continue to function when pipeline collection is disabled. Reports use asynchronous stderr writes and contain only numeric local observation/group identifiers, typed modes and counters.
+
+| Observation | Meaning and limits |
+|---|---|
+| Transport read / write | Server-perspective outer bytes processed/accepted; includes TLS/mux/QUIC overhead and QUIC retransmissions, excludes IP/UDP headers |
+| Target read / write | Business bytes read from targets / accepted by target writes; prefetched reads and queued writes do not prove remote application delivery |
+| Pending polls / observed wait | Pending I/O calls and time spanning owned I/O polls, including scheduling/application delays and cancellation; raw QUIC callback wait duration is unavailable |
+| Target setup | Attempt count and observed DNS/connect time, including failed or cancelled attempts |
+| Mux credit | Funded receive window, queued receive/output bytes, consumption, aggregate send credit and zero-credit send attempts |
+| Native QUIC credit | Funded aggregate receive window, stream-read consumption and sent/received DATA_BLOCKED or STREAM_DATA_BLOCKED frame counts; those frames can repeat |
+| Budget | Current/peak logical commitments and admission/growth refusals by group; process/group cause counters may overlap |
+
+Unavailable fields are `None`, not zero. Credit values are sampled during existing progress (mux at most every 100ms, native QUIC on its existing controller tick), with sample age reported. Native consumed bytes include the stream opening/envelope bytes read through Quinn. Vision has no mux-credit sample. CPU utilization still needs operating-system measurements; scheduler poll wall time is not CPU time.
+
+Only active observations and the last 128 closed observations are retained. Identify observations by their local id when computing deltas: naively summing the rolling history can decrease when older entries expire. Counters for canonical configured budget/scheduler groups remain available after their flows close. These diagnostics identify pipeline pressure without exposing addresses, SNI, credentials, payloads or protocol session identifiers.
 
 The shared pool accounts for receive commitments and separate staging allowances. Leases follow ownership through TLS workers, retained stream data, UDP target readers and queued UDP replies. Cloning a lease retains one commitment; it does not charge twice or release early. Growth leaves one eighth of the process ceiling available for initial admissions. Outstanding grants cannot be revoked or lent to another connection just because its queue is momentarily empty.
 
@@ -74,4 +93,4 @@ Validation includes asymmetric bidirectional windows, multiple real client runti
 
 A later four-client shared-link diagnostic verifies different RTTs, path rates, stream counts and a paused receiver; it reports per-client/group goodput and credit/output wait time. Run it with `cargo test --release -p umbra-inner --test mixed_throughput -- --ignored --nocapture`. A live Vision profile also found low Umbra CPU use and throughput comparable to an adjacent same-endpoint SSH transfer. Full conditions and limitations are in the change's verification.md.
 
-The [completion audit](../openspec/changes/optimize-multiclient-throughput/completion-audit.md) remains open: the native QUIC admission correction and group scheduler are implemented in the working source but still await final artifact/deployment reconciliation; production bottleneck observations do not yet cover all modes/directions. The deployed release is not a claim that these remaining plan requirements have been completed.
+The [completion audit](../openspec/changes/optimize-multiclient-throughput/completion-audit.md) remains open until final artifact/deployment reconciliation: native QUIC admission, group scheduling and opt-in pipeline observations are implemented in source. Earlier deployed artifacts do not yet contain those final corrections.

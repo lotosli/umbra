@@ -382,6 +382,7 @@ pub(crate) fn start_server_after_syn<IO>(
     stream_id: u32,
     target: TargetAddr,
     work: Option<&crate::work::WorkGroup>,
+    observation: Option<crate::diagnostics::Observation>,
 ) -> io::Result<(MuxDriver, ServerMux)>
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -391,6 +392,7 @@ where
     }
     let (incoming, receiver) = mpsc::channel(MAX_STREAMS);
     let mut driver = Driver::new(session, None, Some(incoming));
+    driver.observation = observation;
     driver
         .dispatch(MuxEvent::Syn { stream_id, target })
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
@@ -814,6 +816,9 @@ struct Driver<IO> {
     ids: Vec<u32>,
     buffered: Arc<AtomicUsize>,
     memory: Vec<umbra_inner::budget::BudgetLease>,
+    observation: Option<crate::diagnostics::Observation>,
+    last_sample: Option<Instant>,
+    credit_waits: u64,
 }
 
 struct Progress {
@@ -848,11 +853,15 @@ where
             ids: Vec::new(),
             buffered: Arc::new(AtomicUsize::new(0)),
             memory,
+            observation: None,
+            last_sample: None,
+            credit_waits: 0,
         }
     }
 
     async fn run(&mut self) -> Result<(), InnerError> {
         let result = self.run_loop().await;
+        self.sample(true);
         if let Err(InnerError::Io(error)) = &result {
             if error.kind() == io::ErrorKind::UnexpectedEof {
                 for shared in self.streams.values() {
@@ -865,6 +874,7 @@ where
 
     async fn run_loop(&mut self) -> Result<(), InnerError> {
         loop {
+            self.sample(false);
             // Freeze each finite output batch until it drains. This makes flush
             // barriers independent of subsequent traffic and retains partial
             // suffixes even if another stream has zero send credit.
@@ -926,7 +936,8 @@ where
                 continue;
             };
             let mut state = shared.lock();
-            match pump_stream(&mut self.session, &mut state, &mut self.need_flush) {
+            let waits = self.observation.as_ref().map(|_| &mut self.credit_waits);
+            match pump_stream(&mut self.session, &mut state, &mut self.need_flush, waits) {
                 Ok(true) => retired.push(id),
                 Ok(false) => {}
                 Err(error) => return Err(error),
@@ -937,6 +948,31 @@ where
         }
         self.admit_open();
         Ok(())
+    }
+
+    fn sample(&mut self, force: bool) {
+        let Some(observation) = &self.observation else {
+            return;
+        };
+        if !force
+            && self
+                .last_sample
+                .is_some_and(|last| last.elapsed() < Duration::from_millis(100))
+        {
+            return;
+        }
+        self.last_sample = Some(Instant::now());
+        let flow = self.session.flow_snapshot();
+        observation.credit(crate::diagnostics::CreditSnapshot {
+            receive_window: self.session.receive_capacity() as u64,
+            buffered_receive: Some(self.buffered.load(Ordering::Relaxed) as u64),
+            consumed: flow.map(|flow| flow.consumed),
+            send_credit: flow.map(|flow| flow.send_credit),
+            queued_output: Some(self.session.pending_output_bytes()),
+            mux_credit_waits: Some(self.credit_waits),
+            rtt: flow.map(|flow| flow.rtt),
+            ..crate::diagnostics::CreditSnapshot::default()
+        });
     }
 
     fn admit_open(&mut self) {
@@ -1048,6 +1084,7 @@ fn pump_stream<IO>(
     session: &mut MuxSession<IO>,
     state: &mut State,
     dirty: &mut bool,
+    credit_waits: Option<&mut u64>,
 ) -> Result<bool, InnerError>
 where
     IO: AsyncRead + AsyncWrite + Unpin,
@@ -1088,6 +1125,13 @@ where
     }
     if let Some(chunk) = &mut state.outbound {
         let accepted = session.try_send_data(id, &chunk.bytes[chunk.offset..])?;
+        if accepted == 0 {
+            if let Some(waits) = credit_waits {
+                if session.send_credit(id)? == 0 {
+                    *waits = waits.saturating_add(1);
+                }
+            }
+        }
         chunk.offset += accepted;
         *dirty |= accepted != 0;
         if chunk.offset == chunk.bytes.len() {

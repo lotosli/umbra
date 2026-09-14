@@ -39,3 +39,14 @@ The client and server SHALL apply the configured QUIC congestion algorithm indep
 #### Scenario: Unknown congestion algorithm
 - **WHEN** an unknown QUIC congestion policy is configured
 - **THEN** configuration fails with a sanitized error
+
+### Requirement: Bounded anonymous bottleneck observations
+Opt-in runtime diagnostics SHALL distinguish outer transport and target read/write progress, pending I/O, DATA credit/buffering and shared budget refusals by opaque group and mode. Observations MUST omit addresses, SNI, credentials and session identifiers, retain at most 128 closed flows, and label unavailable metrics honestly. Disabled diagnostics MUST NOT alter flow control or scheduling.
+
+#### Scenario: Pending I/O and retained observation
+- **WHEN** a synthetic transport has partial reads/writes and backpressure before its last observer closes
+- **THEN** counters reflect actual progress and pending waits, and its final snapshot is retained within the bounded history
+
+#### Scenario: Real grouped runtime observation
+- **WHEN** multiple authenticated clients transfer with diagnostics enabled
+- **THEN** observations identify their opaque groups/modes, report target and transport progress separately, and show no active observation after all owners stop

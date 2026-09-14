@@ -23,7 +23,42 @@ struct Pool {
 #[derive(Default)]
 struct State {
     used: usize,
-    groups: BTreeMap<usize, usize>,
+    peak: usize,
+    groups: BTreeMap<usize, GroupBudgetSnapshot>,
+}
+
+/// Resource usage and refusal counts for a canonical configured group.
+#[derive(Debug, Clone, Default)]
+pub struct GroupBudgetSnapshot {
+    /// Opaque group index.
+    pub group: usize,
+    /// Current logical receive/storage commitment.
+    pub committed: usize,
+    /// Largest observed commitment.
+    pub peak: usize,
+    /// Initial reservations refused, including stream/UDP storage.
+    pub admission_refusals: u64,
+    /// Receive-window increases refused.
+    pub growth_refusals: u64,
+    /// Refusals in which the process limit (including growth headroom) was exceeded.
+    pub process_limit_refusals: u64,
+    /// Refusals in which the group ceiling was exceeded; causes may overlap.
+    pub group_limit_refusals: u64,
+}
+
+/// Process-wide logical commitments, not RSS or kernel socket memory.
+#[derive(Debug, Clone)]
+pub struct BudgetSnapshot {
+    /// Configured process ceiling.
+    pub limit: usize,
+    /// Configured per-group ceiling.
+    pub group_limit: usize,
+    /// Current committed bytes.
+    pub committed: usize,
+    /// Largest observed process commitment.
+    pub peak: usize,
+    /// Counters for previously used configured groups, retained after their last close.
+    pub groups: Vec<GroupBudgetSnapshot>,
 }
 
 /// Owned reserved bytes; dropping returns the commitment exactly once.
@@ -72,6 +107,22 @@ impl BudgetPool {
             .used
     }
 
+    /// Snapshot usage and refusals without changing available credit.
+    pub fn snapshot(&self) -> BudgetSnapshot {
+        let state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        BudgetSnapshot {
+            limit: self.0.total,
+            group_limit: self.0.per_group,
+            committed: state.used,
+            peak: state.peak,
+            groups: state.groups.values().cloned().collect(),
+        }
+    }
+
     fn take(&self, group: usize, bytes: usize, growth: bool) -> bool {
         let mut state = self
             .0
@@ -83,13 +134,31 @@ impl BudgetPool {
         } else {
             self.0.total
         };
-        let used = state.groups.get(&group).copied().unwrap_or(0);
-        if bytes > limit.saturating_sub(state.used) || bytes > self.0.per_group.saturating_sub(used)
-        {
+        let used = state.groups.get(&group).map_or(0, |usage| usage.committed);
+        let process_full = bytes > limit.saturating_sub(state.used);
+        let group_full = bytes > self.0.per_group.saturating_sub(used);
+        if process_full || group_full {
+            let usage = state.groups.entry(group).or_default();
+            usage.group = group;
+            if growth {
+                usage.growth_refusals = usage.growth_refusals.saturating_add(1);
+            } else {
+                usage.admission_refusals = usage.admission_refusals.saturating_add(1);
+            }
+            usage.process_limit_refusals = usage
+                .process_limit_refusals
+                .saturating_add(u64::from(process_full));
+            usage.group_limit_refusals = usage
+                .group_limit_refusals
+                .saturating_add(u64::from(group_full));
             return false;
         }
         state.used += bytes;
-        *state.groups.entry(group).or_default() += bytes;
+        state.peak = state.peak.max(state.used);
+        let usage = state.groups.entry(group).or_default();
+        usage.group = group;
+        usage.committed += bytes;
+        usage.peak = usage.peak.max(usage.committed);
         true
     }
 }
@@ -136,11 +205,8 @@ impl Drop for Reservation {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.used -= bytes;
-        if let Some(used) = state.groups.get_mut(&self.group) {
-            *used -= bytes;
-            if *used == 0 {
-                state.groups.remove(&self.group);
-            }
+        if let Some(usage) = state.groups.get_mut(&self.group) {
+            usage.committed -= bytes;
         }
     }
 }
@@ -156,6 +222,12 @@ mod tests {
         let two = pool.reserve(1, 256).expect("same group");
         assert!(pool.reserve(1, 1).is_none());
         assert!(!one.grow_to(257));
+        let snapshot = pool.snapshot();
+        assert_eq!(snapshot.groups[0].group, 1);
+        assert_eq!(snapshot.groups[0].admission_refusals, 1);
+        assert_eq!(snapshot.groups[0].growth_refusals, 1);
+        assert_eq!(snapshot.groups[0].group_limit_refusals, 2);
+        assert_eq!(snapshot.groups[0].process_limit_refusals, 0);
         let other = pool.reserve(2, 256).expect("other credential");
         assert_eq!(pool.committed(), 768);
         drop(two);
@@ -167,6 +239,12 @@ mod tests {
         assert_eq!(pool.committed(), 512);
         drop(retained);
         assert_eq!(pool.committed(), 0);
+        assert_eq!(pool.snapshot().peak, 768);
+        assert!(pool
+            .snapshot()
+            .groups
+            .iter()
+            .all(|group| group.committed == 0));
     }
 
     #[test]

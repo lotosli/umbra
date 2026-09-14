@@ -49,6 +49,8 @@ pub struct PerformanceCfg {
     pub max_window_mib: u32,
     /// Enable client opt-in to adaptive flow control for new TCP CONNECT mux sessions.
     pub adaptive_mux: bool,
+    /// Anonymous pipeline diagnostic reporting interval; zero disables collection.
+    pub diagnostics_interval_secs: u64,
 }
 
 impl Default for PerformanceCfg {
@@ -59,6 +61,7 @@ impl Default for PerformanceCfg {
             group_memory_mib: 256,
             max_window_mib: 64,
             adaptive_mux: true,
+            diagnostics_interval_secs: 0,
         }
     }
 }
@@ -70,6 +73,7 @@ impl PerformanceCfg {
             || self.group_memory_mib < 16
             || self.group_memory_mib > self.memory_mib
             || !(1..=64).contains(&self.max_window_mib)
+            || self.diagnostics_interval_secs > 3600
         {
             return Err(CoreError::InvalidConfig(
                 "invalid performance memory or window limits",
@@ -94,6 +98,7 @@ pub(crate) struct Resources {
     pub(crate) pool: BudgetPool,
     pub(crate) config: PerformanceCfg,
     pub(crate) scheduler: crate::work::Scheduler,
+    pub(crate) diagnostics: crate::diagnostics::Diagnostics,
 }
 
 impl Resources {
@@ -106,6 +111,7 @@ impl Resources {
             )?,
             config,
             scheduler: crate::work::Scheduler::new(),
+            diagnostics: crate::diagnostics::Diagnostics::new(config.diagnostics_interval_secs > 0),
         })
     }
 
@@ -121,6 +127,14 @@ impl Resources {
 
     pub(crate) fn receive(&self, group: usize) -> Result<BudgetLease, CoreError> {
         self.reserve(group, self.config.flow().connection as usize)
+    }
+
+    pub(crate) fn group(&self, id: usize, mode: crate::diagnostics::Mode) -> ResourceGroup {
+        ResourceGroup {
+            resources: self.clone(),
+            id,
+            observation: self.diagnostics.register(id, mode),
+        }
     }
 }
 
@@ -174,6 +188,7 @@ impl<IO: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for ResourceIo<IO>
 pub(crate) struct ResourceGroup {
     pub(crate) resources: Resources,
     pub(crate) id: usize,
+    pub(crate) observation: Option<crate::diagnostics::Observation>,
 }
 
 impl ResourceGroup {
@@ -206,6 +221,12 @@ mod tests {
     #[test]
     fn performance_limits_and_shared_connection_owners_are_bounded() {
         assert!(PerformanceCfg {
+            diagnostics_interval_secs: 3601,
+            ..PerformanceCfg::default()
+        }
+        .validate()
+        .is_err());
+        assert!(PerformanceCfg {
             memory_mib: 0,
             ..PerformanceCfg::default()
         }
@@ -229,6 +250,7 @@ mod tests {
             group_memory_mib: 16,
             max_window_mib: 1,
             adaptive_mux: true,
+            diagnostics_interval_secs: 0,
         })
         .unwrap();
         assert_eq!(resources.config.flow().max_connection, 1024 * 1024);

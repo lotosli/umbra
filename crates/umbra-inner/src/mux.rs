@@ -314,6 +314,11 @@ where
             .map(crate::flow::AdaptiveFlow::snapshot)
     }
 
+    /// Bytes held by serialized output, including the current partially written frame.
+    pub fn pending_output_bytes(&self) -> usize {
+        self.writer.bytes
+    }
+
     /// Funded aggregate receive capacity for the connection's event driver.
     #[must_use]
     pub fn receive_capacity(&self) -> usize {

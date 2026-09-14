@@ -321,6 +321,8 @@ tcp_evasion   = "segment"                  # TCP 规避策略
 
 可选配置包括 `memory_mib=512`、`group_memory_mib=256`、`max_window_mib=64` 和客户端 `adaptive_mux=true`。窗口按消费和RTT自动增长，部署者不需填写带宽；内存上限需要给系统留出余量。详见[吞吐与配置说明](performance.md)。
 
+需要定位服务端瓶颈时，可在 `[performance]` 中设置 `diagnostics_interval_secs=10`；默认0关闭，开启间隔支持1–3600秒。报告按匿名凭据组和模式区分传输/目标字节、I/O等待、信用、队列与预算拒绝，不包含地址、凭据、SNI或载荷。传输字节包含协议开销，目标读取字节可能尚未交付客户端，不能直接当作有效吞吐；具体含义见性能说明。
+
 ### 0.0.8 升级说明
 
 0.0.8 修正 X25519MLKEM768 的标准字段与共享秘密顺序，并移除 QUIC 握手中的 TLS 1.2 版本声明。

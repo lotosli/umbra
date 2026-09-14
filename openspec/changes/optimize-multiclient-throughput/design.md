@@ -32,6 +32,8 @@ Authenticated task readiness is coordinated through one process-wide credential-
 
 Use synthetic data and anonymous identifiers. Record payload goodput, elapsed time, CPU/byte where available, window stalls, granted versus buffered bytes and lifecycle reclamation. Compare 0.0.8 and 0.0.9 in the same environment, separately for mux, Vision and QUIC. Heterogeneous clients, slow readers, changing demand and competing credential groups must be exercised. Report unavailable metrics and limitations honestly.
 
+Production diagnostics are opt-in via `performance.diagnostics_interval_secs` (0 disables; otherwise 1–3600 seconds). A bounded anonymous registry records each authenticated outer by numeric id, credential-group index and mode. Transport and target I/O counters are separate and directional, with pending polls and observed wait duration where available. Mux credit/queued bytes and native aggregate credit/consumption are sampled during existing activity; budget snapshots expose commitments and admission/growth refusals by group. At most 128 closed observations are retained. Reporting contains no peer/target address, SNI, credential bytes or session identifiers. These are pipeline observations, not automatic claims about end-to-end application delivery or CPU consumption.
+
 ## Risks / Trade-offs
 
 - Higher RTT needs more committed memory -> bound and account before advertising; do not shrink live grants.

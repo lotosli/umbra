@@ -117,6 +117,12 @@ pub struct FlowSnapshot {
     pub sent: u64,
     /// Cumulative DATA bytes received.
     pub received: u64,
+    /// DATA consumed by the local application.
+    pub consumed: u64,
+    /// Received DATA not yet consumed, including retained events.
+    pub buffered_receive: u64,
+    /// Remaining peer-granted aggregate send credit.
+    pub send_credit: u64,
     /// Number of connection-window expansions.
     pub expansions: u64,
     /// Smoothed round-trip sample, or bootstrap estimate before the first reply.
@@ -177,6 +183,9 @@ impl AdaptiveFlow {
             receive_window: self.receive.window,
             sent: self.send.sent,
             received: self.receive.received,
+            consumed: self.receive.consumed,
+            buffered_receive: self.receive.received - self.receive.consumed,
+            send_credit: self.send.limit - self.send.sent,
             expansions: self.expansions,
             rtt: self.rtt,
         }

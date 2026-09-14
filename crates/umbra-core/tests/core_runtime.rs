@@ -1905,6 +1905,7 @@ async fn scenario_client_runtime_accept_one_uses_injected_outer() {
         .expect("client runtime binds");
     let addr = runtime.local_addr().expect("runtime addr");
     let (outer_client, outer_server) = io::duplex(4096);
+    let (client_done, client_finished) = oneshot::channel();
     let server_task = tokio::spawn(async move {
         let mut mux = MuxSession::server(outer_server, &umbra_inner::padding::PadScheme::none())
             .expect("server mux");
@@ -1930,6 +1931,9 @@ async fn scenario_client_runtime_accept_one_uses_injected_outer() {
         mux.finish_stream(stream.stream_id)
             .await
             .expect("server sends fin");
+        // A stream FIN is not an outer-connection close. Retain the fake outer
+        // while the client flushes its own FIN and final consumption update.
+        let _ = client_finished.await;
         target
     });
     let accept_task = tokio::spawn(async move {
@@ -1963,6 +1967,7 @@ async fn scenario_client_runtime_accept_one_uses_injected_outer() {
         .expect("accept task")
         .expect("accept succeeds");
     assert_eq!(outcome.mode, ClientInnerMode::Mux);
+    client_done.send(()).expect("release completed fake outer");
     assert_eq!(
         server_task.await.expect("server task"),
         TargetAddr::domain("runtime.example", 443).expect("target")
@@ -2485,6 +2490,7 @@ async fn scenario_multiple_credential_clients_release_shared_server_commitments(
     let mut cfg = quic_runtime_server_cfg(&key, &seed);
     cfg.prebuild = false;
     cfg.short_ids = vec![vec![1], vec![2]];
+    cfg.performance.diagnostics_interval_secs = 3600;
     let server = Arc::new(
         ServerRuntime::bind_with_profile(
             cfg,
@@ -2564,4 +2570,39 @@ async fn scenario_multiple_credential_clients_release_shared_server_commitments(
         .scheduling_snapshot()
         .iter()
         .all(|group| group.active == 0 && group.queued == 0));
+    assert_grouped_diagnostics(&server);
+}
+
+fn assert_grouped_diagnostics(server: &ServerRuntime) {
+    let observations = server.performance_snapshot();
+    assert_eq!(observations.budget.committed, 0);
+    assert!(observations.flows.len() >= 3);
+    assert!(observations
+        .flows
+        .iter()
+        .all(|flow| flow.closed && flow.mode == umbra_core::diagnostics::Mode::TcpMux));
+    assert_eq!(
+        observations
+            .flows
+            .iter()
+            .map(|flow| flow.target_read.bytes)
+            .sum::<u64>(),
+        48
+    );
+    assert_eq!(
+        observations
+            .flows
+            .iter()
+            .map(|flow| flow.target_write.bytes)
+            .sum::<u64>(),
+        48
+    );
+    assert!(observations
+        .flows
+        .iter()
+        .all(|flow| flow.transport_read.bytes > 0
+            && flow.transport_write.bytes > 0
+            && flow.credit.is_some()));
+    let output = format!("{observations:?}");
+    assert!(!output.contains("127.0.0.1") && !output.contains("example"));
 }

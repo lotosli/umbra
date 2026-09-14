@@ -321,6 +321,8 @@ Upgrade both endpoints for adaptive TCP mux. New `mux=true` sessions opt in auto
 
 Optional `[performance]` limits are `memory_mib=512`, `group_memory_mib=256`, `max_window_mib=64`, and the client opt-in `adaptive_mux=true`. Windows grow from observed consumption and RTT without a configured bandwidth; memory ceilings still require host headroom. See [throughput and configuration](performance.md).
 
+For server-side bottleneck observation, set `diagnostics_interval_secs=10` in `[performance]`. The default is 0 (disabled); supported enabled intervals are 1–3600 seconds. Reports contain anonymous group/mode I/O, credit, queue and budget counters, with transport and target bytes distinguished. They contain no addresses, credentials, SNI or payloads; see the interpretation limits in the performance guide.
+
 ### Upgrading to 0.0.8
 
 Version 0.0.8 corrects the standard X25519MLKEM768 share and shared-secret ordering and removes TLS 1.2 from QUIC version offers.

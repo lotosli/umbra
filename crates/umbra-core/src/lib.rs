@@ -11,6 +11,7 @@
 //! `orchestration`.
 
 pub mod config;
+pub mod diagnostics;
 pub mod dispatch;
 pub mod error;
 pub(crate) mod mux_io;

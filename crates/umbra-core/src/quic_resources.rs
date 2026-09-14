@@ -60,6 +60,31 @@ impl QuicBudget {
         self.lease.clone()
     }
 
+    pub(crate) fn observation(
+        &self,
+        connection: &quinn::Connection,
+    ) -> crate::diagnostics::CreditSnapshot {
+        let stats = connection.stats();
+        crate::diagnostics::CreditSnapshot {
+            receive_window: u64::from(self.window),
+            consumed: Some(self.consumed.load(Ordering::Relaxed)),
+            quic_blocked_tx: Some(
+                stats
+                    .frame_tx
+                    .data_blocked
+                    .saturating_add(stats.frame_tx.stream_data_blocked),
+            ),
+            quic_blocked_rx: Some(
+                stats
+                    .frame_rx
+                    .data_blocked
+                    .saturating_add(stats.frame_rx.stream_data_blocked),
+            ),
+            rtt: Some(connection.rtt()),
+            ..crate::diagnostics::CreditSnapshot::default()
+        }
+    }
+
     pub(crate) fn reader<R>(&self, inner: R) -> QuicRead<R> {
         QuicRead {
             inner,
@@ -133,6 +158,7 @@ mod tests {
             })
             .unwrap(),
             id: 0,
+            observation: None,
         }
     }
 

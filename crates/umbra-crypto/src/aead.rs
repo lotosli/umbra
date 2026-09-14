@@ -107,3 +107,95 @@ fn validate_key_nonce(
     }
     Ok(())
 }
+
+/// Encrypt a payload in place and return its 16-byte authentication tag.
+/// The caller owns the output buffer and supplies the unchanged associated data.
+pub fn seal_in_place(
+    algorithm: AeadAlgorithm,
+    key: &[u8],
+    nonce: &[u8],
+    buffer: &mut [u8],
+    aad: &[u8],
+) -> Result<[u8; 16], CryptoError> {
+    use aes_gcm::aead::AeadInPlace;
+    validate_key_nonce(algorithm, key, nonce)?;
+    let tag = match algorithm {
+        AeadAlgorithm::Aes128Gcm => Aes128Gcm::new_from_slice(key)
+            .map_err(|_| CryptoError::InvalidKeyLength)?
+            .encrypt_in_place_detached(Nonce::from_slice(nonce), aad, buffer),
+        AeadAlgorithm::Aes256Gcm => Aes256Gcm::new_from_slice(key)
+            .map_err(|_| CryptoError::InvalidKeyLength)?
+            .encrypt_in_place_detached(Nonce::from_slice(nonce), aad, buffer),
+        AeadAlgorithm::ChaCha20Poly1305 => ChaCha20Poly1305::new_from_slice(key)
+            .map_err(|_| CryptoError::InvalidKeyLength)?
+            .encrypt_in_place_detached(chacha20poly1305::Nonce::from_slice(nonce), aad, buffer),
+    }
+    .map_err(|_| CryptoError::AuthenticationFailed)?;
+    Ok(tag.into())
+}
+
+/// Authenticate and decrypt an owned ciphertext-plus-tag buffer in place.
+/// Authentication failure clears the buffer rather than exposing partial output.
+pub fn open_in_place(
+    algorithm: AeadAlgorithm,
+    key: &[u8],
+    nonce: &[u8],
+    buffer: &mut Vec<u8>,
+    aad: &[u8],
+) -> Result<(), CryptoError> {
+    use aes_gcm::aead::AeadInPlace;
+    use zeroize::Zeroize;
+    validate_key_nonce(algorithm, key, nonce)?;
+    let result = match algorithm {
+        AeadAlgorithm::Aes128Gcm => Aes128Gcm::new_from_slice(key)
+            .map_err(|_| CryptoError::InvalidKeyLength)?
+            .decrypt_in_place(Nonce::from_slice(nonce), aad, buffer),
+        AeadAlgorithm::Aes256Gcm => Aes256Gcm::new_from_slice(key)
+            .map_err(|_| CryptoError::InvalidKeyLength)?
+            .decrypt_in_place(Nonce::from_slice(nonce), aad, buffer),
+        AeadAlgorithm::ChaCha20Poly1305 => ChaCha20Poly1305::new_from_slice(key)
+            .map_err(|_| CryptoError::InvalidKeyLength)?
+            .decrypt_in_place(chacha20poly1305::Nonce::from_slice(nonce), aad, buffer),
+    };
+    if result.is_err() {
+        buffer.zeroize();
+        buffer.clear();
+    }
+    result.map_err(|_| CryptoError::AuthenticationFailed)
+}
+
+#[cfg(test)]
+mod in_place_tests {
+    use super::*;
+
+    #[test]
+    fn in_place_matches_existing_aead_and_clears_failed_output() {
+        for algorithm in [
+            AeadAlgorithm::Aes128Gcm,
+            AeadAlgorithm::Aes256Gcm,
+            AeadAlgorithm::ChaCha20Poly1305,
+        ] {
+            let key = vec![0x42; algorithm.key_len()];
+            let nonce = [0x24; 12];
+            for length in [0, 1, 16_384] {
+                let input = vec![0xa5; length];
+                let reference =
+                    seal(algorithm, &key, &nonce, &input, b"header").expect("reference encryption");
+                let mut output = input.clone();
+                let tag = seal_in_place(algorithm, &key, &nonce, &mut output, b"header")
+                    .expect("in-place encryption");
+                output.extend_from_slice(&tag);
+                assert_eq!(output, reference);
+                open_in_place(algorithm, &key, &nonce, &mut output, b"header").expect("decrypt");
+                assert_eq!(output, input);
+                let mut invalid = reference;
+                assert!(
+                    open_in_place(algorithm, &key, &nonce, &mut invalid, b"bad header").is_err()
+                );
+                assert!(invalid.is_empty());
+            }
+            assert!(seal_in_place(algorithm, &[], &nonce, &mut [], b"").is_err());
+            assert!(open_in_place(algorithm, &key, &[], &mut Vec::new(), b"").is_err());
+        }
+    }
+}

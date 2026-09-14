@@ -42,12 +42,58 @@ impl TlsAppEndpoint {
     }
 }
 
+/// Plaintext TLS bridge whose lifetime owns both record workers.
+pub struct TlsAppIo {
+    io: DuplexStream,
+    workers: [JoinHandle<()>; 2],
+    pub(crate) lease: Option<umbra_inner::budget::BudgetLease>,
+}
+
+impl Drop for TlsAppIo {
+    fn drop(&mut self) {
+        for worker in &self.workers {
+            worker.abort();
+        }
+    }
+}
+
+impl AsyncRead for TlsAppIo {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_read(cx, buf)
+    }
+}
+impl AsyncWrite for TlsAppIo {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        std::pin::Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+}
+
 /// Start background record translation and return the plaintext side.
 ///
 /// The returned stream is what inner mux/Vision code reads and writes. Two
 /// background tasks translate between TLS application-data records on `io` and
 /// plaintext bytes on the returned duplex stream.
-pub fn spawn_tls_app_io<IO>(io: IO, endpoint: TlsAppEndpoint) -> DuplexStream
+pub fn spawn_tls_app_io<IO>(io: IO, endpoint: TlsAppEndpoint) -> TlsAppIo
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -56,10 +102,13 @@ where
     let (raw_read, raw_write) = split(io);
     let (plain_read, plain_write) = split(plain_remote);
 
-    spawn_open_task(raw_read, plain_write, Arc::clone(&endpoint));
-    spawn_seal_task(plain_read, raw_write, endpoint);
-
-    plain_local
+    let opening = spawn_open_task(raw_read, plain_write, Arc::clone(&endpoint));
+    let sealing = spawn_seal_task(plain_read, raw_write, endpoint);
+    TlsAppIo {
+        io: plain_local,
+        workers: [opening, sealing],
+        lease: None,
+    }
 }
 
 fn spawn_open_task<R>(
@@ -71,10 +120,11 @@ where
     R: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
+        let mut record = Vec::new();
         loop {
-            let record = match read_tls_record(&mut raw_read).await {
-                Ok(Some(record)) => record,
-                Ok(None) => {
+            match read_tls_record_into(&mut raw_read, &mut record).await {
+                Ok(true) => {}
+                Ok(false) => {
                     let _ = plain_write.shutdown().await;
                     return;
                 }
@@ -83,7 +133,7 @@ where
                     let _ = plain_write.shutdown().await;
                     return;
                 }
-            };
+            }
             let plaintext = match endpoint.lock() {
                 Ok(mut endpoint) => endpoint.open(&record).map_err(tls_to_io),
                 Err(_) => Err(io::Error::other("TLS endpoint mutex poisoned")),
@@ -161,18 +211,31 @@ pub async fn read_tls_record<R>(reader: &mut R) -> io::Result<Option<Vec<u8>>>
 where
     R: AsyncRead + Unpin,
 {
-    let mut header = [0_u8; TLS_RECORD_HEADER_LEN];
-    match reader.read_exact(&mut header).await {
-        Ok(_) => {}
-        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(err) => return Err(err),
+    let mut record = Vec::new();
+    if read_tls_record_into(reader, &mut record).await? {
+        Ok(Some(record))
+    } else {
+        Ok(None)
     }
-    let len = usize::from(u16::from_be_bytes([header[3], header[4]]));
-    let mut record = header.to_vec();
-    let mut payload = vec![0_u8; len];
-    reader.read_exact(&mut payload).await?;
-    record.extend_from_slice(&payload);
-    Ok(Some(record))
+}
+
+async fn read_tls_record_into<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    record: &mut Vec<u8>,
+) -> io::Result<bool> {
+    record.resize(TLS_RECORD_HEADER_LEN, 0);
+    if reader.read(&mut record[..1]).await? == 0 {
+        return Ok(false);
+    }
+    reader
+        .read_exact(&mut record[1..TLS_RECORD_HEADER_LEN])
+        .await?;
+    let len = usize::from(u16::from_be_bytes([record[3], record[4]]));
+    record.resize(TLS_RECORD_HEADER_LEN + len, 0);
+    reader
+        .read_exact(&mut record[TLS_RECORD_HEADER_LEN..])
+        .await?;
+    Ok(true)
 }
 
 fn tls_to_io(err: TlsError) -> io::Error {

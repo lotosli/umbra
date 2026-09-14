@@ -51,7 +51,7 @@ pub(crate) fn client_config(cfg: &ClientCfg) -> Result<quinn::ClientConfig, Core
     };
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
     config.initial_dst_cid_provider(Arc::new(move || random_connection_id(cid_len)));
-    config.transport_config(quic_transport_config());
+    config.transport_config(quic_transport_config(cfg.performance.quic_congestion));
     Ok(config)
 }
 
@@ -65,10 +65,16 @@ pub(crate) struct AuthenticatedServerCrypto {
     pub(crate) mldsa_seed: Secret<32>,
 }
 
-pub(crate) fn server_config(authenticated: AuthenticatedServerCrypto) -> quinn::ServerConfig {
+pub(crate) fn server_config(
+    authenticated: AuthenticatedServerCrypto,
+    congestion: crate::resources::QuicCongestion,
+) -> quinn::ServerConfig {
     let mut config =
         quinn::ServerConfig::with_crypto(Arc::new(UmbraQuicServerConfig { authenticated }));
-    config.transport_config(quic_transport_config());
+    let mut transport = quinn_transport_base();
+    congestion.apply(&mut transport);
+    transport.receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024));
+    config.transport_config(Arc::new(transport));
     config
 }
 
@@ -643,11 +649,19 @@ fn quic_profile(
     Ok((profile, grease_parameter, cid_len))
 }
 
-fn quic_transport_config() -> Arc<quinn::TransportConfig> {
+fn quic_transport_config(
+    congestion: crate::resources::QuicCongestion,
+) -> Arc<quinn::TransportConfig> {
+    let mut transport = quinn_transport_base();
+    congestion.apply(&mut transport);
+    Arc::new(transport)
+}
+
+fn quinn_transport_base() -> quinn::TransportConfig {
     let mut transport = quinn::TransportConfig::default();
     transport.datagram_receive_buffer_size(None);
     transport.datagram_send_buffer_size(0);
-    Arc::new(transport)
+    transport
 }
 
 fn encode_transport_parameters(
@@ -1051,7 +1065,7 @@ mod tests {
 
     #[test]
     fn scenario_quic_udp_carrier_preserves_fingerprint_by_disabling_datagrams() {
-        let config = quic_transport_config();
+        let config = quic_transport_config(crate::resources::QuicCongestion::Bbr);
         let config_debug = format!("{config:?}");
 
         assert!(config_debug.contains("datagram_receive_buffer_size: None"));

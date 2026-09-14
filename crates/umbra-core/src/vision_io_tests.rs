@@ -943,3 +943,26 @@ fn byte_counters_check_overflow() {
     assert_eq!(add_bytes(u64::MAX - 2, 2).expect("exact maximum"), u64::MAX);
     assert!(add_bytes(u64::MAX, 1).is_err());
 }
+
+#[tokio::test]
+#[ignore = "explicit release-mode raw-record throughput diagnostic"]
+async fn measure_raw_record_throughput() {
+    let mut record = vec![0x5a; 16_406];
+    record[..5].copy_from_slice(&[0x17, 3, 3, 0x40, 0x11]);
+    let input = record.repeat(8192);
+    for sample in 0..5 {
+        let (progress, _) = watch::channel(Instant::now());
+        let mut reader = input.as_slice();
+        let mut sink = tokio::io::sink();
+        let start = Instant::now();
+        let count = forward_records(&mut reader, &mut sink, false, &progress)
+            .await
+            .expect("valid complete records");
+        assert_eq!(count, u64::try_from(input.len()).expect("bounded input"));
+        assert!(reader.is_empty());
+        println!(
+            "mode=raw-records sample={sample} records=8192 bytes={count} elapsed_ns={}",
+            start.elapsed().as_nanos()
+        );
+    }
+}

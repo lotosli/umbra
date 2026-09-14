@@ -315,6 +315,12 @@ tcp_evasion   = "segment"                  # TCP 规避策略
 
 ## 传输模式
 
+### 0.0.9 吞吐优化
+
+建议同时升级服务端与客户端。`mux=true` 的新连接默认启用自适应流控；`mux=false` 继续使用Vision。QUIC默认选择BBR，可在 `[performance]` 中将 `quic_congestion` 设置为 `cubic` 或 `new-reno`。这不改变Linux TCP的拥塞算法。
+
+可选配置包括 `memory_mib=512`、`group_memory_mib=256`、`max_window_mib=64` 和客户端 `adaptive_mux=true`。窗口按消费和RTT自动增长，部署者不需填写带宽；内存上限需要给系统留出余量。详见[吞吐与配置说明](performance.md)。
+
 ### 0.0.8 升级说明
 
 0.0.8 修正 X25519MLKEM768 的标准字段与共享秘密顺序，并移除 QUIC 握手中的 TLS 1.2 版本声明。
@@ -351,7 +357,7 @@ transport = "tcp"
 
 #### TCP Vision solo（0.0.7）
 
-使用 `transport = "tcp"`、`mux = false` 即可选择独占连接的 Vision；当前请将客户端和服务端统一升级到 0.0.8。符合条件的内层 TLS 1.3 流量经过双方确认切换边界后，原始受保护记录不再增加外层 TLS 加密或帧封装。非 TLS 和不符合条件的 TLS 仍加密传输。旧 solo 实现已删除，`mux = true` 继续提供加密多路复用；不需要额外 Vision 开关。原始转发使用用户态 I/O，不宣称内核零拷贝或未经测量的速度提升。
+使用 `transport = "tcp"`、`mux = false` 即可选择独占连接的 Vision；当前请将客户端和服务端统一升级到 0.0.9。符合条件的内层 TLS 1.3 流量经过双方确认切换边界后，原始受保护记录不再增加外层 TLS 加密或帧封装。非 TLS 和不符合条件的 TLS 仍加密传输。旧 solo 实现已删除，`mux = true` 继续提供加密多路复用；不需要额外 Vision 开关。原始转发使用用户态 I/O，不宣称内核零拷贝或未经测量的速度提升。
 
 成功切换会记录 `umbra vision splice active`；连接完成后记录原始字节数及 `outer_records_unchanged=true`，不包含目标地址或凭据。
 

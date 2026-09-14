@@ -744,6 +744,7 @@ async fn forward_records<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         writer.shutdown().await?;
         return Ok(count);
     }
+    let mut record = Vec::new();
     loop {
         let mut header = [0_u8; 5];
         let first = reader.read(&mut header[..1]).await?;
@@ -755,7 +756,7 @@ async fn forward_records<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         read_progress(reader, &mut header[1..], progress).await?;
         let len = protected_record_len(&header)
             .map_err(|_| invalid("invalid protected record after Vision handoff"))?;
-        let mut record = vec![0_u8; len];
+        record.resize(len, 0);
         record[..5].copy_from_slice(&header);
         read_progress(reader, &mut record[5..], progress).await?;
         progress.send_replace(Instant::now());

@@ -1,0 +1,9 @@
+mode=adaptive-mux rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=0.069508 goodput_mbps=965.481
+mode=adaptive-mux rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=0.069926 goodput_mbps=959.717
+mode=adaptive-mux rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=0.069933 goodput_mbps=959.623
+mode=adaptive-mux rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=0.301884 goodput_mbps=222.301
+mode=adaptive-mux rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=0.297432 goodput_mbps=225.628
+mode=adaptive-mux rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=0.301724 goodput_mbps=222.418
+mode=adaptive-mux rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=0.573352 goodput_mbps=117.047
+mode=adaptive-mux rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=0.573466 goodput_mbps=117.023
+mode=adaptive-mux rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=0.574456 goodput_mbps=116.822

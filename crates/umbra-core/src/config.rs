@@ -12,6 +12,8 @@ use crate::{dispatch, CoreError};
 
 /// Effective server configuration after file parsing, CLI overrides, and validation.
 pub struct ServerCfg {
+    /// Shared application memory and adaptive window policy.
+    pub performance: crate::resources::PerformanceCfg,
     /// TCP listener address.
     pub listen: SocketAddr,
     /// Optional UDP listener address used for QUIC.
@@ -79,6 +81,7 @@ impl ServerCfg {
 impl fmt::Debug for ServerCfg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ServerCfg")
+            .field("performance", &self.performance)
             .field("listen", &self.listen)
             .field("udp_listen", &self.udp_listen)
             .field("private_key", &Redacted)
@@ -96,6 +99,8 @@ impl fmt::Debug for ServerCfg {
 
 /// Effective client configuration after file parsing, CLI overrides, and validation.
 pub struct ClientCfg {
+    /// Local application memory and adaptive window policy.
+    pub performance: crate::resources::PerformanceCfg,
     /// Umbra server `host:port`.
     pub server: String,
     /// Outer transport for TCP CONNECT and for UDP when no override is set.
@@ -160,6 +165,7 @@ impl ClientCfg {
 impl fmt::Debug for ClientCfg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientCfg")
+            .field("performance", &self.performance)
             .field("server", &Redacted)
             .field("transport", &self.transport)
             .field("udp_transport", &self.udp_transport)
@@ -385,6 +391,7 @@ impl ClientConfigOverrides {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawServerCfg {
+    performance: crate::resources::PerformanceCfg,
     listen: Option<String>,
     udp_listen: Option<String>,
     private_key: Option<String>,
@@ -401,6 +408,7 @@ struct RawServerCfg {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawClientCfg {
+    performance: crate::resources::PerformanceCfg,
     server: Option<String>,
     transport: Option<String>,
     udp_transport: Option<String>,
@@ -451,6 +459,7 @@ fn server_from_raw(raw: RawServerCfg) -> Result<ServerCfg, CoreError> {
     let tcp_evasion = parse_tcp_evasion(&raw.tcp_evasion.unwrap_or_else(|| "segment".to_owned()))?;
 
     Ok(ServerCfg {
+        performance: raw.performance.validate()?,
         listen,
         udp_listen,
         private_key,
@@ -499,6 +508,7 @@ fn client_from_raw(raw: RawClientCfg) -> Result<ClientCfg, CoreError> {
     let tcp_evasion = parse_tcp_evasion(&raw.tcp_evasion.unwrap_or_else(|| "segment".to_owned()))?;
 
     Ok(ClientCfg {
+        performance: raw.performance.validate()?,
         server,
         transport,
         udp_transport,

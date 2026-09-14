@@ -2476,3 +2476,76 @@ fn sample_dest_profile() -> DestProfile {
         rtt: Duration::from_millis(40),
     }
 }
+
+#[tokio::test]
+async fn scenario_multiple_credential_clients_release_shared_server_commitments() {
+    let key = x25519::generate_keypair();
+    let seed = [0x6a; 32];
+    let signing = mldsa_keygen_from_seed(&seed);
+    let mut cfg = quic_runtime_server_cfg(&key, &seed);
+    cfg.prebuild = false;
+    cfg.short_ids = vec![vec![1], vec![2]];
+    let server = Arc::new(
+        ServerRuntime::bind_with_profile(
+            cfg,
+            sample_dest_profile(),
+            ProbeResistancePolicy::default(),
+        )
+        .await
+        .unwrap(),
+    );
+    let server_addr = server.local_addr().unwrap();
+    let (stop, stopped) = oneshot::channel();
+    let running = Arc::clone(&server);
+    let server_task = tokio::spawn(async move {
+        running
+            .run_until_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+    });
+    let target = spawn_multi_ping_pong_target().await;
+    let mut clients = Vec::new();
+    let mut requests = tokio::task::JoinSet::new();
+    for (index, credential) in [1, 1, 2].into_iter().enumerate() {
+        let mut cfg = tcp_runtime_client_cfg(server_addr, &key.public, &signing.verifying_key);
+        cfg.short_id = vec![credential];
+        cfg.performance.max_window_mib = if index == 0 { 1 } else { 16 };
+        let runtime = ClientRuntime::bind(cfg).await.unwrap();
+        let addr = runtime.local_addr().unwrap();
+        let (stop, stopped) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            runtime
+                .run_until_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+        });
+        clients.push((stop, task));
+        for _ in 0..4 {
+            requests.spawn(socks_ping_pong(addr, target));
+        }
+    }
+    timeout(Duration::from_secs(5), async {
+        while let Some(result) = requests.join_next().await {
+            result.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert!(server.committed_memory() >= 3 * 13 * 1024 * 1024);
+    assert!(server.committed_memory() <= 512 * 1024 * 1024);
+    for (stop, task) in clients {
+        stop.send(()).unwrap();
+        task.await.unwrap().unwrap();
+    }
+    stop.send(()).unwrap();
+    server_task.await.unwrap().unwrap();
+    timeout(Duration::from_secs(2), async {
+        while server.committed_memory() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("all retained connection resources released");
+}

@@ -116,20 +116,16 @@ pub fn seal_record(
     if plaintext.len() > 16384 {
         return Err(TlsError::LengthOutOfRange);
     }
-    let mut inner = zeroize::Zeroizing::new(Vec::with_capacity(plaintext.len() + 1));
-    inner.extend_from_slice(plaintext);
-    inner.push(content_type);
-
-    let length = inner
-        .len()
-        .checked_add(16)
-        .ok_or(TlsError::LengthOutOfRange)?;
-    let mut header = record_header(length)?;
+    let header = record_header(plaintext.len() + 17)?;
+    let mut output = zeroize::Zeroizing::new(Vec::with_capacity(plaintext.len() + 22));
+    output.extend_from_slice(&header);
+    output.extend_from_slice(plaintext);
+    output.push(content_type);
     let nonce = sequence_nonce(iv, sequence);
-    let ciphertext = aead::seal(algorithm, key, &nonce, &inner, &header)
+    let tag = aead::seal_in_place(algorithm, key, &nonce, &mut output[5..], &header)
         .map_err(|_| TlsError::AuthenticationFailed)?;
-    header.extend_from_slice(&ciphertext);
-    Ok(header)
+    output.extend_from_slice(&tag);
+    Ok(core::mem::take(&mut output))
 }
 
 /// Open one TLS 1.3 protected record for an explicit sequence number.
@@ -158,30 +154,25 @@ pub fn open_record(
         return Err(TlsError::InvalidInput("record length mismatch"));
     }
     let nonce = sequence_nonce(iv, sequence);
-    let inner = zeroize::Zeroizing::new(
-        aead::open(algorithm, key, &nonce, &record[5..], &record[..5])
-            .map_err(|_| TlsError::AuthenticationFailed)?,
-    );
-    split_inner_plaintext(&inner)
-}
-
-fn record_header(ciphertext_len: usize) -> Result<Vec<u8>, TlsError> {
-    let len = u16::try_from(ciphertext_len).map_err(|_| TlsError::LengthOutOfRange)?;
-    let mut out = Vec::with_capacity(5);
-    out.push(CONTENT_TYPE_APPLICATION_DATA);
-    out.extend_from_slice(&TLS13_RECORD_VERSION.to_be_bytes());
-    out.extend_from_slice(&len.to_be_bytes());
-    Ok(out)
-}
-
-fn split_inner_plaintext(inner: &[u8]) -> Result<OpenRecord, TlsError> {
+    let mut inner = zeroize::Zeroizing::new(record[5..].to_vec());
+    aead::open_in_place(algorithm, key, &nonce, &mut inner, &record[..5])
+        .map_err(|_| TlsError::AuthenticationFailed)?;
     let Some(type_index) = inner.iter().rposition(|byte| *byte != 0) else {
         return Err(TlsError::InvalidInput("missing TLS inner content type"));
     };
+    let content_type = inner[type_index];
+    inner.truncate(type_index);
     Ok(OpenRecord {
-        content_type: inner[type_index],
-        plaintext: inner[..type_index].to_vec(),
+        content_type,
+        plaintext: core::mem::take(&mut inner),
     })
+}
+
+fn record_header(ciphertext_len: usize) -> Result<[u8; 5], TlsError> {
+    let len = u16::try_from(ciphertext_len)
+        .map_err(|_| TlsError::LengthOutOfRange)?
+        .to_be_bytes();
+    Ok([CONTENT_TYPE_APPLICATION_DATA, 3, 3, len[0], len[1]])
 }
 
 fn sequence_nonce(iv: &[u8; TLS13_IV_LEN], sequence: u64) -> [u8; TLS13_IV_LEN] {

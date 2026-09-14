@@ -26,7 +26,7 @@ deny = []
 # These duplicate versions come from currently incompatible upstream dependency
 # generations. Keep this list exact so new duplicate versions are still reported.
 skip = [
-    { name = "chacha20", version = "=0.10.1" },
+    { name = "chacha20", version = "=0.10.2" },
     { name = "cpufeatures", version = "=0.3.0" },
     { name = "crypto-common", version = "=0.2.2" },
     { name = "digest", version = "=0.11.3" },

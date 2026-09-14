@@ -19,6 +19,7 @@ pub mod prefixed;
 pub mod probe;
 pub(crate) mod quic_crypto;
 pub mod relay;
+pub mod resources;
 pub mod runtime;
 pub mod socks;
 mod target_connect;

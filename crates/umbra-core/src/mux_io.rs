@@ -31,9 +31,7 @@ use tokio::{
     task::JoinHandle,
 };
 use umbra_inner::{
-    mux::{
-        MuxEvent, MuxRole, MuxSession, MAX_DATA_CHUNK_LEN, MAX_RECEIVE_BUFFER_BYTES, MAX_STREAMS,
-    },
+    mux::{MuxEvent, MuxRole, MuxSession, MAX_DATA_CHUNK_LEN, MAX_STREAMS},
     InnerError,
 };
 use umbra_proto::addr::TargetAddr;
@@ -456,10 +454,72 @@ struct WriteChunk {
     sequence: u64,
 }
 
+#[derive(Default)]
+struct ReceiveChunks {
+    chunks: VecDeque<Vec<u8>>,
+    offset: usize,
+    bytes: usize,
+    total: Option<Arc<AtomicUsize>>,
+}
+
+impl ReceiveChunks {
+    fn new() -> Self {
+        Self::default()
+    }
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.bytes
+    }
+    fn is_empty(&self) -> bool {
+        self.bytes == 0
+    }
+    fn push(&mut self, payload: Vec<u8>, total: &Arc<AtomicUsize>) {
+        if payload.is_empty() {
+            return;
+        }
+        if self.total.is_none() {
+            self.total = Some(total.clone());
+        }
+        total.fetch_add(payload.len(), Ordering::Relaxed);
+        self.bytes += payload.len();
+        self.chunks.push_back(payload);
+    }
+    fn read_into(&mut self, output: &mut ReadBuf<'_>) -> usize {
+        let before = output.filled().len();
+        while output.remaining() != 0 {
+            let Some(front) = self.chunks.front() else {
+                break;
+            };
+            let amount = (front.len() - self.offset).min(output.remaining());
+            output.put_slice(&front[self.offset..self.offset + amount]);
+            self.offset += amount;
+            if self.offset == front.len() {
+                self.chunks.pop_front();
+                self.offset = 0;
+            }
+        }
+        let amount = output.filled().len() - before;
+        self.bytes -= amount;
+        if let Some(total) = &self.total {
+            total.fetch_sub(amount, Ordering::Relaxed);
+        }
+        amount
+    }
+}
+
+impl Drop for ReceiveChunks {
+    fn drop(&mut self) {
+        if let Some(total) = &self.total {
+            total.fetch_sub(self.bytes, Ordering::Relaxed);
+        }
+    }
+}
+
 struct State {
     id: u32,
     phase: Phase,
-    inbound: VecDeque<u8>,
+    inbound: ReceiveChunks,
+    memory: Vec<umbra_inner::budget::BudgetLease>,
     consumed: usize,
     outbound: Option<WriteChunk>,
     accepted: u64,
@@ -481,7 +541,8 @@ impl State {
         Self {
             id,
             phase,
-            inbound: VecDeque::new(),
+            inbound: ReceiveChunks::new(),
+            memory: Vec::new(),
             consumed: 0,
             outbound: None,
             accepted: 0,
@@ -511,7 +572,8 @@ impl State {
 
     fn fail(&mut self, kind: io::ErrorKind) {
         self.error = Some(kind);
-        self.inbound = VecDeque::new();
+        self.inbound = ReceiveChunks::new();
+        self.memory.clear();
         self.outbound = None;
         self.consumed = 0;
         self.reservation.take();
@@ -630,13 +692,11 @@ impl AsyncRead for MuxIo {
         if buf.remaining() == 0 {
             return Poll::Ready(Ok(()));
         }
-        let amount = state.inbound.len().min(buf.remaining());
-        if amount != 0 {
-            let (first, second) = state.inbound.as_slices();
-            let first_len = amount.min(first.len());
-            buf.put_slice(&first[..first_len]);
-            buf.put_slice(&second[..amount - first_len]);
-            state.inbound.drain(..amount);
+        if !state.inbound.is_empty() {
+            let amount = state.inbound.read_into(buf);
+            if state.inbound.is_empty() && state.error.is_some() {
+                state.memory.clear();
+            }
             state.consumed += amount;
             // Session-reserved receive credit bounds both this count and storage.
             self.shared.notify.notify_one();
@@ -750,6 +810,9 @@ struct Driver<IO> {
     pool_changed: Option<Arc<Notify>>,
     need_flush: bool,
     first_stream: usize,
+    ids: Vec<u32>,
+    buffered: Arc<AtomicUsize>,
+    memory: Vec<umbra_inner::budget::BudgetLease>,
 }
 
 struct Progress {
@@ -766,6 +829,7 @@ where
         opens: Option<mpsc::Receiver<OpenRequest>>,
         incoming: Option<mpsc::Sender<PendingMux>>,
     ) -> Self {
+        let memory = session.memory_leases();
         Self {
             session,
             streams: BTreeMap::new(),
@@ -780,6 +844,9 @@ where
             pool_changed: None,
             need_flush: false,
             first_stream: 0,
+            ids: Vec::new(),
+            buffered: Arc::new(AtomicUsize::new(0)),
+            memory,
         }
     }
 
@@ -846,13 +913,14 @@ where
         let mut retired = Vec::new();
         // Rotate the first serviced id on every batch, even when the serialized
         // writer fills before all streams have obtained their next DATA chunk.
-        let mut ids: Vec<_> = self.streams.keys().copied().collect();
-        if !ids.is_empty() {
-            let first = self.first_stream % ids.len();
-            ids.rotate_left(first);
-            self.first_stream = (first + 1) % ids.len();
+        self.ids.clear();
+        self.ids.extend(self.streams.keys().copied());
+        if !self.ids.is_empty() {
+            let first = self.first_stream % self.ids.len();
+            self.ids.rotate_left(first);
+            self.first_stream = (first + 1) % self.ids.len();
         }
-        for id in ids {
+        for &id in &self.ids {
             let Some(shared) = self.streams.get(&id) else {
                 continue;
             };
@@ -883,7 +951,11 @@ where
         }
         match self.session.begin_open(&request.target) {
             Ok(stream) => {
-                request.shared.lock().id = stream.stream_id;
+                {
+                    let mut state = request.shared.lock();
+                    state.id = stream.stream_id;
+                    state.memory.clone_from(&self.memory);
+                }
                 self.streams
                     .insert(stream.stream_id, request.shared.clone());
                 request.armed = false;
@@ -904,6 +976,7 @@ where
         match event {
             MuxEvent::Syn { stream_id, target } => {
                 let stream = MuxIo::new(stream_id, Phase::Accepting, self.notify.clone());
+                stream.shared.lock().memory.clone_from(&self.memory);
                 self.streams.insert(stream_id, stream.shared.clone());
                 let pending = PendingMux { target, stream };
                 // Backlog saturation or a dropped acceptor resets the new stream;
@@ -921,13 +994,13 @@ where
                 }
             }
             MuxEvent::Data { stream_id, payload } => {
-                let buffered: usize = self.streams.values().map(|s| s.lock().inbound.len()).sum();
-                if payload.len() > MAX_RECEIVE_BUFFER_BYTES.saturating_sub(buffered) {
+                let buffered = self.buffered.load(Ordering::Relaxed);
+                if payload.len() > self.session.receive_capacity().saturating_sub(buffered) {
                     return Err(io::Error::from(io::ErrorKind::InvalidData).into());
                 }
                 if let Some(shared) = self.streams.get(&stream_id) {
                     let mut state = shared.lock();
-                    state.inbound.extend(payload);
+                    state.inbound.push(payload, &self.buffered);
                     wake(&mut state.reader);
                 }
             }
@@ -1040,7 +1113,7 @@ where
         && state.consumed == 0
         && matches!(session.send_credit(id), Err(InnerError::StreamReset))
     {
-        state.inbound = VecDeque::new();
+        state.inbound = ReceiveChunks::new();
         state.reservation.take();
         return Ok(true);
     }

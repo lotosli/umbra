@@ -1,0 +1,9 @@
+mode=legacy-mux window=262144 rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=0.109857 goodput_mbps=610.874
+mode=legacy-mux window=262144 rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=0.119082 goodput_mbps=563.553
+mode=legacy-mux window=262144 rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=0.111796 goodput_mbps=600.282
+mode=legacy-mux window=262144 rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=1.704512 goodput_mbps=39.371
+mode=legacy-mux window=262144 rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=1.721951 goodput_mbps=38.973
+mode=legacy-mux window=262144 rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=1.716754 goodput_mbps=39.091
+mode=legacy-mux window=262144 rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=3.304723 goodput_mbps=20.307
+mode=legacy-mux window=262144 rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=3.292397 goodput_mbps=20.383
+mode=legacy-mux window=262144 rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=3.294376 goodput_mbps=20.371

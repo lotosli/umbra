@@ -1,0 +1,18 @@
+mode=adaptive-mux rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=0.070008 goodput_mbps=958.594
+mode=adaptive-mux rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=0.070271 goodput_mbps=954.996
+mode=adaptive-mux rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=0.069781 goodput_mbps=961.702
+mode=adaptive-mux rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=0.307259 goodput_mbps=218.412
+mode=adaptive-mux rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=0.307578 goodput_mbps=218.185
+mode=adaptive-mux rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=0.305605 goodput_mbps=219.594
+mode=adaptive-mux rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=0.576961 goodput_mbps=116.314
+mode=adaptive-mux rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=0.574491 goodput_mbps=116.814
+mode=adaptive-mux rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=0.575590 goodput_mbps=116.592
+mode=legacy-mux window=262144 rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=0.108586 goodput_mbps=618.023
+mode=legacy-mux window=262144 rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=0.105656 goodput_mbps=635.163
+mode=legacy-mux window=262144 rtt_ms=0 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=0.103393 goodput_mbps=649.064
+mode=legacy-mux window=262144 rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=1.757146 goodput_mbps=38.192
+mode=legacy-mux window=262144 rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=1.758549 goodput_mbps=38.161
+mode=legacy-mux window=262144 rtt_ms=50 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=1.758019 goodput_mbps=38.173
+mode=legacy-mux window=262144 rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=0 elapsed_s=3.339132 goodput_mbps=20.098
+mode=legacy-mux window=262144 rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=1 elapsed_s=3.338623 goodput_mbps=20.101
+mode=legacy-mux window=262144 rtt_ms=100 link_mbps=1000 payload_bytes=8388608 sample=2 elapsed_s=3.331532 goodput_mbps=20.144

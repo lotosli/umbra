@@ -129,6 +129,8 @@ pub enum QuicDispatchDecision {
 
 /// Authenticated QUIC dispatch state before the local QUIC-TLS server flight.
 pub struct AuthenticatedQuicDispatch {
+    /// Opaque index of the canonical authenticated credential group.
+    pub credential_group: usize,
     /// Accepted SNI.
     pub sni: String,
     /// REALITY auth token carried by QUIC transport parameters.
@@ -141,6 +143,8 @@ pub struct AuthenticatedQuicDispatch {
 
 /// Authenticated dispatch state for the local TLS server path.
 pub struct AuthenticatedDispatch {
+    /// Opaque index of the canonical authenticated credential group.
+    pub credential_group: usize,
     /// Authenticated protocol mode version.
     pub version: u8,
     /// Accepted SNI.
@@ -354,6 +358,7 @@ pub fn classify_client_hello(
 
     Ok(DispatchDecision::Authenticated(Box::new(
         AuthenticatedDispatch {
+            credential_group: credential_group(&ctx.cfg.short_ids, authenticated.short_id),
             version: authenticated.version,
             sni,
             session_id,
@@ -422,7 +427,7 @@ pub fn classify_quic_client_hello(
         return Ok(fallback_quic(FallbackReason::MissingKeyShare, datagram));
     };
     let aad = quic_hello0(&client_hello, grease_parameter)?;
-    if open_session_id(
+    let authenticated = open_session_id(
         shared.expose_secret(),
         &session_id,
         &aad,
@@ -430,18 +435,20 @@ pub fn classify_quic_client_hello(
         ctx.now_unix,
         ctx.cfg.max_time_diff,
         ctx.replay,
-    )
-    .map_or(true, |auth| {
-        auth.version != umbra_reality::auth::AUTH_VERSION_V1
-    }) {
-        return Ok(fallback_quic(
-            FallbackReason::AuthenticationRejected,
-            datagram,
-        ));
-    }
+    );
+    let authenticated = match authenticated {
+        Ok(auth) if auth.version == umbra_reality::auth::AUTH_VERSION_V1 => auth,
+        _ => {
+            return Ok(fallback_quic(
+                FallbackReason::AuthenticationRejected,
+                datagram,
+            ));
+        }
+    };
 
     Ok(QuicDispatchDecision::Authenticated(Box::new(
         AuthenticatedQuicDispatch {
+            credential_group: credential_group(&ctx.cfg.short_ids, authenticated.short_id),
             sni,
             session_id,
             shared_secret: shared,
@@ -730,6 +737,15 @@ fn current_unix_time() -> Result<u64, CoreError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| CoreError::InvalidConfig("system clock is before Unix epoch"))
         .map(|duration| duration.as_secs())
+}
+
+fn credential_group(allowed: &[Vec<u8>], accepted: umbra_reality::auth::ShortId) -> usize {
+    allowed
+        .iter()
+        .position(|candidate| {
+            umbra_reality::auth::ShortId::from_slice(candidate).is_ok_and(|id| id.ct_eq(&accepted))
+        })
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

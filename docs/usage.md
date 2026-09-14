@@ -315,6 +315,12 @@ tcp_evasion   = "segment"            # TCP evasion policy
 
 ## Transport Modes
 
+### Upgrading to 0.0.9
+
+Upgrade both endpoints for adaptive TCP mux. New `mux=true` sessions opt in automatically; `mux=false` keeps Vision. QUIC defaults to BBR and supports `performance.quic_congestion = "cubic"` or `"new-reno"` as alternatives. This setting does not change Linux TCP congestion control.
+
+Optional `[performance]` limits are `memory_mib=512`, `group_memory_mib=256`, `max_window_mib=64`, and the client opt-in `adaptive_mux=true`. Windows grow from observed consumption and RTT without a configured bandwidth; memory ceilings still require host headroom. See [throughput and configuration](performance.md).
+
 ### Upgrading to 0.0.8
 
 Version 0.0.8 corrects the standard X25519MLKEM768 share and shared-secret ordering and removes TLS 1.2 from QUIC version offers.
@@ -351,7 +357,7 @@ transport = "tcp"
 
 #### TCP Vision solo (0.0.7)
 
-Set `transport = "tcp"` and `mux = false` to use dedicated Vision connections. Upgrade both client and server together to 0.0.8. After an authenticated boundary exchange on eligible inner TLS 1.3 traffic, the runtime forwards the original protected records without outer TLS encryption or extra framing. Non-TLS and unsupported TLS remain encrypted. The legacy solo implementation was removed; `mux = true` continues to provide encrypted multiplexing. No extra Vision flag is needed. Raw forwarding is userspace I/O, not a claim of kernel zero-copy or a measured speed increase.
+Set `transport = "tcp"` and `mux = false` to use dedicated Vision connections. Upgrade both client and server together to 0.0.9. After an authenticated boundary exchange on eligible inner TLS 1.3 traffic, the runtime forwards the original protected records without outer TLS encryption or extra framing. Non-TLS and unsupported TLS remain encrypted. The legacy solo implementation was removed; `mux = true` continues to provide encrypted multiplexing. No extra Vision flag is needed. Raw forwarding is userspace I/O, not a claim of kernel zero-copy or a measured speed increase.
 
 Successful sessions log `umbra vision splice active` and, on completion, raw byte counts plus `outer_records_unchanged=true`, without targets or credentials.
 

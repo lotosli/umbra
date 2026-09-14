@@ -25,7 +25,7 @@ Umbra combines protocol camouflage, pre-response authentication, browser-grade f
 
 ## Status
 
-**0.0.8** corrects standard hybrid TLS/QUIC interoperability and supports one SOCKS client instance with TCP/Vision for TCP and QUIC for UDP. Upgrade client and server together; the older reversed hybrid format is not retained.
+**0.0.9** adds adaptive TCP mux credit, shared multi-client resource budgets, TCP/Vision data-path improvements and selectable QUIC congestion control (BBR by default for this release). Upgrade both endpoints for adaptive mux; the single-instance TCP/Vision plus QUIC UDP setup remains available. See [throughput and configuration](docs/performance.md).
 
 For the combined client, add these settings to the existing configuration:
 

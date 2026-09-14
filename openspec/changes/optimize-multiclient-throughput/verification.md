@@ -2,6 +2,8 @@
 
 Current implementation: `201bca93746c850274115636eaf1f30955025e4e`. The final binaries are built, deployed and checked against their uploaded SHA-256 digests. Their identity and final online checks are recorded in the last section. Earlier release sections retain the initial cut's historical evidence and hashes, which the final bundle supersedes.
 
+Final public delivery is verified: [v0.0.9](https://github.com/lotosli/umbra/releases/tag/v0.0.9) is non-draft/non-prerelease, published at 2026-09-14 22:17:06 UTC, with tag target `a9ce1c56dfe66a827d7b869ad122a20bc5f87147`. Its production source tree is identical to implementation commit `201bca9`. Both native deployed-platform binaries and SHA256SUMS were downloaded again from the public release and their hashes matched. Subsequent evidence/task-checklist commits change documentation only.
+
 ## Scope and authorization
 
 The user authorized the discussed throughput/resource optimization, direct deployment and testing on the unused product, and the BBR trial with quinn 0.11.12 / quinn-proto 0.11.18. Each implementation point has a preceding code review and evidence in prechange-review.md. A single strong evidence point was used rather than an exhaustive performance matrix.
@@ -166,4 +168,6 @@ These are one-path observations, not controlled speedup claims; in particular, B
 
 The final-source release-mode mux diagnostic was rerun serially with the same 8MiB/1Gbps model. Medians over three samples were fixed/adaptive: 593.676/960.007Mbps at zero added RTT, 38.132/218.652Mbps at 50ms, and 20.058/116.010Mbps at 100ms. Exact samples are in final-mux-after-audit.txt. These demonstrate the window mechanism on the emulator, not physical WAN bandwidth.
 
-Public release visibility and final tag identity are verified as the delivery step. GitHub Actions annotations still state that jobs were not started because account payments/spending limits block execution; the PR remains unmerged. All required local gates passed, and no remote CI success or protected-gate bypass is claimed. Archive follows any later source integration.
+Public release visibility and final tag identity were verified as the delivery step. GitHub Actions annotations still state that jobs were not started because account payments/spending limits block execution; the PR remains unmerged. All required local gates passed, and no remote CI success or protected-gate bypass is claimed. Archive follows any later source integration.
+
+Private recovery instructions and receipts identify the original executable/configuration backups on both endpoints. Recovery preserves configuration ownership and permissions, atomically replaces the executable, restarts the existing Umbra service/LaunchAgent and checks the running executable plus actual SOCKS routing. The original tag object remains retained locally, and the initial release binaries/metadata are kept privately. No credential-bearing test configurations or temporary benchmark targets remain.

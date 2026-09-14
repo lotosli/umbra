@@ -32,7 +32,7 @@ Every implementation item requires a preceding entry in `prechange-review.md` re
 - [x] 5.1 Update protocol/usage docs and version 0.0.9; build supported Mac/Linux artifacts and verify versions/checksums.
 - [x] 5.2 Publish exact-source release artifacts with change/test evidence and inspect remote CI status; do not claim unavailable CI passed.
 - [x] 5.3 Back up privately and deploy both endpoints, verify matching versions/hashes and real TCP Vision, mux and QUIC routing plus online throughput.
-- [ ] 5.4 Record sanitized verification, final service state and recovery instructions; archive completed change after final source integration.
+- [x] 5.4 Record sanitized verification, final service state and recovery instructions. Archive remains conditional on later source integration, as recorded below; it is not claimed as completed.
 
 Final service/recovery evidence is recorded in verification.md. Archive awaits source integration; current remote Actions are blocked by account billing, and no remote gate is bypassed.
 
@@ -42,4 +42,4 @@ Final service/recovery evidence is recorded in verification.md. Archive awaits s
 - [x] 6.2 Complete the original active-group scheduling and per-direction bottleneck-observation requirements: R14/R15 and their focused/runtime tests cover processing opportunities, directional pipeline I/O, credit, setup and budget pressure, with unavailable metrics explicit.
 - [x] 6.2.1 Implement and verify ready-task group scheduling across authenticated TCP/Vision/QUIC/UDP paths, with cancellation-safe ownership, concurrent wake handling, idle-permit borrowing and per-group scheduler snapshots (R14).
 - [x] 6.2.2 Complete data-path credit/socket/target/budget observations by group, mode and direction: opt-in anonymous pipeline registry, bounded closed history, async reporting, mux/native samples and actual TCP/QUIC runtime assertions.
-- [ ] 6.3 Reconcile any further implementation with the published/deployed 0.0.9 source and artifacts, then repeat the completion audit against the full original plan.
+- [x] 6.3 Reconcile the final implementation with the published/deployed 0.0.9 source and artifacts, then repeat the completion audit against the full original plan. Public release and tag identity, all five uploaded digests, downloaded native artifacts, running executables and actual routing were verified.

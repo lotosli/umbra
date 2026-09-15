@@ -26,6 +26,12 @@ deny = []
 # These duplicate versions come from currently incompatible upstream dependency
 # generations. Keep this list exact so new duplicate versions are still reported.
 skip = [
+    # Reviewed AES-GCM 0.11 / ChaCha20-Poly1305 0.10 API generations.
+    { name = "aead", version = "=0.5.2" },
+    { name = "block-buffer", version = "=0.10.4" },
+    { name = "cipher", version = "=0.4.4" },
+    { name = "inout", version = "=0.1.4" },
+    { name = "universal-hash", version = "=0.5.1" },
     { name = "chacha20", version = "=0.10.2" },
     { name = "cpufeatures", version = "=0.3.0" },
     { name = "crypto-common", version = "=0.2.2" },

@@ -31,3 +31,5 @@ thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Independent AEAD implementation for reusable-context differential vectors.
+ring.workspace = true

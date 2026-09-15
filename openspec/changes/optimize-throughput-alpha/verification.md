@@ -20,3 +20,13 @@ The existing release-mode mux diagnostic models a 1Gbps pipelined link and trans
 - Alpha identity/deployment: CLI version tests, distribution checksums and private paired-deployment receipts.
 
 Final outcomes are appended only after execution; task checkboxes are not substitutes for test evidence.
+
+## Completed crypto implementation
+
+Dependency inspection found incomplete ARM PMULL/autodetect zeroization in the old POLYVAL generation. The implementation therefore uses stable aes-gcm 0.11.1, aes 0.9.3, ghash 0.6.0 and polyval 0.7.3 with propagated zeroize features and default runtime hardware detection. Compile-time ZeroizeOnDrop bounds cover every retained cipher. No custom unsafe cryptographic code was added. MIT/Apache licenses remain compatible; the expected dual API generations retained for ChaCha are documented in deny.toml.
+
+Commands passed: `cargo test -p umbra-crypto --test crypto_primitives` (16), `cargo test -p umbra-crypto --lib in_place_tests` (1), `cargo test -p umbra-crypto --test reusable_aead` (2 plus one explicitly ignored diagnostic), and crypto all-target clippy with warnings denied. A separate build with `RUSTFLAGS='--cfg aes_backend="soft" --cfg polyval_backend="soft"'` passed all 18 integration tests. Reused-context output was compared with ring for all three algorithms, seven message lengths and distinct nonces; wrong AAD/tags, invalid lengths and explicitly destroyed contexts were checked.
+
+Three serial warmed release samples of `measure_reusable_context_and_buffers` (64MiB, AES-128-GCM) had median stateless/cached+buffer-reuse rates: 1KiB messages 13,839.614/36,031.000Mbps; 16KiB messages 38,761.726/43,256.214Mbps. These subsecond CPU/memory diagnostics compare API work in the new dependency family, not full TLS records, wire throughput or the old scheduler diagnostic's absolute speed.
+
+The existing Mac service and server service were read-only checked: both run 0.0.9 and their executable digests match the retained final 0.0.9 artifacts. Private access context and previous receipts were located; no deployment has happened yet.

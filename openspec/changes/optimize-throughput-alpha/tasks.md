@@ -1,12 +1,12 @@
 ## 1. Authorized specification and baseline
 
 - [x] 1.1 Record the approved review scope, map all scenarios to checks, and pass strict OpenSpec validation before implementation.
-- [ ] 1.2 Preserve source/build identity and baseline measurements; locate private endpoint backups and verify installed state without exposing credentials.
+- [x] 1.2 Preserve source/build identity and baseline measurements; locate private endpoint backups and verify installed state without exposing credentials.
 
 ## 2. Accelerated reusable cryptography
 
-- [ ] 2.1 Enable portable runtime-detected ARM64 AES/PMULL builds and zeroizing dependency features; verify accelerated and forced-software standard vectors.
-- [ ] 2.2 Add reusable AEAD contexts and caller-buffer operations; test multi-nonce/all-suite agreement, cleared-context rejection, authentication-failure clearing and measure cached versus stateless work.
+- [x] 2.1 Enable portable runtime-detected ARM64 AES/PMULL builds and zeroizing dependency features; verify accelerated and forced-software standard vectors.
+- [x] 2.2 Add reusable AEAD contexts and caller-buffer operations; test multi-nonce/all-suite agreement, cleared-context rejection, authentication-failure clearing and measure cached versus stateless work.
 
 ## 3. Native QUIC throughput
 

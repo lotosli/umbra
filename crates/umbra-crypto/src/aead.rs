@@ -1,10 +1,9 @@
-//! AEAD seal/open helpers used by REALITY and TLS record protection.
+//! AEAD helpers and reusable, zeroizing cipher contexts.
 
-use aes_gcm::{
-    aead::{Aead, Payload},
-    Aes128Gcm, Aes256Gcm, KeyInit, Nonce,
-};
-use chacha20poly1305::ChaCha20Poly1305;
+use aes_gcm::{AeadInOut, Aes128Gcm, Aes256Gcm, KeyInit};
+use chacha20poly1305::KeyInit as _;
+use chacha20poly1305::{aead::AeadInPlace, ChaCha20Poly1305};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::CryptoError;
 
@@ -20,7 +19,7 @@ pub enum AeadAlgorithm {
 }
 
 impl AeadAlgorithm {
-    /// Return the required key length in bytes.
+    /// Required key length in bytes.
     #[must_use]
     pub const fn key_len(self) -> usize {
         match self {
@@ -29,12 +28,176 @@ impl AeadAlgorithm {
         }
     }
 
-    /// Return the required nonce length in bytes.
+    /// Required nonce length in bytes.
     #[must_use]
     pub const fn nonce_len(self) -> usize {
         12
     }
 }
+
+// Boxing the expanded AES schedules keeps record-owner futures small. These
+// allocations occur once per traffic key, never once per protected record.
+enum Cipher {
+    Aes128(Box<Aes128Gcm>),
+    Aes256(Box<Aes256Gcm>),
+    ChaCha(ChaCha20Poly1305),
+}
+
+/// A validated key's reusable expanded AEAD state.
+///
+/// Callers MUST supply a unique nonce for every encryption under this key.
+/// Clearing the context is terminal. No key bytes are retained separately or
+/// exposed by formatting. Every cipher implements upstream `ZeroizeOnDrop`.
+pub struct AeadContext {
+    cipher: Option<Cipher>,
+}
+
+impl core::fmt::Debug for AeadContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("AeadContext(<redacted>)")
+    }
+}
+
+impl AeadContext {
+    /// Validate and expand one traffic key.
+    pub fn new(algorithm: AeadAlgorithm, key: &[u8]) -> Result<Self, CryptoError> {
+        // Compile-time bounds prevent dependency feature changes from silently
+        // removing destruction of expanded AES, GHASH or ChaCha key material.
+        fn zeroizing<T: ZeroizeOnDrop>(value: T) -> T {
+            value
+        }
+        if key.len() != algorithm.key_len() {
+            return Err(CryptoError::InvalidKeyLength);
+        }
+        let cipher = match algorithm {
+            AeadAlgorithm::Aes128Gcm => Cipher::Aes128(Box::new(zeroizing(
+                Aes128Gcm::new_from_slice(key).map_err(|_| CryptoError::InvalidKeyLength)?,
+            ))),
+            AeadAlgorithm::Aes256Gcm => Cipher::Aes256(Box::new(zeroizing(
+                Aes256Gcm::new_from_slice(key).map_err(|_| CryptoError::InvalidKeyLength)?,
+            ))),
+            AeadAlgorithm::ChaCha20Poly1305 => Cipher::ChaCha(zeroizing(
+                ChaCha20Poly1305::new_from_slice(key).map_err(|_| CryptoError::InvalidKeyLength)?,
+            )),
+        };
+        Ok(Self {
+            cipher: Some(cipher),
+        })
+    }
+
+    /// Encrypt the caller's payload and return the detached 16-byte tag.
+    pub fn seal_in_place(
+        &self,
+        nonce: &[u8],
+        buffer: &mut [u8],
+        aad: &[u8],
+    ) -> Result<[u8; 16], CryptoError> {
+        let nonce: &[u8; 12] = nonce
+            .try_into()
+            .map_err(|_| CryptoError::InvalidNonceLength)?;
+        match self.cipher.as_ref().ok_or(CryptoError::ContextCleared)? {
+            Cipher::Aes128(cipher) => cipher
+                .encrypt_inout_detached(&(*nonce).into(), aad, buffer.into())
+                .map(Into::into)
+                .map_err(|_| CryptoError::AuthenticationFailed),
+            Cipher::Aes256(cipher) => cipher
+                .encrypt_inout_detached(&(*nonce).into(), aad, buffer.into())
+                .map(Into::into)
+                .map_err(|_| CryptoError::AuthenticationFailed),
+            Cipher::ChaCha(cipher) => cipher
+                .encrypt_in_place_detached(chacha20poly1305::Nonce::from_slice(nonce), aad, buffer)
+                .map(Into::into)
+                .map_err(|_| CryptoError::AuthenticationFailed),
+        }
+    }
+
+    /// Authenticate a detached tag and decrypt the caller's payload.
+    /// Any error clears the entire payload slice.
+    pub fn open_in_place_detached(
+        &self,
+        nonce: &[u8],
+        buffer: &mut [u8],
+        aad: &[u8],
+        tag: &[u8; 16],
+    ) -> Result<(), CryptoError> {
+        let result = self.open_detached(nonce, buffer, aad, tag);
+        if result.is_err() {
+            buffer.zeroize();
+        }
+        result
+    }
+
+    fn open_detached(
+        &self,
+        nonce: &[u8],
+        buffer: &mut [u8],
+        aad: &[u8],
+        tag: &[u8; 16],
+    ) -> Result<(), CryptoError> {
+        let nonce: &[u8; 12] = nonce
+            .try_into()
+            .map_err(|_| CryptoError::InvalidNonceLength)?;
+        match self.cipher.as_ref().ok_or(CryptoError::ContextCleared)? {
+            Cipher::Aes128(cipher) => cipher
+                .decrypt_inout_detached(&(*nonce).into(), aad, buffer.into(), &(*tag).into())
+                .map_err(|_| CryptoError::AuthenticationFailed),
+            Cipher::Aes256(cipher) => cipher
+                .decrypt_inout_detached(&(*nonce).into(), aad, buffer.into(), &(*tag).into())
+                .map_err(|_| CryptoError::AuthenticationFailed),
+            Cipher::ChaCha(cipher) => cipher
+                .decrypt_in_place_detached(
+                    chacha20poly1305::Nonce::from_slice(nonce),
+                    aad,
+                    buffer,
+                    chacha20poly1305::Tag::from_slice(tag),
+                )
+                .map_err(|_| CryptoError::AuthenticationFailed),
+        }
+    }
+
+    /// Open a ciphertext-plus-tag buffer, retaining its allocation on success.
+    /// Any error clears both its storage and logical length.
+    pub fn open_in_place(
+        &self,
+        nonce: &[u8],
+        buffer: &mut Vec<u8>,
+        aad: &[u8],
+    ) -> Result<(), CryptoError> {
+        if nonce.len() != 12 {
+            buffer.zeroize();
+            buffer.clear();
+            return Err(CryptoError::InvalidNonceLength);
+        }
+        let result = match buffer.len().checked_sub(16) {
+            Some(end) => {
+                let mut tag = [0; 16];
+                tag.copy_from_slice(&buffer[end..]);
+                self.open_in_place_detached(nonce, &mut buffer[..end], aad, &tag)
+                    .map(|()| buffer.truncate(end))
+            }
+            None => Err(CryptoError::AuthenticationFailed),
+        };
+        if result.is_err() {
+            buffer.zeroize();
+            buffer.clear();
+        }
+        result
+    }
+}
+
+impl Zeroize for AeadContext {
+    fn zeroize(&mut self) {
+        // Dropping the active variant invokes the verified upstream destructors
+        // before releasing its allocation; the empty context cannot be reused.
+        self.cipher.take();
+    }
+}
+impl Drop for AeadContext {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+impl ZeroizeOnDrop for AeadContext {}
 
 /// Seal plaintext with the selected AEAD and associated data.
 pub fn seal(
@@ -44,25 +207,12 @@ pub fn seal(
     plaintext: &[u8],
     aad: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
-    validate_key_nonce(algorithm, key, nonce)?;
-    let payload = Payload {
-        msg: plaintext,
-        aad,
-    };
-    match algorithm {
-        AeadAlgorithm::Aes128Gcm => Aes128Gcm::new_from_slice(key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?
-            .encrypt(Nonce::from_slice(nonce), payload)
-            .map_err(|_| CryptoError::AuthenticationFailed),
-        AeadAlgorithm::Aes256Gcm => Aes256Gcm::new_from_slice(key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?
-            .encrypt(Nonce::from_slice(nonce), payload)
-            .map_err(|_| CryptoError::AuthenticationFailed),
-        AeadAlgorithm::ChaCha20Poly1305 => ChaCha20Poly1305::new_from_slice(key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?
-            .encrypt(chacha20poly1305::Nonce::from_slice(nonce), payload)
-            .map_err(|_| CryptoError::AuthenticationFailed),
-    }
+    let context = AeadContext::new(algorithm, key)?;
+    let mut output = zeroize::Zeroizing::new(Vec::with_capacity(plaintext.len() + 16));
+    output.extend_from_slice(plaintext);
+    let tag = context.seal_in_place(nonce, &mut output, aad)?;
+    output.extend_from_slice(&tag);
+    Ok(core::mem::take(&mut output))
 }
 
 /// Open ciphertext with the selected AEAD and associated data.
@@ -73,43 +223,13 @@ pub fn open(
     ciphertext: &[u8],
     aad: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
-    validate_key_nonce(algorithm, key, nonce)?;
-    let payload = Payload {
-        msg: ciphertext,
-        aad,
-    };
-    match algorithm {
-        AeadAlgorithm::Aes128Gcm => Aes128Gcm::new_from_slice(key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?
-            .decrypt(Nonce::from_slice(nonce), payload)
-            .map_err(|_| CryptoError::AuthenticationFailed),
-        AeadAlgorithm::Aes256Gcm => Aes256Gcm::new_from_slice(key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?
-            .decrypt(Nonce::from_slice(nonce), payload)
-            .map_err(|_| CryptoError::AuthenticationFailed),
-        AeadAlgorithm::ChaCha20Poly1305 => ChaCha20Poly1305::new_from_slice(key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?
-            .decrypt(chacha20poly1305::Nonce::from_slice(nonce), payload)
-            .map_err(|_| CryptoError::AuthenticationFailed),
-    }
+    let context = AeadContext::new(algorithm, key)?;
+    let mut output = ciphertext.to_vec();
+    context.open_in_place(nonce, &mut output, aad)?;
+    Ok(output)
 }
 
-fn validate_key_nonce(
-    algorithm: AeadAlgorithm,
-    key: &[u8],
-    nonce: &[u8],
-) -> Result<(), CryptoError> {
-    if key.len() != algorithm.key_len() {
-        return Err(CryptoError::InvalidKeyLength);
-    }
-    if nonce.len() != algorithm.nonce_len() {
-        return Err(CryptoError::InvalidNonceLength);
-    }
-    Ok(())
-}
-
-/// Encrypt a payload in place and return its 16-byte authentication tag.
-/// The caller owns the output buffer and supplies the unchanged associated data.
+/// Encrypt a payload in place and return its detached tag.
 pub fn seal_in_place(
     algorithm: AeadAlgorithm,
     key: &[u8],
@@ -117,25 +237,10 @@ pub fn seal_in_place(
     buffer: &mut [u8],
     aad: &[u8],
 ) -> Result<[u8; 16], CryptoError> {
-    use aes_gcm::aead::AeadInPlace;
-    validate_key_nonce(algorithm, key, nonce)?;
-    let tag = match algorithm {
-        AeadAlgorithm::Aes128Gcm => Aes128Gcm::new_from_slice(key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?
-            .encrypt_in_place_detached(Nonce::from_slice(nonce), aad, buffer),
-        AeadAlgorithm::Aes256Gcm => Aes256Gcm::new_from_slice(key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?
-            .encrypt_in_place_detached(Nonce::from_slice(nonce), aad, buffer),
-        AeadAlgorithm::ChaCha20Poly1305 => ChaCha20Poly1305::new_from_slice(key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?
-            .encrypt_in_place_detached(chacha20poly1305::Nonce::from_slice(nonce), aad, buffer),
-    }
-    .map_err(|_| CryptoError::AuthenticationFailed)?;
-    Ok(tag.into())
+    AeadContext::new(algorithm, key)?.seal_in_place(nonce, buffer, aad)
 }
 
 /// Authenticate and decrypt an owned ciphertext-plus-tag buffer in place.
-/// Authentication failure clears the buffer rather than exposing partial output.
 pub fn open_in_place(
     algorithm: AeadAlgorithm,
     key: &[u8],
@@ -143,25 +248,7 @@ pub fn open_in_place(
     buffer: &mut Vec<u8>,
     aad: &[u8],
 ) -> Result<(), CryptoError> {
-    use aes_gcm::aead::AeadInPlace;
-    use zeroize::Zeroize;
-    validate_key_nonce(algorithm, key, nonce)?;
-    let result = match algorithm {
-        AeadAlgorithm::Aes128Gcm => Aes128Gcm::new_from_slice(key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?
-            .decrypt_in_place(Nonce::from_slice(nonce), aad, buffer),
-        AeadAlgorithm::Aes256Gcm => Aes256Gcm::new_from_slice(key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?
-            .decrypt_in_place(Nonce::from_slice(nonce), aad, buffer),
-        AeadAlgorithm::ChaCha20Poly1305 => ChaCha20Poly1305::new_from_slice(key)
-            .map_err(|_| CryptoError::InvalidKeyLength)?
-            .decrypt_in_place(chacha20poly1305::Nonce::from_slice(nonce), aad, buffer),
-    };
-    if result.is_err() {
-        buffer.zeroize();
-        buffer.clear();
-    }
-    result.map_err(|_| CryptoError::AuthenticationFailed)
+    AeadContext::new(algorithm, key)?.open_in_place(nonce, buffer, aad)
 }
 
 #[cfg(test)]

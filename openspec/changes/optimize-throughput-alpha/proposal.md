@@ -25,7 +25,7 @@ The reviewed 0.0.9 data path leaves ARM64 AES/GHASH acceleration disabled, const
 
 ## Impact
 
-Affected code includes workspace build configuration, crypto/TLS/core/inner/proto crates, runtime configuration, diagnostics, tests, distribution/release tooling and documentation. Existing RustCrypto/Quinn versions remain the baseline; dependency feature additions are reviewed for zeroization and licensing. Native QUIC window choices are compared with the checked-in real Chrome capture; existing unverified full-fingerprint status must not be promoted without evidence. Private infrastructure details and deployment material remain outside git.
+Affected code includes workspace build configuration, crypto/TLS/core/inner/proto crates, runtime configuration, diagnostics, tests, distribution/release tooling and documentation. Quinn remains on the reviewed baseline; AES-GCM is updated to stable 0.11.1 for automatic ARM acceleration and complete cached-context zeroization, with its dependency/license changes audited. Native QUIC window choices are compared with the checked-in real Chrome capture; existing unverified full-fingerprint status must not be promoted without evidence. Private infrastructure details and deployment material remain outside git.
 
 ## Authorization
 

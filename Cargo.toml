@@ -54,7 +54,8 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 ml-kem = "0.2.0"        # ML-KEM-768（FIPS 203），落地前确认版本/codepoint
 kem = "0.3.0-pre.0"    # ml-kem Encapsulate/Decapsulate traits
 ml-dsa = { version = "0.1.1", features = ["zeroize"] } # ML-DSA-65（FIPS 204）
-aes-gcm = "0.10"
+# 0.11 enables ARM AES/PMULL detection by default and propagates key/hash clearing.
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "alloc", "zeroize"] }
 chacha20poly1305 = "0.10"
 chacha20 = "0.9"
 hkdf = "0.12"

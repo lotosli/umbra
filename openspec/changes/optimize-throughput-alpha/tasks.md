@@ -40,5 +40,5 @@
 ## 8. Alpha release and deployment
 
 - [x] 8.1 Set workspace/internal dependencies and lockfiles to 1.0.0-alpha, update docs/release notes and verify CLI version/config compatibility.
-- [ ] 8.2 Build supported macOS/Linux distribution artifacts from reviewed source, verify version/digests, retain exact source identity and mark the release prerelease; inspect remote checks without bypassing protected gates.
+- [x] 8.2 Build supported macOS/Linux distribution artifacts from reviewed source, verify version/digests, retain exact source identity and mark the release prerelease; inspect remote checks without bypassing protected gates.
 - [x] 8.3 Back up and deploy the server and Mac client atomically; verify installed hashes, normal HTTPS via Vision/mux/QUIC, UDP, shutdown and rollback readiness, then record sanitized final evidence.

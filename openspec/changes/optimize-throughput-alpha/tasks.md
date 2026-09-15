@@ -27,9 +27,9 @@
 
 ## 6. TLS and Vision data path
 
-- [ ] 6.1 Transfer independent application traffic-key owners and reuse record buffers; test concurrent directions, vectors, oversized headers, clean/truncated EOF and cancellation without resealing.
-- [ ] 6.2 Encode/decode wrapped Vision with borrowed or transferred payload ownership and reusable outputs; verify byte-for-byte envelopes, padding and handoff/half-close tests.
-- [ ] 6.3 Batch validated raw records with retained partial suffixes and an activity clock; test malformed/truncated input, continuing partial activity, write-zero and reverse half-close; measure raw forwarding.
+- [x] 6.1 Transfer independent application traffic-key owners and reuse record buffers; test concurrent directions, vectors, oversized headers, clean/truncated EOF and cancellation without resealing.
+- [x] 6.2 Encode/decode wrapped Vision with borrowed or transferred payload ownership and reusable outputs; verify byte-for-byte envelopes, padding and handoff/half-close tests.
+- [x] 6.3 Batch validated raw records with retained partial suffixes and an activity clock; test malformed/truncated input, continuing partial activity, write-zero and reverse half-close; measure raw forwarding.
 
 ## 7. 测试与覆盖率 >= 90%
 

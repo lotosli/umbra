@@ -1,9 +1,6 @@
 //! Async I/O bridge for Umbra's minimal TLS 1.3 application-data records.
 
-use std::{
-    io,
-    sync::{Arc, Mutex},
-};
+use std::io;
 
 use tokio::{
     io::{
@@ -27,17 +24,10 @@ pub enum TlsAppEndpoint {
 }
 
 impl TlsAppEndpoint {
-    pub(crate) fn seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, TlsError> {
+    pub(crate) fn into_records(self) -> Result<umbra_tls::records::ApplicationRecords, TlsError> {
         match self {
-            Self::Client(client) => client.app_seal(plaintext),
-            Self::Server(server) => server.app_seal(plaintext),
-        }
-    }
-
-    pub(crate) fn open(&mut self, record: &[u8]) -> Result<Vec<u8>, TlsError> {
-        match self {
-            Self::Client(client) => client.app_open(record),
-            Self::Server(server) => server.app_open(record),
+            Self::Client(client) => (*client).into_application_records(),
+            Self::Server(server) => (*server).into_application_records(),
         }
     }
 }
@@ -108,13 +98,16 @@ pub(crate) fn spawn_tls_app_io_scheduled<IO>(
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let endpoint = Arc::new(Mutex::new(endpoint));
+    let (reading, writing) = match endpoint.into_records() {
+        Ok(records) => (Ok(records.read), Ok(records.write)),
+        Err(error) => (Err(error.clone()), Err(error)),
+    };
     let (plain_local, plain_remote) = tokio::io::duplex(DUPLEX_BUFFER_LEN);
     let (raw_read, raw_write) = split(io);
     let (plain_read, plain_write) = split(plain_remote);
 
-    let opening = spawn_open_task(raw_read, plain_write, Arc::clone(&endpoint), group);
-    let sealing = spawn_seal_task(plain_read, raw_write, endpoint, group);
+    let opening = spawn_open_task(raw_read, plain_write, reading, group);
+    let sealing = spawn_seal_task(plain_read, raw_write, writing, group);
     TlsAppIo {
         io: plain_local,
         workers: [opening, sealing],
@@ -125,16 +118,24 @@ where
 fn spawn_open_task<R>(
     mut raw_read: ReadHalf<R>,
     mut plain_write: WriteHalf<DuplexStream>,
-    endpoint: Arc<Mutex<TlsAppEndpoint>>,
+    records: Result<umbra_tls::records::RecordLayer, TlsError>,
     group: Option<&crate::work::WorkGroup>,
 ) -> JoinHandle<()>
 where
     R: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     crate::work::spawn(group, async move {
-        let mut record = Vec::new();
+        let mut records = match records {
+            Ok(records) => records,
+            Err(error) => {
+                report_bridge_error("record keys", &tls_to_io(error));
+                let _ = plain_write.shutdown().await;
+                return;
+            }
+        };
+        let mut record = Vec::with_capacity(16_645);
         loop {
-            match read_tls_record_into(&mut raw_read, &mut record).await {
+            match read_tls_record_into(&mut raw_read, &mut record, true).await {
                 Ok(true) => {}
                 Ok(false) => {
                     let _ = plain_write.shutdown().await;
@@ -146,19 +147,16 @@ where
                     return;
                 }
             }
-            let plaintext = match endpoint.lock() {
-                Ok(mut endpoint) => endpoint.open(&record).map_err(tls_to_io),
-                Err(_) => Err(io::Error::other("TLS endpoint mutex poisoned")),
-            };
-            let plaintext = match plaintext {
-                Ok(plaintext) => plaintext,
-                Err(error) => {
-                    report_bridge_error("record decrypt", &error);
-                    let _ = plain_write.shutdown().await;
-                    return;
-                }
-            };
-            if plain_write.write_all(&plaintext).await.is_err() {
+            if let Err(error) = records.open_application_in_place(&mut record) {
+                report_bridge_error("record decrypt", &tls_to_io(error));
+                let _ = plain_write.shutdown().await;
+                return;
+            }
+            if plain_write
+                .write_all(&record[TLS_RECORD_HEADER_LEN..])
+                .await
+                .is_err()
+            {
                 return;
             }
             if plain_write.flush().await.is_err() {
@@ -171,14 +169,23 @@ where
 fn spawn_seal_task<W>(
     mut plain_read: ReadHalf<DuplexStream>,
     mut raw_write: WriteHalf<W>,
-    endpoint: Arc<Mutex<TlsAppEndpoint>>,
+    records: Result<umbra_tls::records::RecordLayer, TlsError>,
     group: Option<&crate::work::WorkGroup>,
 ) -> JoinHandle<()>
 where
     W: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     crate::work::spawn(group, async move {
-        let mut buf = [0_u8; APP_IO_BUFFER_LEN];
+        let mut records = match records {
+            Ok(records) => records,
+            Err(error) => {
+                report_bridge_error("record keys", &tls_to_io(error));
+                let _ = raw_write.shutdown().await;
+                return;
+            }
+        };
+        let mut buf = [0; APP_IO_BUFFER_LEN];
+        let mut record = Vec::with_capacity(16_645);
         loop {
             let read = match plain_read.read(&mut buf).await {
                 Ok(0) | Err(_) => {
@@ -187,18 +194,15 @@ where
                 }
                 Ok(read) => read,
             };
-            let record = match endpoint.lock() {
-                Ok(mut endpoint) => endpoint.seal(&buf[..read]).map_err(tls_to_io),
-                Err(_) => Err(io::Error::other("TLS endpoint mutex poisoned")),
-            };
-            let record = match record {
-                Ok(record) => record,
-                Err(error) => {
-                    report_bridge_error("record encrypt", &error);
-                    let _ = raw_write.shutdown().await;
-                    return;
-                }
-            };
+            if let Err(error) = records.seal_into(
+                umbra_tls::records::CONTENT_TYPE_APPLICATION_DATA,
+                &buf[..read],
+                &mut record,
+            ) {
+                report_bridge_error("record encrypt", &tls_to_io(error));
+                let _ = raw_write.shutdown().await;
+                return;
+            }
             if let Err(error) = raw_write.write_all(&record).await {
                 report_bridge_error("TCP record write", &error);
                 return;
@@ -225,7 +229,7 @@ where
     R: AsyncRead + Unpin,
 {
     let mut record = Vec::new();
-    if read_tls_record_into(reader, &mut record).await? {
+    if read_tls_record_into(reader, &mut record, false).await? {
         Ok(Some(record))
     } else {
         Ok(None)
@@ -235,15 +239,26 @@ where
 async fn read_tls_record_into<R: AsyncRead + Unpin>(
     reader: &mut R,
     record: &mut Vec<u8>,
+    application: bool,
 ) -> io::Result<bool> {
     record.resize(TLS_RECORD_HEADER_LEN, 0);
-    if reader.read(&mut record[..1]).await? == 0 {
+    let first = reader.read(&mut record[..TLS_RECORD_HEADER_LEN]).await?;
+    if first == 0 {
         return Ok(false);
     }
     reader
-        .read_exact(&mut record[1..TLS_RECORD_HEADER_LEN])
+        .read_exact(&mut record[first..TLS_RECORD_HEADER_LEN])
         .await?;
     let len = usize::from(u16::from_be_bytes([record[3], record[4]]));
+    if len > 16_640 {
+        return Err(tls_to_io(TlsError::LengthOutOfRange));
+    }
+    if application {
+        umbra_tls::records::protected_record_length(record).map_err(tls_to_io)?;
+        if len < 17 {
+            return Err(tls_to_io(TlsError::AuthenticationFailed));
+        }
+    }
     record.resize(TLS_RECORD_HEADER_LEN + len, 0);
     reader
         .read_exact(&mut record[TLS_RECORD_HEADER_LEN..])
@@ -267,6 +282,28 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn oversized_and_invalid_application_headers_fail_before_body_read() {
+        for header in [
+            [0x17, 3, 3, 0xff, 0xff],
+            [0x16, 3, 3, 0, 17],
+            [0x17, 3, 1, 0, 17],
+            [0x17, 3, 3, 0, 1],
+        ] {
+            let mut reader = std::io::Cursor::new(header);
+            let mut record = Vec::new();
+            assert_eq!(
+                read_tls_record_into(&mut reader, &mut record, true)
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+            assert_eq!(record.len(), 5);
+            assert_eq!(reader.position(), 5);
+        }
+    }
 
     #[tokio::test]
     async fn scenario_tls_app_bridge_relays_plaintext_both_directions() {

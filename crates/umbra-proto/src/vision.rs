@@ -248,40 +248,92 @@ impl Envelope {
 
     /// Decode exactly one complete record, rejecting truncation and concatenation.
     pub fn decode(input: &[u8]) -> Result<Self, VisionError> {
-        if !(HEADER_LEN..=MAX_ENVELOPE_LEN).contains(&input.len()) {
-            return Err(VisionError::Length);
-        }
-        if input[0] != 1 {
-            return Err(VisionError::Version);
-        }
-        if input[2..4] != [0, 0] {
-            return Err(VisionError::Field);
-        }
-        let body_len = usize::from(u16::from_be_bytes([input[4], input[5]]));
-        let padding_len = usize::from(u16::from_be_bytes([input[6], input[7]]));
-        if HEADER_LEN + body_len + padding_len != input.len() {
-            return Err(VisionError::Length);
-        }
+        let (body_len, _) = envelope_lengths(input)?;
         let body = &input[HEADER_LEN..HEADER_LEN + body_len];
         let message = decode_message(input[1], body)?;
         let padding = input[HEADER_LEN + body_len..].to_vec();
         Self::new(message, padding)
     }
 
-    fn validate(&self) -> Result<usize, VisionError> {
-        self.message.validate()?;
-        match &self.message {
-            Message::Data(_) => {}
-            Message::Padding if !self.padding.is_empty() => {}
-            Message::Padding => return Err(VisionError::Padding),
-            _ if !self.padding.is_empty() => return Err(VisionError::Padding),
-            _ => {}
+    /// Construct only the DATA prefix so callers can encode borrowed payload
+    /// and padding directly into the final authenticated record buffer.
+    pub fn data_header(
+        body_len: usize,
+        padding_len: usize,
+    ) -> Result<[u8; HEADER_LEN], VisionError> {
+        if !(1..=MAX_DATA_LEN).contains(&body_len) {
+            return Err(VisionError::Field);
         }
+        HEADER_LEN
+            .checked_add(body_len)
+            .and_then(|n| n.checked_add(padding_len))
+            .filter(|n| *n <= MAX_ENVELOPE_LEN)
+            .ok_or(VisionError::Length)?;
+        let body = u16::try_from(body_len)
+            .map_err(|_| VisionError::Length)?
+            .to_be_bytes();
+        let padding = u16::try_from(padding_len)
+            .map_err(|_| VisionError::Length)?
+            .to_be_bytes();
+        Ok([1, 0x10, 0, 0, body[0], body[1], padding[0], padding[1]])
+    }
+
+    /// Validate one owned envelope and transfer DATA's allocation to its message.
+    /// Control messages leave the cleared allocation available for reuse. Only
+    /// declared padding is discarded; errors leave the original buffer intact.
+    pub fn take_message(input: &mut Vec<u8>) -> Result<Message, VisionError> {
+        let (body_len, padding_len) = envelope_lengths(input)?;
+        if input[1] == 0x10 {
+            if body_len == 0 {
+                return Err(VisionError::Field);
+            }
+            input.truncate(HEADER_LEN + body_len);
+            input.copy_within(HEADER_LEN.., 0);
+            input.truncate(body_len);
+            return Ok(Message::Data(core::mem::take(input)));
+        }
+        let message = decode_message(input[1], &input[HEADER_LEN..HEADER_LEN + body_len])?;
+        validate_padding(&message, padding_len)?;
+        input.clear();
+        Ok(message)
+    }
+
+    fn validate(&self) -> Result<usize, VisionError> {
+        validate_padding(&self.message, self.padding.len())?;
         HEADER_LEN
             .checked_add(self.message.body_len())
             .and_then(|n| n.checked_add(self.padding.len()))
             .filter(|n| *n <= MAX_ENVELOPE_LEN)
             .ok_or(VisionError::Length)
+    }
+}
+
+fn envelope_lengths(input: &[u8]) -> Result<(usize, usize), VisionError> {
+    if !(HEADER_LEN..=MAX_ENVELOPE_LEN).contains(&input.len()) {
+        return Err(VisionError::Length);
+    }
+    if input[0] != 1 {
+        return Err(VisionError::Version);
+    }
+    if input[2..4] != [0, 0] {
+        return Err(VisionError::Field);
+    }
+    let body_len = usize::from(u16::from_be_bytes([input[4], input[5]]));
+    let padding_len = usize::from(u16::from_be_bytes([input[6], input[7]]));
+    if HEADER_LEN + body_len + padding_len != input.len() {
+        return Err(VisionError::Length);
+    }
+    Ok((body_len, padding_len))
+}
+
+fn validate_padding(message: &Message, padding_len: usize) -> Result<(), VisionError> {
+    message.validate()?;
+    match message {
+        Message::Data(_) => Ok(()),
+        Message::Padding if padding_len != 0 => Ok(()),
+        Message::Padding => Err(VisionError::Padding),
+        _ if padding_len != 0 => Err(VisionError::Padding),
+        _ => Ok(()),
     }
 }
 

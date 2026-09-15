@@ -248,6 +248,24 @@ impl Tls13Server {
         })
     }
 
+    /// Transfer established application keys and release the handshake context.
+    pub fn into_application_records(
+        mut self,
+    ) -> Result<crate::records::ApplicationRecords, TlsError> {
+        if self.state != ServerState::Connected {
+            return Err(TlsError::InvalidInput("server is not connected"));
+        }
+        let read = self
+            .app_read
+            .take()
+            .ok_or(TlsError::InvalidInput("server is not connected"))?;
+        let write = self
+            .app_write
+            .take()
+            .ok_or(TlsError::InvalidInput("server is not connected"))?;
+        Ok(crate::records::ApplicationRecords { read, write })
+    }
+
     /// Seal application data after the handshake completes.
     pub fn app_seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, TlsError> {
         self.app_write

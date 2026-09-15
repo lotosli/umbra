@@ -4964,11 +4964,25 @@ mod tests {
         })
         .await
         .unwrap();
-        timeout(Duration::from_secs(2), pool.shutdown())
+        let stopping = pool.clone();
+        let shutdown = tokio::spawn(async move {
+            stopping.shutdown().await;
+        });
+        // Cancellation must precede the handshake deadline; QUIC protocol
+        // draining is a separate, already bounded endpoint cleanup operation.
+        assert!(timeout(Duration::from_secs(2), opening)
             .await
-            .unwrap();
-        assert!(opening.await.unwrap().is_err());
+            .unwrap()
+            .unwrap()
+            .is_err());
         assert_eq!(pool.resources.get().unwrap().pool.committed(), 0);
+        timeout(
+            DEFAULT_OUTER_CONNECT_TIMEOUT + Duration::from_secs(1),
+            shutdown,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert!(pool.quic_endpoints.lock().await.is_empty());
     }
 

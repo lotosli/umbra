@@ -315,11 +315,11 @@ tcp_evasion   = "segment"            # TCP evasion policy
 
 ## Transport Modes
 
-### Upgrading to 0.0.9
+### Upgrading to 1.0.0-alpha
 
 Upgrade both endpoints for adaptive TCP mux. New `mux=true` sessions opt in automatically; `mux=false` keeps Vision. QUIC defaults to BBR and supports `performance.quic_congestion = "cubic"` or `"new-reno"` as alternatives. This setting does not change Linux TCP congestion control.
 
-Optional `[performance]` limits are `memory_mib=512`, `group_memory_mib=256`, `max_window_mib=64`, and the client opt-in `adaptive_mux=true`. Windows grow from observed consumption and RTT without a configured bandwidth; memory ceilings still require host headroom. See [throughput and configuration](performance.md).
+Optional `[performance]` limits are `memory_mib=512`, `group_memory_mib=256`, `max_window_mib=64`, `quic_stream_window_mib=6`, `quic_send_window_mib=32`, and the client opt-in `adaptive_mux=true`. Windows grow from observed consumption and RTT without a configured bandwidth; memory ceilings still require host headroom. See [throughput and configuration](performance.md).
 
 For server-side bottleneck observation, set `diagnostics_interval_secs=10` in `[performance]`. The default is 0 (disabled); supported enabled intervals are 1–3600 seconds. Reports contain anonymous group/mode I/O, credit, queue and budget counters, with transport and target bytes distinguished. They contain no addresses, credentials, SNI or payloads; see the interpretation limits in the performance guide.
 
@@ -359,13 +359,13 @@ transport = "tcp"
 
 #### TCP Vision solo (0.0.7)
 
-Set `transport = "tcp"` and `mux = false` to use dedicated Vision connections. Upgrade both client and server together to 0.0.9. After an authenticated boundary exchange on eligible inner TLS 1.3 traffic, the runtime forwards the original protected records without outer TLS encryption or extra framing. Non-TLS and unsupported TLS remain encrypted. The legacy solo implementation was removed; `mux = true` continues to provide encrypted multiplexing. No extra Vision flag is needed. Raw forwarding is userspace I/O, not a claim of kernel zero-copy or a measured speed increase.
+Set `transport = "tcp"` and `mux = false` to use dedicated Vision connections. Upgrade both client and server together to 1.0.0-alpha. After an authenticated boundary exchange on eligible inner TLS 1.3 traffic, the runtime forwards the original protected records without outer TLS encryption or extra framing. Non-TLS and unsupported TLS remain encrypted. The legacy solo implementation was removed; `mux = true` continues to provide encrypted multiplexing. No extra Vision flag is needed. Raw forwarding is userspace I/O, not a claim of kernel zero-copy or a measured speed increase.
 
 Successful sessions log `umbra vision splice active` and, on completion, raw byte counts plus `outer_records_unchanged=true`, without targets or credentials.
 
 #### TCP mux capacity and recovery (current source)
 
-With `mux = true`, the client reuses up to four accepting outer connections and reserves real stream capacity before choosing one. The default 256 KiB per-stream window and 8 MiB per-outer receive budget allow 32 streams per outer, or up to 128 across accepting outers. Pool admission has a separate limit of 128 waiters. Four additional retirement slots allow draining outers to keep existing streams, with a hard limit of eight outers in total. If a new accepting outer is needed at that limit, only the oldest draining outer is retired; its remaining streams fail, and business requests or payloads are never replayed.
+With `mux = true`, the client reuses up to four accepting outer connections and reserves real stream capacity before choosing one. Adaptive mux permits up to 128 streams per outer under shared connection credit and memory ceilings. With `adaptive_mux=false`, the legacy 256KiB per-stream / 8MiB per-outer budget permits 32 streams per outer. Pool admission has a separate limit of 128 waiters. Four additional retirement slots allow draining outers to keep existing streams, with a hard limit of eight outers in total. If a new accepting outer is needed at that limit, only the oldest draining outer is retired; its remaining streams fail, and business requests or payloads are never replayed.
 
 Server TCP target setup gives DNS up to 5 seconds within a 14-second total budget, then races up to four resolved addresses at a time with a 250 ms stagger and bounded candidate rotation. The client distinguishes pool admission, SYN transmission, and target acknowledgement failures; its target-acknowledgement wait is 25 seconds to cover the server deadline and feedback. Failed TCP mux setup returns a standard SOCKS failure reply. Suspected stalled outers stop accepting new streams, allowing replacements while the retirement budget permits. Unreachable targets still return a bounded failure.
 

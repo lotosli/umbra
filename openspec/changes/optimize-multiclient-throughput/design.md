@@ -1,5 +1,7 @@
 ## Context
 
+Deployment assumption clarified by the user after delivery: servers have at least 1GiB of physical RAM. Throughput is the priority; minimum-memory operation is not a further optimization or acceptance target. Existing small logical-budget tests document earlier behavior, not the intended server hardware. Retain shared budgeting for multi-client concurrency and evaluate future window/data-path changes against demonstrated throughput limits.
+
 See proposal.md for the user-approved scope. Production TCP mux uses the duplex TLS bridge; Vision wrapped/raw and native QUIC are separate paths. A server has many independent outers but lacks process/group budgeting. The deployed client currently selects TCP Vision and QUIC UDP.
 
 ## Goals / Non-Goals

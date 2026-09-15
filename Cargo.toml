@@ -21,7 +21,7 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.0.9"
+version = "1.0.0-alpha"
 edition = "2021"
 rust-version = "1.96.1"
 license = "MIT"
@@ -33,15 +33,15 @@ authors = ["Umbra contributors"]
 # 未被任何 crate 引用的条目不会被拉取/编译（脚手架阶段保持零外部依赖，构建极快）。
 [workspace.dependencies]
 # 内部 crate
-umbra-proto = { path = "crates/umbra-proto", version = "0.0.9" }
-umbra-crypto = { path = "crates/umbra-crypto", version = "0.0.9" }
-umbra-tls = { path = "crates/umbra-tls", version = "0.0.9" }
-umbra-fingerprint = { path = "crates/umbra-fingerprint", version = "0.0.9" }
-umbra-reality = { path = "crates/umbra-reality", version = "0.0.9" }
-umbra-inner = { path = "crates/umbra-inner", version = "0.0.9" }
-umbra-transport = { path = "crates/umbra-transport", version = "0.0.9" }
-umbra-core = { path = "crates/umbra-core", version = "0.0.9" }
-umbra-testkit = { path = "crates/umbra-testkit", version = "0.0.9" }
+umbra-proto = { path = "crates/umbra-proto", version = "1.0.0-alpha" }
+umbra-crypto = { path = "crates/umbra-crypto", version = "1.0.0-alpha" }
+umbra-tls = { path = "crates/umbra-tls", version = "1.0.0-alpha" }
+umbra-fingerprint = { path = "crates/umbra-fingerprint", version = "1.0.0-alpha" }
+umbra-reality = { path = "crates/umbra-reality", version = "1.0.0-alpha" }
+umbra-inner = { path = "crates/umbra-inner", version = "1.0.0-alpha" }
+umbra-transport = { path = "crates/umbra-transport", version = "1.0.0-alpha" }
+umbra-core = { path = "crates/umbra-core", version = "1.0.0-alpha" }
+umbra-testkit = { path = "crates/umbra-testkit", version = "1.0.0-alpha" }
 
 # 异步运行时
 tokio = { version = "1", features = ["full"] }

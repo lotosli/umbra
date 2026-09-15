@@ -25,7 +25,7 @@ Umbra 把协议伪装、响应前认证、浏览器级指纹保真、抗量子�
 
 ## 当前状态
 
-**0.0.9** 增加自适应 TCP mux 流控、多客户端资源预算、TCP/Vision 数据路径优化，以及可选的 QUIC 拥塞算法（本次默认 BBR）。客户端与服务端建议一起升级；单实例 TCP/Vision + QUIC UDP 配置仍可使用。详见[吞吐与配置说明](docs/performance.md)。
+**1.0.0-alpha** 增加硬件加速与可复用的 TLS 密码上下文、按就绪流调度的 mux、更大的受预算约束的启动窗口、QUIC 批量入队及独立推进的 UDP 收发。QUIC 继续默认使用 BBR。客户端与服务端建议一起升级；单实例 TCP/Vision + QUIC UDP 配置仍可使用。详见[吞吐与配置说明](docs/performance.md)。
 
 在已有客户端配置中设置：
 
@@ -106,7 +106,7 @@ git push origin v0.0.1
 
 普通分支 push 只触发 `CI`。这样每个分支都能被验证，同时不会为每个开发提交消耗完整 release 构建时间。
 
-0.0.9 的四个 macOS/Linux 发布包由本地完整验证的源代码构建，并附 SHA-256 校验和。两端部署与测试范围见[验证记录](openspec/changes/optimize-multiclient-throughput/verification.md)。当前 GitHub Actions 因账户支付/额度限制未启动，不宣称远程 CI 已通过。
+`1.0.0-alpha` 是预发布版本。macOS/Linux 构建产物、SHA-256 校验和、两端部署、本地测试及远程 CI 状态见[验证记录](openspec/changes/optimize-throughput-alpha/verification.md)。
 
 ## 开发模型
 

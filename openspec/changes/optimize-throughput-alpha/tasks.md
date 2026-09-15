@@ -33,12 +33,12 @@
 
 ## 7. 测试与覆盖率 >= 90%
 
-- [ ] 7.1 Add/update scenario tests, parser properties and fuzz targets as needed; run bounded targeted fuzzing and record exact commands/results.
-- [ ] 7.2 Pass cargo xtask ci, workspace nextest, strict OpenSpec validation and fingerprint checks with >=90% line coverage; do not relax thresholds or assertions.
-- [ ] 7.3 Run serial release-mode before/after diagnostics for cipher, native queues/windows, mux startup/steady/mixed streams and raw/wrapped record work; record conditions and limitations.
+- [x] 7.1 Add/update scenario tests, parser properties and fuzz targets as needed; run bounded targeted fuzzing and record exact commands/results.
+- [x] 7.2 Pass cargo xtask ci, workspace nextest, strict OpenSpec validation and fingerprint checks with >=90% line coverage; do not relax thresholds or assertions.
+- [x] 7.3 Run serial release-mode before/after diagnostics for cipher, native queues/windows, mux startup/steady/mixed streams and raw/wrapped record work; record conditions and limitations.
 
 ## 8. Alpha release and deployment
 
-- [ ] 8.1 Set workspace/internal dependencies and lockfiles to 1.0.0-alpha, update docs/release notes and verify CLI version/config compatibility.
+- [x] 8.1 Set workspace/internal dependencies and lockfiles to 1.0.0-alpha, update docs/release notes and verify CLI version/config compatibility.
 - [ ] 8.2 Build supported macOS/Linux distribution artifacts from reviewed source, verify version/digests, retain exact source identity and mark the release prerelease; inspect remote checks without bypassing protected gates.
 - [ ] 8.3 Back up and deploy the server and Mac client atomically; verify installed hashes, normal HTTPS via Vision/mux/QUIC, UDP, shutdown and rollback readiness, then record sanitized final evidence.

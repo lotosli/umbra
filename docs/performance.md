@@ -1,6 +1,8 @@
-# Throughput and resource policy (0.0.9)
+# Throughput and resource policy (1.0.0-alpha)
 
-Umbra supports multiple clients on one server. Version 0.0.9 improves TCP mux flow control, TCP/Vision data paths, and QUIC packet processing. Quinn BBR is one QUIC-specific option; it does not replace Linux TCP congestion control or application receive credit.
+Umbra supports multiple clients on one server. Version 1.0.0-alpha adds runtime-detected AES/PMULL acceleration, reusable TLS cipher state, ready-stream mux scheduling, shared QUIC receive batches and independent UDP progress. Quinn BBR is one QUIC-specific option; it does not replace Linux TCP congestion control or application receive credit.
+
+Deployment assumes at least 1GiB of physical server RAM, with throughput as the primary optimization goal. Hosts with extremely small memory budgets are not an optimization target. The configurable application-commitment floor is not a physical-RAM requirement: process/group budgets manage concurrent clients, and defaults are 512MiB/256MiB. Future tuning should prioritize demonstrated high-BDP window or data-path limits rather than minimum-memory operation.
 
 ## Configuration
 
@@ -11,6 +13,8 @@ Both client and server accept an optional table:
 memory_mib = 512
 group_memory_mib = 256
 max_window_mib = 64
+quic_stream_window_mib = 6
+quic_send_window_mib = 32
 adaptive_mux = true
 diagnostics_interval_secs = 0 # server: set e.g. 10 to collect/report pipeline observations
 quic_congestion = "bbr" # "cubic" or "new-reno" are also supported
@@ -22,7 +26,9 @@ These are bounded defaults, not allocations performed at startup and not a requi
 
 ## TCP mux
 
-An adaptive send direction obeys both per-stream and connection-wide cumulative credit. Receivers start with 256 KiB per stream and 1 MiB per connection. Rapid application consumption and measured RTT can grow windows up to 32 MiB per stream and the configured connection maximum. Growth is funded before credit is advertised. Different peers can advertise different limits; the controller does not multiply every connection by the server's NIC rate.
+An adaptive send direction obeys both per-stream and connection-wide cumulative credit. Production receivers start with 1MiB per stream and 4MiB per connection, clipped to `max_window_mib`. The library `FlowSettings::default()` retains 256KiB/1MiB for explicit callers. Rapid application consumption and measured RTT can grow windows up to 32 MiB per stream and the configured connection maximum. Growth is funded before credit is advertised. Different peers can advertise different limits; the controller does not multiply every connection by the server's NIC rate.
+
+The driver visits changed streams, deduplicates wakes and tracks only participants in each finite output batch. Consumption updates are coalesced, with immediate low-credit and FIN/RST settlement. Pending outer establishment releases the pool lock so a healthy outer can keep accepting available work.
 
 The first real probe reply replaces the bootstrap RTT; later replies are smoothed. The connection retains partial reads/writes and pending credit across cancellation. Expanded credit is independent of consumed-byte acknowledgement. FIN and RST settle cumulative counters; legal in-flight data for a retired stream returns aggregate credit without recreating the stream. Old fixed-window mux remains bounded by its existing stream/window contract.
 
@@ -56,22 +62,26 @@ Only active observations and the last 128 closed observations are retained. Iden
 
 The shared pool accounts for receive commitments and separate staging allowances. Leases follow ownership through TLS workers, retained stream data, UDP target readers and queued UDP replies. Cloning a lease retains one commitment; it does not charge twice or release early. Growth leaves one eighth of the process ceiling available for initial admissions. Outstanding grants cannot be revoked or lent to another connection just because its queue is momentarily empty.
 
-The authenticated server QUIC path starts aggregate receive credit at 2,500,000 bytes (or the configured maximum, if smaller), retains Quinn's 10,000,000-byte send window, and reserves 3MiB of connection staging. Its initial commitment is about 14.92MiB, allowing a connection under the supported 16MiB minimum budget. Each accepted application stream additionally reserves 64KiB for copy/framing/task storage; UDP associations, target readers and queued replies retain their separate charges. The connection's receive credit can grow with observed consumption and RTT up to `max_window_mib`, after successfully reserving the increase. Both the socket and retained receive streams keep that commitment alive. Outstanding grants are never revoked.
+Both native QUIC endpoints start with 6MiB per-stream receive credit, 15MiB aggregate receive credit and a 32MiB send-storage ceiling. `quic_stream_window_mib` and `quic_send_window_mib` accept 1–64MiB; the stream setting is clipped to `max_window_mib`. Initial aggregate credit is clipped to the configured maximum and one eighth of the group budget; send storage is clipped to one quarter of that budget. Each connection additionally reserves 3MiB of staging, giving a default initial logical commitment of 50MiB. Application streams and UDP targets retain their separate allowances.
 
-Native QUIC's per-stream receive limit remains at Quinn's reviewed 1,250,000-byte default, or half the initial aggregate limit if smaller. This Quinn version exposes only an aggregate receive-window setter at runtime; aggregate growth does not eliminate a single stream's fixed-window ceiling on a high-BDP path. Resource exhaustion stops growth or rejects a newly accepted application stream without stalling other connections. Fixed listener/stream limits remain additional ceilings.
+Aggregate credit grows from observed consumption rate and RTT after funding the increase. Delayed 50ms samples work on short-RTT paths. Quinn's fixed per-stream ceiling cannot grow after establishment; high-BDP single-stream workloads can select a larger `quic_stream_window_mib` on the receiving endpoint. Outstanding grants are never revoked. Default on-wire flow-control fields match the checked-in Chrome 153 capture; overrides change those fields, and full Chrome equivalence remains unverified.
 
-Client TCP mux and Vision use local application-resource leases. Native QUIC client transport memory continues to follow Quinn's own transport limits; the server's shared-pool number is not a claim to measure all client-side or kernel memory. `ServerRuntime::committed_memory()` reports logical application commitments, not RSS. Socket buffers, allocator overhead and handshake work require separate operating-system headroom.
+Ingress uses shared same-flow batches and four physical receive slots, retaining datagram boundaries and metadata. Each flow is bounded by 1MiB of retained payload allocation and 64 queued batches, with at most 64 datagrams per batch. Diagnostic ingress fields report retained/peak bytes and dropped datagrams/bytes. A saturated flow never blocks dispatcher progress for its siblings.
+
+Native QUIC clients share an endpoint per address family. Connections, retained readers and window controllers own funded commitments; closing one association leaves its siblings active. TCP and QUIC UDP carriers keep partial writes in independently polled state, while bounded target setup/send queues permit reverse traffic, control closure and idle detection to continue.
+
+Both client and server account for native QUIC application commitments. `ServerRuntime::committed_memory()` reports logical commitments, not RSS; kernel buffers, allocator overhead and handshake work still need OS headroom.
 
 ## Data path
 
 - TCP relay directions progress independently with a shared inactivity clock and half-close handling.
 - TLS bridge I/O owns its worker tasks; resources remain owned until workers and retained data are dropped.
-- TLS records use standard in-place AEAD operations, preserving the same nonce, content type, tag and vector behavior.
+- TLS directions own independent application keys, drop handshake state and reuse record buffers. Zeroizing cached AEAD contexts use automatic hardware detection; in-place operations preserve nonce, content type, tag and vector behavior.
 - Frame/record/raw-Vision scratch buffers are reused; borrowed DATA is encoded directly into its final owned frame.
 - Mux receive queues hold owned chunks, maintain an outer-local byte total and reuse scheduling ID storage.
 - QUIC fills available receive batch slots without waiting for a full batch or losing datagram boundaries.
 
-Vision raw still validates and receives a complete protected record before forwarding; this is userspace forwarding, not kernel zero-copy.
+Vision raw validates complete record prefixes in bounded 64KiB read-ahead storage, batches available records and retains partial suffixes. A shared activity clock tracks partial I/O. This remains userspace forwarding.
 
 ## BBR and TCP
 
@@ -89,8 +99,10 @@ cargo test --release -p umbra-inner --test throughput -- --ignored --nocapture -
 
 The diagnostic models a pipelined link with serialization and propagation delay, verifies exact payloads, and reports application goodput. It is not a physical NIC measurement. Startup/window growth is included in the reported transfer time. Live WAN results are reported separately because path capacity varied substantially during baseline collection. The earlier result does not imply a guaranteed gain for a workload already constrained by its network, target or CPU.
 
-Validation includes asymmetric bidirectional windows, multiple real client runtimes and credentials, resource reclamation, backpressure/half-close, actual QUIC controller types, protocol properties and fuzzing. The ready-work scheduler is not a per-byte rate shaper. Cached cipher contexts and a complete duplex-bridge replacement remain conditional on bottleneck evidence. 0-RTT and fallback preconnection remain outside this release.
+Validation includes asymmetric bidirectional windows, multiple real client runtimes and credentials, resource reclamation, backpressure/half-close, actual QUIC controller types, protocol properties and fuzzing. The ready-work scheduler is not a per-byte rate shaper. Cached cipher contexts are enabled with verified key destruction. The general plaintext duplex bridge remains, with independent key owners and reusable buffers; its complete replacement remains conditional on evidence. 0-RTT and fallback preconnection remain outside this release.
 
 A later four-client shared-link diagnostic verifies different RTTs, path rates, stream counts and a paused receiver; it reports per-client/group goodput and credit/output wait time. Run it with `cargo test --release -p umbra-inner --test mixed_throughput -- --ignored --nocapture`. A live Vision profile also found low Umbra CPU use and throughput comparable to an adjacent same-endpoint SSH transfer. Full conditions and limitations are in the change's verification.md.
 
 The final implementation includes native QUIC admission, group scheduling and opt-in pipeline observations. See the [verification record](../openspec/changes/optimize-multiclient-throughput/verification.md) for source/build identity, measured conditions, deployment checks and limitations.
+
+Alpha measurements, exact commands and release/deployment scope are in the [alpha verification record](../openspec/changes/optimize-throughput-alpha/verification.md).

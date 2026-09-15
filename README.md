@@ -25,7 +25,7 @@ Umbra combines protocol camouflage, pre-response authentication, browser-grade f
 
 ## Status
 
-**0.0.9** adds adaptive TCP mux credit, shared multi-client resource budgets, TCP/Vision data-path improvements and selectable QUIC congestion control (BBR by default for this release). Upgrade both endpoints for adaptive mux; the single-instance TCP/Vision plus QUIC UDP setup remains available. See [throughput and configuration](docs/performance.md).
+**1.0.0-alpha** adds accelerated reusable TLS ciphers, ready-stream mux scheduling, larger funded startup windows, batched QUIC ingress and independent UDP progress. QUIC continues to default to BBR. Upgrade both endpoints for adaptive mux; the single-instance TCP/Vision plus QUIC UDP setup remains available. See [throughput and configuration](docs/performance.md).
 
 For the combined client, add these settings to the existing configuration:
 
@@ -106,7 +106,7 @@ Pushing a `v*` tag triggers the `Dist` workflow. It builds macOS, Linux, and Win
 
 Regular branch pushes run `CI` only. This keeps every branch validated without spending release-build minutes on every development commit.
 
-The four 0.0.9 macOS/Linux artifacts are built from locally verified source and include SHA-256 checksums. See the [verification record](openspec/changes/optimize-multiclient-throughput/verification.md) for paired deployment and test scope. Current GitHub Actions could not start under the account billing/spending restriction; no remote CI pass is claimed.
+The `1.0.0-alpha` release is a prerelease. See its [verification record](openspec/changes/optimize-throughput-alpha/verification.md) for macOS/Linux artifacts, SHA-256 checksums, paired deployment, local checks and remote CI status.
 
 ## Development Model
 

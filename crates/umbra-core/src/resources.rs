@@ -93,9 +93,10 @@ impl PerformanceCfg {
     pub(crate) fn flow(self) -> FlowSettings {
         let maximum = self.max_window_mib * 1024 * 1024;
         FlowSettings {
+            stream: maximum.min(1024 * 1024),
+            connection: maximum.min(4 * 1024 * 1024),
             max_connection: maximum,
             max_stream: maximum.min(32 * 1024 * 1024),
-            ..FlowSettings::default()
         }
     }
 

@@ -559,17 +559,45 @@ where
         stream_id: u32,
         increment: u32,
     ) -> Result<(), InnerError> {
+        self.acknowledge_consumption(stream_id, increment, true)
+            .map(|_| ())
+    }
+
+    /// Record application consumption, coalescing adaptive wire updates while
+    /// preserving immediate low-credit and FIN settlement. Returns whether
+    /// control output was queued. Explicit `queue_window_update` stays immediate.
+    pub fn queue_consumed_data(
+        &mut self,
+        stream_id: u32,
+        increment: u32,
+    ) -> Result<bool, InnerError> {
+        self.acknowledge_consumption(stream_id, increment, false)
+    }
+
+    fn acknowledge_consumption(
+        &mut self,
+        stream_id: u32,
+        increment: u32,
+        force: bool,
+    ) -> Result<bool, InnerError> {
         let amount = usize::try_from(increment).map_err(|_| InnerError::WindowOverflow)?;
         if self.adaptive.is_some() {
             if amount == 0 || amount > self.state(stream_id)?.delivered_unacked {
                 return Err(InnerError::WindowOverflow);
             }
-            if let Some(flow) = &mut self.adaptive {
-                flow.consume(stream_id, amount)?;
-            }
+            let queued = if let Some(flow) = &mut self.adaptive {
+                if force {
+                    flow.consume(stream_id, amount)?;
+                    true
+                } else {
+                    flow.consume_coalesced(stream_id, amount)?
+                }
+            } else {
+                false
+            };
             self.state_mut(stream_id)?.delivered_unacked -= amount;
             self.reclaim_closed(stream_id);
-            return Ok(());
+            return Ok(queued);
         }
         let state = self.state(stream_id)?;
         let window = state
@@ -589,7 +617,7 @@ where
         state.delivered_unacked -= amount;
         state.receive_window = window;
         self.reclaim_closed(stream_id);
-        Ok(())
+        Ok(true)
     }
 
     /// Acknowledge application consumption and flush the owned WINDOW_UPDATE.
@@ -895,6 +923,9 @@ where
                     return Err(invalid("unexpected FIN"));
                 }
                 state.stream.receive_closed = true;
+                if let Some(flow) = &mut self.adaptive {
+                    flow.finish_received(stream_id)?;
+                }
                 self.reclaim_closed(stream_id);
                 MuxEvent::Fin { stream_id }
             }
@@ -969,6 +1000,7 @@ where
 
     fn apply_adaptive(&mut self, frame: &MuxFrame) -> Result<Option<MuxEvent>, InnerError> {
         let stream_id = frame.stream_id;
+        let was_live = self.streams.contains_key(&stream_id);
 
         if frame.command == MuxCommand::Credit && stream_id != 0 {
             let _ = self.peer_state(stream_id)?;
@@ -991,7 +1023,11 @@ where
         if stream_id != 0 {
             self.reclaim_closed(stream_id);
         }
-        if frame.command == MuxCommand::Credit && before == 0 && after > 0 {
+        // Consumption-only updates can reclaim a fully closed stream even when
+        // its available credit was already positive. Drivers must see that event.
+        if frame.command == MuxCommand::Credit
+            && ((was_live && !self.streams.contains_key(&stream_id)) || (before == 0 && after > 0))
+        {
             return Ok(Some(MuxEvent::WindowUpdate {
                 stream_id,
                 increment: 0,

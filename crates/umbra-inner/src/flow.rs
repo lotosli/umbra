@@ -42,6 +42,8 @@ struct Receive {
     window: u32,
     epoch: Instant,
     epoch_consumed: u64,
+    reported_consumed: u64,
+    finished: bool,
 }
 
 impl Receive {
@@ -53,6 +55,8 @@ impl Receive {
             window,
             epoch: Instant::now(),
             epoch_consumed: 0,
+            reported_consumed: 0,
+            finished: false,
         }
     }
     fn receive(&mut self, len: u64) -> Result<(), InnerError> {
@@ -73,6 +77,9 @@ impl Receive {
             .ok_or(InnerError::WindowOverflow)?;
         if next > self.received {
             return Err(InnerError::WindowOverflow);
+        }
+        if len != 0 && self.consumed == self.epoch_consumed {
+            self.epoch = Instant::now();
         }
         self.consumed = next;
         Ok(())
@@ -96,10 +103,18 @@ impl Receive {
                 .checked_add(u64::from(self.window))
                 .ok_or(InnerError::WindowOverflow)?,
         );
+        self.reported_consumed = self.consumed;
         Ok(CreditUpdate {
             limit: self.limit,
             consumed: self.consumed,
         })
+    }
+
+    fn update_due(&self, force: bool) -> bool {
+        force
+            || self.finished
+            || self.consumed - self.reported_consumed >= u64::from((self.window / 8).max(1))
+            || self.limit.saturating_sub(self.received) <= u64::from(self.window / 4)
     }
 }
 
@@ -244,36 +259,68 @@ impl AdaptiveFlow {
         } else {
             // A valid retired id can have DATA in flight before its RST.
             self.receive.consume(len)?;
-            self.refresh_connection()?;
+            self.refresh_connection(true)?;
         }
         Ok(())
     }
 
     pub(crate) fn consume(&mut self, id: u32, len: usize) -> Result<(), InnerError> {
+        self.consume_with_policy(id, len, true).map(|_| ())
+    }
+
+    pub(crate) fn consume_coalesced(&mut self, id: u32, len: usize) -> Result<bool, InnerError> {
+        self.consume_with_policy(id, len, false)
+    }
+
+    fn consume_with_policy(
+        &mut self,
+        id: u32,
+        len: usize,
+        force: bool,
+    ) -> Result<bool, InnerError> {
         let len = u64::try_from(len).map_err(|_| InnerError::WindowOverflow)?;
         let stream = self.streams.get_mut(&id).ok_or(InnerError::StreamReset)?;
         stream.receive.consume(len)?;
+        let previous = stream.receive.window;
         stream.receive.window = stream.receive.desired(self.local.max_stream, self.rtt);
-        self.updates.insert(id, stream.receive.update()?);
+        let stream_update = stream
+            .receive
+            .update_due(force || previous != stream.receive.window);
+        if stream_update {
+            self.updates.insert(id, stream.receive.update()?);
+        }
         self.receive.consume(len)?;
-        self.refresh_connection()
+        Ok(self.refresh_connection(force)? || stream_update)
     }
 
-    fn refresh_connection(&mut self) -> Result<(), InnerError> {
+    pub(crate) fn finish_received(&mut self, id: u32) -> Result<(), InnerError> {
+        let stream = self.streams.get_mut(&id).ok_or(InnerError::StreamReset)?;
+        stream.receive.finished = true;
+        self.updates.insert(id, stream.receive.update()?);
+        self.refresh_connection(true).map(|_| ())
+    }
+
+    fn refresh_connection(&mut self, force: bool) -> Result<bool, InnerError> {
+        let previous = self.receive.window;
         let desired = self.receive.desired(self.local.max_connection, self.rtt);
         if desired > self.receive.window && self.lease.grow_to(desired as usize) {
             self.receive.window = desired;
             self.expansions += 1;
         }
-        self.updates.insert(0, self.receive.update()?);
-        Ok(())
+        let update = self
+            .receive
+            .update_due(force || previous != self.receive.window);
+        if update {
+            self.updates.insert(0, self.receive.update()?);
+        }
+        Ok(update)
     }
 
     pub(crate) fn retire(&mut self, id: u32) -> Result<(), InnerError> {
         if let Some(stream) = self.streams.remove(&id) {
             self.receive
                 .consume(stream.receive.received - stream.receive.consumed)?;
-            self.refresh_connection()?;
+            self.refresh_connection(true)?;
         }
         Ok(())
     }
@@ -386,6 +433,49 @@ impl AdaptiveFlow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coalesced_consumption_preserves_low_credit_fin_and_reset_settlement() {
+        let limits = FlowSettings {
+            stream: 1024,
+            connection: 4096,
+            max_stream: 1024,
+            max_connection: 4096,
+        };
+        let pool = crate::budget::BudgetPool::new(8192, 8192).unwrap();
+        let mut flow = AdaptiveFlow::new(limits, pool.reserve(0, 4096).unwrap()).unwrap();
+        flow.handle(&MuxFrame::new(MuxCommand::Settings, 0, limits.encode().unwrap()).unwrap())
+            .unwrap();
+        flow.register(1);
+        flow.received(1, 64).unwrap();
+        assert!(!flow.consume_coalesced(1, 64).unwrap());
+        assert!(flow.updates.is_empty());
+        flow.received(1, 64).unwrap();
+        assert!(flow.consume_coalesced(1, 64).unwrap());
+        assert_eq!(flow.updates[&1].consumed, 128);
+        assert!(!flow.updates.contains_key(&0));
+        flow.updates.clear();
+        flow.finish_received(1).unwrap();
+        assert_eq!(
+            flow.updates[&1].consumed, 128,
+            "FIN forces final consumption even with spare credit"
+        );
+        assert_eq!(flow.updates[&0].consumed, 128);
+        flow.updates.clear();
+        flow.register(3);
+        flow.received(3, 960).unwrap();
+        assert!(
+            flow.consume_coalesced(3, 16).unwrap(),
+            "nearly exhausted credit is replenished immediately"
+        );
+        assert_eq!(flow.updates[&3].consumed, 16);
+        flow.retire(3).unwrap();
+        assert_eq!(flow.updates[&0].consumed, 1088);
+        assert_eq!(flow.snapshot().buffered_receive, 0);
+        assert!(flow.finish_received(99).is_err());
+        drop(flow);
+        assert_eq!(pool.committed(), 0);
+    }
     use crate::budget::BudgetPool;
 
     fn flow() -> (AdaptiveFlow, BudgetPool) {

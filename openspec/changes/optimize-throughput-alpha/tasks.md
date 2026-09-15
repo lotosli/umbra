@@ -21,9 +21,9 @@
 
 ## 5. Mux scheduling and startup
 
-- [ ] 5.1 Introduce deduplicated dirty/blocked/participant scheduling and coalesced credit; test idle-stream scaling, round-robin progress, zero-credit wakeup, cancellation and FIN/RST/flush settlement.
-- [ ] 5.2 Tune funded mux startup within configured maxima; compare startup/warmed transfers and mixed-client fairness with exact bytes and retained commitments.
-- [ ] 5.3 Reduce connection-pool establishment lock scope with explicit pending reservations; verify concurrent deduplication, capacity including pending opens, failure/cancellation and shutdown.
+- [x] 5.1 Introduce deduplicated dirty/blocked/participant scheduling and coalesced credit; test idle-stream scaling, round-robin progress, zero-credit wakeup, cancellation and FIN/RST/flush settlement.
+- [x] 5.2 Tune funded mux startup within configured maxima; compare startup/warmed transfers and mixed-client fairness with exact bytes and retained commitments.
+- [x] 5.3 Reduce connection-pool establishment lock scope with explicit pending reservations; verify concurrent deduplication, capacity including pending opens, failure/cancellation and shutdown.
 
 ## 6. TLS and Vision data path
 

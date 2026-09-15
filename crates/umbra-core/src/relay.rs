@@ -39,10 +39,7 @@ where
     L: AsyncRead + AsyncWrite + Unpin,
     R: AsyncRead + AsyncWrite + Unpin,
 {
-    let clock = ProgressClock {
-        started: std::time::Instant::now(),
-        latest: std::sync::atomic::AtomicU64::new(0),
-    };
+    let clock = ProgressClock::new();
     let mut left = ProgressIo {
         inner: left,
         clock: &clock,
@@ -89,22 +86,33 @@ async fn copy_direction<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     }
 }
 
-struct ProgressClock {
+pub(crate) struct ProgressClock {
     started: std::time::Instant,
     latest: std::sync::atomic::AtomicU64,
 }
 
 impl ProgressClock {
+    pub(crate) fn new() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            latest: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) fn track<'a, IO>(&'a self, inner: &'a mut IO) -> ProgressIo<'a, IO> {
+        ProgressIo { inner, clock: self }
+    }
+
     fn elapsed(&self) -> u64 {
         u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX)
     }
 
-    fn advance(&self) {
+    pub(crate) fn advance(&self) {
         self.latest
             .store(self.elapsed(), std::sync::atomic::Ordering::Relaxed);
     }
 
-    async fn expired(&self, idle: std::time::Duration) {
+    pub(crate) async fn expired(&self, idle: std::time::Duration) {
         let maximum = u64::try_from(idle.as_nanos()).unwrap_or(u64::MAX);
         let mut remaining = maximum;
         loop {
@@ -120,7 +128,7 @@ impl ProgressClock {
     }
 }
 
-struct ProgressIo<'a, IO> {
+pub(crate) struct ProgressIo<'a, IO> {
     inner: &'a mut IO,
     clock: &'a ProgressClock,
 }

@@ -821,9 +821,9 @@ struct Driver<IO> {
     credit_waits: u64,
 }
 
-struct Progress {
-    flushed: bool,
-    event: Option<MuxEvent>,
+pub(crate) struct Progress {
+    pub(crate) flushed: bool,
+    pub(crate) event: Option<MuxEvent>,
 }
 
 impl<IO> Driver<IO>
@@ -1177,6 +1177,18 @@ fn poll_session<IO>(
 where
     IO: AsyncRead + AsyncWrite + Unpin,
 {
+    poll_session_with_input(session, need_flush, true, cx)
+}
+
+pub(crate) fn poll_session_with_input<IO>(
+    session: &mut MuxSession<IO>,
+    need_flush: bool,
+    read_allowed: bool,
+    cx: &mut Context<'_>,
+) -> Poll<Result<Progress, InnerError>>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
     let flushed = if need_flush {
         match pin!(session.flush_pending()).poll(cx) {
             Poll::Ready(result) => {
@@ -1190,7 +1202,12 @@ where
     };
     // Always poll input, even when output is blocked or a flush just completed.
     // Both futures retain partial offsets inside MuxSession when dropped here.
-    match pin!(session.receive_next()).poll(cx) {
+    let input = if read_allowed {
+        pin!(session.receive_next()).poll(cx)
+    } else {
+        Poll::Pending
+    };
+    match input {
         Poll::Ready(event) => Poll::Ready(Ok(Progress {
             flushed,
             event: Some(event?),

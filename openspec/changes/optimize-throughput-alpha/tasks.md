@@ -10,14 +10,14 @@
 
 ## 3. Native QUIC throughput
 
-- [ ] 3.1 Apply explicit stream/send/aggregate policies to both endpoints with budget ownership; test config bounds, serialized parameters and real transfer; compare changed fields to raw Chrome capture evidence.
-- [ ] 3.2 Correct consumption-rate growth under delayed sampling; test low RTT at 50ms ticks, idle/slow consumption, budget refusal and last-owner release.
-- [ ] 3.3 Implement bounded shared receive batches, byte ceilings, physical batching and anonymous saturation counters; test >16-datagram bursts, metadata/order, saturation isolation and release; measure ingress overhead.
+- [x] 3.1 Apply explicit stream/send/aggregate policies to both endpoints with budget ownership; test config bounds, serialized parameters and real transfer; compare changed fields to raw Chrome capture evidence.
+- [x] 3.2 Correct consumption-rate growth under delayed sampling; test low RTT at 50ms ticks, idle/slow consumption, budget refusal and last-owner release.
+- [x] 3.3 Implement bounded shared receive batches, byte ceilings, physical batching and anonymous saturation counters; test >16-datagram bursts, metadata/order, saturation isolation and release; measure ingress overhead.
 
 ## 4. Independent UDP and connection ownership
 
-- [ ] 4.1 Separate pending output/target setup from UDP association receive/control/idle progress over TCP and QUIC; test reverse progress under blocked writes, slow setup, cancellation and exact partial envelope resumption.
-- [ ] 4.2 Share client QUIC endpoints across associations while preserving connection ownership; test sibling closure, reuse, failed establishment and complete runtime shutdown.
+- [x] 4.1 Separate pending output/target setup from UDP association receive/control/idle progress over TCP and QUIC; test reverse progress under blocked writes, slow setup, cancellation and exact partial envelope resumption.
+- [x] 4.2 Share client QUIC endpoints across associations while preserving connection ownership; test sibling closure, reuse, failed establishment and complete runtime shutdown.
 
 ## 5. Mux scheduling and startup
 

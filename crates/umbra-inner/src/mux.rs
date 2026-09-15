@@ -652,12 +652,22 @@ where
         target: &TargetAddr,
         payload: &[u8],
     ) -> Result<(), InnerError> {
+        self.queue_udp_datagram(target, payload)?;
+        self.flush_pending().await
+    }
+
+    /// Queue one stream-zero datagram without suspending input/control progress.
+    /// Successful admission must not be repeated after cancellation of a later flush.
+    pub fn queue_udp_datagram(
+        &mut self,
+        target: &TargetAddr,
+        payload: &[u8],
+    ) -> Result<(), InnerError> {
         let envelope = UdpEnvelope::new(target.clone(), payload.to_vec())?;
         self.queue_frame(
             MuxFrame::new(MuxCommand::UdpDatagram, 0, envelope.encode()?)?,
             true,
-        )?;
-        self.flush_pending().await
+        )
     }
 
     /// Receive the next event exactly once, draining retained events first.

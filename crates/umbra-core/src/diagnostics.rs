@@ -37,6 +37,8 @@ pub struct IoSnapshot {
 /// Last sampled flow-control state; absent fields are unavailable, not zero.
 #[derive(Debug, Clone, Default)]
 pub struct CreditSnapshot {
+    /// QUIC retained ingress storage and saturation observations, when available.
+    pub quic_ingress: Option<IngressSnapshot>,
     /// Funded aggregate receive window in bytes.
     pub receive_window: u64,
     /// DATA received but not consumed, when available.
@@ -55,6 +57,19 @@ pub struct CreditSnapshot {
     pub quic_blocked_rx: Option<u64>,
     /// Measured or bootstrap round-trip observation.
     pub rtt: Option<Duration>,
+}
+
+/// Anonymous QUIC input-queue memory and refusal observations.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub struct IngressSnapshot {
+    /// Allocated batch storage retained by queues or packet views.
+    pub retained_bytes: usize,
+    /// Largest observed retained allocation total.
+    pub peak_bytes: usize,
+    /// Datagrams refused because byte or batch capacity was full.
+    pub dropped_datagrams: u64,
+    /// Payload bytes in refused datagrams.
+    pub dropped_bytes: u64,
 }
 
 /// Snapshot of one observed outer; no target, peer, credential or session bytes.

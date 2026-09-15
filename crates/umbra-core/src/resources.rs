@@ -47,6 +47,10 @@ pub struct PerformanceCfg {
     pub group_memory_mib: usize,
     /// Largest adaptive mux or native QUIC aggregate receive window, in MiB.
     pub max_window_mib: u32,
+    /// Native QUIC per-stream receive window, in MiB (1–64).
+    pub quic_stream_window_mib: u32,
+    /// Maximum native QUIC retained send storage, in MiB (1–64).
+    pub quic_send_window_mib: u32,
     /// Enable client opt-in to adaptive flow control for new TCP CONNECT mux sessions.
     pub adaptive_mux: bool,
     /// Anonymous pipeline diagnostic reporting interval; zero disables collection.
@@ -60,6 +64,8 @@ impl Default for PerformanceCfg {
             memory_mib: 512,
             group_memory_mib: 256,
             max_window_mib: 64,
+            quic_stream_window_mib: 6,
+            quic_send_window_mib: 32,
             adaptive_mux: true,
             diagnostics_interval_secs: 0,
         }
@@ -73,6 +79,8 @@ impl PerformanceCfg {
             || self.group_memory_mib < 16
             || self.group_memory_mib > self.memory_mib
             || !(1..=64).contains(&self.max_window_mib)
+            || !(1..=64).contains(&self.quic_stream_window_mib)
+            || !(1..=64).contains(&self.quic_send_window_mib)
             || self.diagnostics_interval_secs > 3600
         {
             return Err(CoreError::InvalidConfig(
@@ -89,6 +97,37 @@ impl PerformanceCfg {
             max_stream: maximum.min(32 * 1024 * 1024),
             ..FlowSettings::default()
         }
+    }
+
+    pub(crate) fn quic_windows(self) -> QuicWindows {
+        let maximum = self.max_window_mib * 1024 * 1024;
+        // The public defaults match the captured Chrome 153 flow-control fields.
+        // Smaller group budgets clip commitments, rather than over-admit owners.
+        let group_bytes = self.group_memory_mib * 1024 * 1024;
+        QuicWindows {
+            stream: (self.quic_stream_window_mib * 1024 * 1024).min(maximum),
+            receive: maximum
+                .min(15 * 1024 * 1024)
+                .min(u32::try_from(group_bytes / 8).unwrap_or(u32::MAX)),
+            send: (u64::from(self.quic_send_window_mib) * 1024 * 1024)
+                .min(u64::try_from(group_bytes / 4).unwrap_or(u64::MAX)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct QuicWindows {
+    pub(crate) stream: u32,
+    pub(crate) receive: u32,
+    pub(crate) send: u64,
+}
+
+impl QuicWindows {
+    pub(crate) fn configure(self, transport: &mut quinn::TransportConfig) {
+        transport
+            .stream_receive_window(self.stream.into())
+            .receive_window(self.receive.into())
+            .send_window(self.send);
     }
 }
 
@@ -251,6 +290,7 @@ mod tests {
             max_window_mib: 1,
             adaptive_mux: true,
             diagnostics_interval_secs: 0,
+            ..PerformanceCfg::default()
         })
         .unwrap();
         assert_eq!(resources.config.flow().max_connection, 1024 * 1024);
@@ -261,5 +301,42 @@ mod tests {
         drop(lease);
         drop(other);
         assert_eq!(resources.pool.committed(), 0);
+    }
+
+    #[test]
+    fn native_window_settings_are_explicit_and_budget_bounded() {
+        let defaults = PerformanceCfg::default();
+        let policy = defaults.quic_windows();
+        assert_eq!(policy.stream, 6 * 1024 * 1024);
+        assert_eq!(policy.receive, 15 * 1024 * 1024);
+        assert_eq!(policy.send, 32 * 1024 * 1024);
+        let custom: PerformanceCfg =
+            toml::from_str("quic_stream_window_mib=32\nquic_send_window_mib=64\nmax_window_mib=32")
+                .unwrap();
+        assert_eq!(
+            custom.validate().unwrap().quic_windows().stream,
+            32 * 1024 * 1024
+        );
+        assert_eq!(custom.quic_windows().send, 64 * 1024 * 1024);
+        for bad in [
+            "quic_stream_window_mib=0",
+            "quic_stream_window_mib=65",
+            "quic_send_window_mib=0",
+            "quic_send_window_mib=65",
+        ] {
+            assert!(toml::from_str::<PerformanceCfg>(bad)
+                .unwrap()
+                .validate()
+                .is_err());
+        }
+        let small = PerformanceCfg {
+            group_memory_mib: 16,
+            max_window_mib: 1,
+            ..defaults
+        }
+        .quic_windows();
+        assert_eq!(small.stream, 1024 * 1024);
+        assert_eq!(small.receive, 1024 * 1024);
+        assert_eq!(small.send, 4 * 1024 * 1024);
     }
 }

@@ -76,3 +76,34 @@ The actual mux driver repeated startup at 100ms RTT/1Gbps: small windows 115.592
 `npx --yes @fission-ai/openspec@latest validate --all --strict` passed all 9 items. An existing informational notice about archiving the separate historical fingerprint-profile change remains; no validation failure occurred. The alpha change also passed strict individual validation.
 
 Five bounded `cargo +nightly fuzz run <target> -- -max_total_time=25 -rss_limit_mb=2048` runs each completed in 26 seconds without a crash: vision_envelope 18,968,232 inputs; aead_open 3,566,174; mux_frame 24,046,672; vision_observer 11,519,463; udp_envelope 10,648,159. The Vision target differentially compares transferred-buffer and borrowed decoding. Both workspace and fuzz lockfiles now use the reviewed cryptography family and internal version 1.0.0-alpha. Existing configuration defaults remain loadable, with optional bounded QUIC window overrides.
+
+## Distribution and paired deployment
+
+The implementation at `2642a6327c77cb764afdc80e2bd80bb53f0690e1` passed the above gates. A separate regular `cargo nextest run --workspace` passed 548 cases, with 11 ignored diagnostics/e2e cases already covered by the full gate. Additional x86_64 macOS execution passed 16 crypto primitive tests, 2 reusable-context tests and the TLS record-buffer all-suite differential test.
+
+`cargo xtask dist` built macOS and Linux for arm64 and x86_64 with Rust 1.96.1 and the checked-in lockfile. Both macOS binaries executed `--version` successfully; the Linux x86_64 binary was version/hash-verified on its deployment host. Linux arm64 is cross-built and inspected, not execution-tested on an arm64 Linux host. Windows requires its workflow runner and is not included in the locally built assets. Final release-source identity is retained in BUILD-INFO.json; post-validation source edits are limited to verification/task documentation.
+
+| Artifact | SHA-256 |
+|---|---|
+| umbra-aarch64-apple-darwin | `69d7af198a9d2911ba7c1f612cda34ffd44352a686617123f7d312fb9fb7d777` |
+| umbra-aarch64-unknown-linux-gnu | `f680e60cf4cafea1863e48cf7d3239b728121c1dec96dd39bbad0283dbb76b61` |
+| umbra-x86_64-apple-darwin | `cb9a0125477e490a95faf45983c731356edf0b2232d4d0b3859a59f5fa60a6ce` |
+| umbra-x86_64-unknown-linux-gnu | `d52551d2eed7a5a0861281e4ad533143fe11fb9760f7e953ea954d9f56e8e617` |
+
+Fresh private backups retain prior executables, server unit/drop-ins, client LaunchAgent and both original configuration files. The server and Mac client were switched to independent `v1.0.0-alpha` directories; running executable digests match the assets. Both configurations remain byte-for-byte unchanged. Main client routing remains TCP Vision plus QUIC UDP; QUIC and Linux TCP congestion control remain BBR, and server pipeline diagnostics remain disabled. Prior 0.0.9 executables are retained for rollback. No credentials, endpoints or private backup paths are included here.
+
+Paired live checks used an isolated server-loopback TLS 1.3 target with a temporary trusted test certificate and a UDP echo target. For each mode, public HTTPS certificate verification passed; all 67,108,864 synthetic payload bytes were individually verified, and 320-byte and empty UDP packets echoed exactly. The main Vision session and temporary TCP mux/native QUIC clients passed. Temporary client processes/listeners exited, and remote synthetic targets/certificates were removed.
+
+| Live mode | 64MiB seconds | Goodput Mbps | UDP carrier |
+|---|---:|---:|---|
+| Main TCP Vision | 91.890 | 5.843 | QUIC |
+| TCP mux | 105.969 | 5.066 | TCP |
+| Native QUIC | 109.006 | 4.925 | QUIC |
+
+These serial WAN samples occurred on the currently deployed path and are not a controlled old/new comparison. An in-transfer server sample showed approximately 1% of one CPU core and 10.18MiB RSS; that single sample is not peak resource usage. Earlier measurements near 26Mbps were collected at a different time and cannot establish an upgrade gain or regression.
+
+The fresh branch [GitHub CI run](https://github.com/lotosli/umbra/actions/runs/34938587992) could not start: every job had zero steps, and the check annotation reported failed account payments or a spending-limit restriction. Local gates passed; remote CI did not run, and no protected branch was merged or old release tag rewritten.
+
+The adjacent SSH control was length-sensitive and unstable: a separately verified 32MiB transfer took 32.432s (8.277Mbps, including SSH setup/helper buffering), while the subsequent equal-length 64MiB attempt did not finish within 180 seconds and was terminated. No throughput was calculated for that incomplete attempt. Thus these WAN observations neither isolate the limiting component nor prove an upgrade speedup/regression. The local CPU/queue/record diagnostics are the reproducible evidence for the implemented data-path improvements.
+
+Final paired state verification confirmed active 1.0.0-alpha processes with the expected hashes, unchanged original configurations, two completed Vision splices with frozen outer TLS counters, zero TLS bridge errors in the new server process log, disabled diagnostics, BBR selections, valid previous-release backups and no remaining synthetic targets. Rollback scripts and private receipts remain outside git.

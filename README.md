@@ -60,6 +60,19 @@ The protocol target is documented in [`docs/protocol-design.md`](docs/protocol-d
 | `xtask` | Development, CI, coverage, fingerprint, and dist tasks |
 | `openspec` | Specification-driven development changes and accepted specs |
 | `.github/workflows` | CI and tag-based release builds |
+| `apps/web` | React / TanStack Start website and Fumadocs, deployed independently to Cloudflare Workers |
+| `docs/site` | Reviewed public documentation in seven languages |
+
+## Website development
+
+The repository combines a Cargo workspace with a private pnpm workspace. Use Node 24.18.1 and pnpm 9.11.0 for the website; Rust development does not require Node.
+
+```bash
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+The local website is served at `http://127.0.0.1:3000`. Run `pnpm build`, `pnpm check`, `pnpm test` and `pnpm test:e2e` before publishing. Public pages and documentation use seven language directories on the planned canonical origin `https://umbra.cat`. Deployment is manually triggered and does not change the Rust release workflow. See [website development and deployment](docs/website-development.md).
 
 ## Quick Start
 

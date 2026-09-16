@@ -1,0 +1,90 @@
+---
+id: "concepts/transports"
+title: "如何选择 TCP、Vision 与 QUIC"
+description: "按网络条件与应用流量选择模式，在一个 SOCKS5 入口中分别承载 TCP 和 UDP。"
+section: "concepts"
+order: 12
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "docs/performance.md"]
+translation: "complete"
+---
+
+## 概览
+
+先区分两个问题：应用发的是 TCP 还是 UDP？Umbra 用 TCP 还是 QUIC 把它送到服务器？应用类型与外层传输不是一回事。`transport` 选择主要外层传输；`udp_transport` 可单独选择 UDP 请求的传输，省略时继承 `transport`。
+
+## 按需求选择
+
+| 需求或网络条件 | 起点 | 需要注意 |
+| --- | --- | --- |
+| 先连通，或 UDP 被网络过滤 | `transport = "tcp"` | 服务端开放 TCP 端口；默认启用 mux |
+| 多个并发 TCP 请求，希望复用已有连接 | TCP + `mux = true` | 共用外层 TCP，丢包仍可能影响其他流 |
+| 以 HTTPS 为主，希望减少符合条件流量的重复加密 | TCP + `mux = false` | 使用独立 Vision 连接；并非所有 TLS 都能拼接 |
+| TCP 经常受到 RST 重置，且 UDP 可达 | `transport = "quic"` | 两端必须可用 QUIC；UDP 同样可能被限速或封锁 |
+| TCP 保持 Vision，UDP 独立走 QUIC | TCP + `udp_transport = "quic"` + `mux = false` | 同一服务端开启 TCP 与 UDP 监听 |
+
+没有对所有网络都最快的模式。先验证可达性，再比较你实际应用的延迟、稳定性和吞吐量；不要同时改动多项参数。上述选择不会自动探测网络并切换传输。
+
+## TCP 多路复用
+
+```toml
+transport = "tcp"
+mux = true
+```
+
+多个请求共享加密的外层连接，减少反复建连的需求。当前版本会按实际流量消耗与往返时间调整窗口，同时受内存预算约束。它适合尝试承载并发请求，但不会消除 TCP 的传输层队头阻塞。
+
+自适应 mux 需要两端版本兼容；升级到 1.0.0-alpha 时请同步更新客户端与服务端。资源参数见[配置参考](/zh-hans/docs/reference/configuration/)。
+
+## 独立 TCP / Vision
+
+```toml
+transport = "tcp"
+mux = false
+```
+
+对符合条件的内层 TLS 1.3 流量，认证边界协商后可转发原本已经加密的 TLS 记录，不再继续外层 TLS 加密与额外封装。非 TLS 或不支持的 TLS 仍保留加密，不会因为开启 Vision 而裸传应用明文。
+
+Vision 使用用户态 I/O，不是内核零拷贝。减少重复处理是机制上的优势，不是已经测得的竞品速度优势。请继续使用应用层 HTTPS。
+
+## QUIC
+
+```toml
+transport = "quic"
+```
+
+QUIC 在 UDP 上运行，可以避开 TCP RST 注入，以及不同 QUIC 流之间由传输层重传造成的队头阻塞；同一可靠流仍需按序交付，所有流也共享路径容量与拥塞控制。服务端需要启用 `udp_listen`、开放 UDP 防火墙端口，并能访问配置的真实 QUIC 回落站点。
+
+当前默认使用 Quinn BBR，另可选择 `cubic` 或 `new-reno`。这些是 QUIC 的设置，不改变 Linux TCP 拥塞控制。若网络限制 UDP，QUIC 并不是 TCP 的可靠替代品。
+
+### TCP / Vision + QUIC UDP
+
+在已有完整客户端配置中加入：
+
+```toml
+transport = "tcp"
+udp_transport = "quic"
+mux = false
+socks_listen = "127.0.0.1:1080"
+```
+
+同一个服务端同时配置：
+
+```toml
+listen = "0.0.0.0:443"
+udp_listen = "0.0.0.0:443"
+```
+
+以上是需要合并到完整配置的片段，不替代密钥、真实目标站点或其他必填字段。一个客户端、一个服务端、一个本地 SOCKS5 入口即可承载这两条路径。Clash 类客户端中的 `udp: true` 只是允许 UDP 请求，不会把普通 TCP 强制改走 QUIC。
+
+## 填充与 TCP 写入策略
+
+默认填充会在连接早期增加随机长度的数据，之后降低频率，用于干扰直接按记录长度识别内层握手的方式。它会消耗额外带宽，不承诺消除所有流量特征。通常保留 `padding_scheme = "default"`，有明确测试依据再调整。
+
+`tcp_evasion = "segment"` 只把 ClientHello 拆成有序应用写入，不保证操作系统最终发送的 TCP 包边界。遇到兼容性问题可测试 `off`；当前不支持 Geneva DSL，不应将其作为可用功能部署。
+
+## 下一步
+
+- [把应用接到 Umbra](/zh-hans/docs/guides/client/)
+- [完整配置示例](/zh-hans/docs/configuration/examples/)
+- [与主流代理方案的对比](/zh-hans/docs/reference/protocol/)

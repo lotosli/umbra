@@ -1,0 +1,36 @@
+---
+id: "contributing"
+title: "參與貢獻"
+description: "透過規格、評審和有效測試參與專案。"
+section: "contributing"
+order: 18
+version: "1.0.0-alpha"
+source: ["CONTRIBUTING.md", "README.md", "LICENSE"]
+translation: "complete"
+---
+
+## 概覽
+
+Umbra 使用規格驅動開發。實現能力前，先提出 OpenSpec 變更並完成人工需求評審與批准，再按任務清單實現，併為場景建立測試。Rust 程式碼、公共 API 和協議行為仍受根目錄 AGENTS.md 與貢獻規則約束。文件修改也應核對事實來源，避免把規劃寫成既成能力。
+
+## 詳細說明
+
+按改動範圍執行格式化、嚴格 lint、測試、依賴檢查與覆蓋率閘門。行覆蓋率必須保持至少 90%，不能降低閾值或用無實質斷言的測試湊數。網路解析需要邊界和錯誤路徑測試；密碼學與指紋改動需要相應向量和真實取樣依據。依賴集中在 workspace catalog，並保持 crate 單向依賴。
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
+cargo deny check
+cargo xtask coverage
+npx --yes @fission-ai/openspec@latest validate --all --strict
+```
+
+## 驗證與邊界
+
+網站文件保持穩定 ID、當前公開來源與完整七語翻譯。不要提交真實金鑰、私有基礎設施地址或未公開漏洞詳情。AI 輔助貢獻必須由承擔責任的人類理解、審查和測試；大段生成內容在 PR 或提交 trailer 中披露。採用 Conventional Commits 並遵循倉庫分支與評審規則。專案使用 MIT 許可證，新增包前仍需檢查依賴許可證相容性。
+
+## 下一步
+
+- [架構](/zh-hant/docs/concepts/architecture/)
+- [協議參考](/zh-hant/docs/reference/protocol/)
+- [認識 Umbra](/zh-hant/docs/getting-started/introduction/)

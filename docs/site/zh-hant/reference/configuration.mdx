@@ -1,0 +1,66 @@
+---
+id: "reference/configuration"
+title: "效能與策略參考"
+description: "記憶體預算、自適應 mux、填充和擁塞控制。"
+section: "reference"
+order: 15
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/resources.rs", "README.md", "docs/performance.md", "crates/umbra-transport/src/evasion.rs", "crates/umbra-inner/src/padding.rs", "docs/usage.md"]
+translation: "complete"
+---
+
+## 概覽
+
+用戶端和伺服器端都接受可選 performance 表。預設值表示有界的邏輯資源承諾，不是啟動時一次性分配的全部記憶體。應為作業系統、核心緩衝、分配器及握手保留空間。共享同一憑據的連線共享組預算，不會自動變成獨立使用者賬戶，也不保證每個人獲得相同頻寬。
+
+## 詳細說明
+
+memory_mib 範圍為 16–16384 MiB，group_memory_mib 至少 16 MiB 且不超過程序預算。視窗欄位接受 1–64 MiB，實際 QUIC 視窗和傳送儲存還會受預算裁剪。adaptive_mux 控制用戶端新的 TCP CONNECT mux 會話，mux=false 仍然選擇獨立 Vision，不受這個模式開關替代。
+
+### 可選效能設定表
+
+```toml
+[performance]
+memory_mib = 512
+group_memory_mib = 256
+max_window_mib = 64
+quic_stream_window_mib = 6
+quic_send_window_mib = 32
+adaptive_mux = true
+diagnostics_interval_secs = 0
+quic_congestion = "bbr"
+```
+
+| 欄位 | 預設值 / 要求 | 含義 |
+|---|---|---|
+| `memory_mib` | `512` | 程序邏輯記憶體承諾，16–16384 MiB |
+| `group_memory_mib` | `256` | 憑據組上限，至少16 MiB且不超過程序預算 |
+| `max_window_mib` | `64` | 自適應總接收視窗上限，1–64 MiB |
+| `quic_stream_window_mib` | `6` | QUIC 單流接收視窗，1–64 MiB |
+| `quic_send_window_mib` | `32` | QUIC 保留髮送儲存，1–64 MiB |
+| `adaptive_mux` | `true` | 用戶端新 TCP mux 會話的自適應開關 |
+| `diagnostics_interval_secs` | `0` | 伺服器端診斷週期：0關閉，1–3600秒 |
+| `quic_congestion` | `"bbr"` | 傳送 QUIC 演算法：bbr、cubic、new-reno |
+
+
+### 填充與 TCP 寫入
+
+default：每個方向前16次業務寫入的前後各加一個100–1400位元組的隨機 PADDING 幀，之後每32次業務寫入加一個填充幀。none 關閉填充。自定義形式：early=N,min=N,max=N,later=N；early 為初期寫入次數，min/max 為填充位元組範圍，later 為後期週期，0關閉後期填充。min 不得超過 max，max 不得超過65535；開啟初期填充時 max 必須非零。
+
+segment：有序分塊寫入，預設閾值64位元組、首塊32位元組。off：普通寫入。自定義形式：segment:threshold=N,first=M。Geneva 策略會被拒絕。
+
+```toml
+padding_scheme = "default"
+tcp_evasion = "segment"
+```
+
+
+## 驗證與邊界
+
+diagnostics_interval_secs=0 關閉收集與報告，1–3600 表示伺服器端輸出週期秒數。數值觀察區分外層與目標位元組，並省略地址、憑據、SNI 和負載。邏輯承諾不是 RSS，寫入接收不是遠端投遞證明，排程 poll 時間不是 CPU 使用率。quic_congestion 僅改變本端傳送 QUIC 的行為。先使用預設值，以相同負載對比後再調整，不能假定更大的視窗必然更快。
+
+## 下一步
+
+- [傳輸與流量模式](/zh-hant/docs/concepts/transports/)
+- [部署與運維](/zh-hant/docs/guides/deployment/)
+- [故障排查](/zh-hant/docs/troubleshooting/)

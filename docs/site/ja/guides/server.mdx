@@ -1,0 +1,41 @@
+---
+id: "guides/server"
+title: "サーバーの設定"
+description: "実在する接続先を指定し、サーバーを起動します。"
+section: "guides"
+order: 4
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## 概要
+
+サーバーは認証済みの Umbra 接続を受け付け、それ以外を固定された実在サイトへ転送します。サーバーホストから到達できる TLS 1.3 サイトを選び、サイトの識別情報、server_names、クライアントの SNI を整合させてください。例示ドメインは運用先の推奨ではありません。
+
+## 詳細
+
+新しい識別鍵を生成し、server.toml の必須項目を埋めます。秘密鍵と署名用シードを含むため、ファイルの読み取り権限を制限します。listen は数値の TCP ソケットアドレスです。ネイティブ QUIC を使う場合だけ udp_listen を追加します。同じ番号の TCP/UDP ポートを使用できますが、QUIC のフォールバック先にも実際の QUIC/HTTP3 が必要で、TCP HTTPS だけでは不十分です。
+
+### サーバーテンプレート
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+## 確認と制約
+
+最初はフォアグラウンドで起動します。初期検査は必ず行われ、prebuild=false は定期更新だけを無効にします。検査が失敗すると起動しません。バインド先とネットワーク規則を確認してからクライアントを接続します。未認証の TLS 検査で実在サイトの証明書が見えるのは想定どおりです。基本経路を確認してからサービス管理へ移行してください。
+
+## 次のステップ
+
+- [サーバー設定](/ja/docs/configuration/server/)
+- [デプロイと運用](/ja/docs/guides/deployment/)
+- [セキュリティモデル](/ja/docs/concepts/security-model/)

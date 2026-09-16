@@ -1,0 +1,62 @@
+---
+id: "guides/deployment"
+title: "Desplegament i operació"
+description: "Supervisa el servidor i administra els recursos."
+section: "guides"
+order: 6
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "docs/performance.md"]
+translation: "complete"
+---
+
+## Visió general
+
+Valida primer un client i un servidor en primer pla amb la mateixa versió. A Linux, systemd pot supervisar el procés i journald recollir stderr. Utilitza camins absoluts per al binari i server.toml. Restringeix la lectura del fitxer a l’usuari del servei i als administradors. Configura aquest usuari i els permisos per als ports baixos segons el sistema.
+
+## Detalls
+
+Obre el port TCP públic configurat. Obre UDP només si udp_listen està actiu per a QUIC. Si un frontal de capa 4 ocupa el port públic, vincula Umbra al bucle local i configura reenviament transparent TCP/QUIC. Els ports interns no necessiten regles públiques. Un intermediari invers HTTP ordinari no substitueix el reenviament de transport que requereix Umbra.
+
+### Exemple d’unitat de servei
+
+Desa aquesta unitat a `/etc/systemd/system/umbra-server.service`. L’exemple pressuposa que ja existeix l’usuari Linux dedicat `umbra`, que el binari està instal·lat a `/usr/local/bin/umbra` i que aquest usuari pot llegir `/etc/umbra/server.toml`. Crea la identitat i instal·la els fitxers amb les eines d’administració de l’equip abans d’activar la unitat; adapta camins i usuari si el desplegament és diferent.
+
+```ini
+[Unit]
+Description=Umbra Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=umbra
+ExecStart=/usr/local/bin/umbra server -c /etc/umbra/server.toml
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+```
+
+
+### Administrar el servei
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now umbra-server
+sudo journalctl -u umbra-server -f
+```
+
+
+## Verificació i límits
+
+Reserva memòria per al sistema operatiu. El desplegament orientat al rendiment suposa almenys 1 GiB de RAM física; performance.memory_mib limita compromisos lògics, no el RSS del procés. Els diagnòstics estan desactivats inicialment. Activa’ls durant una investigació concreta i no confonguis escriptures acceptades amb lliurament remot. Reinicia deliberadament després de canviar la configuració i conserva un binari anterior verificat per poder tornar enrere.
+
+## Passos següents
+
+- [Rendiment i polítiques](/ca/docs/reference/configuration/)
+- [Resolució de problemes](/ca/docs/troubleshooting/)
+- [Actualitzar Umbra](/ca/docs/guides/upgrade/)

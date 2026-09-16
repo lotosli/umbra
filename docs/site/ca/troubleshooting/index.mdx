@@ -1,0 +1,36 @@
+---
+id: "troubleshooting"
+title: "Resolució de problemes"
+description: "Diagnostica problemes de configuració i connectivitat."
+section: "troubleshooting"
+order: 17
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md"]
+translation: "complete"
+---
+
+## Visió general
+
+Comença per la versió instal·lada, l’etapa que falla i una descripció mínima sense secrets. Reprodueix una petició abans de canviar diversos ajustos. Distingeix una aplicació que omet SOCKS, una fallada client/servidor i una fallada entre el servidor i el lloc de retorn o la destinació d’aplicació: demanen comprovacions diferents.
+
+## Detalls
+
+Si el servidor acaba immediatament, revisa TOML, camps obligatoris, conflictes de port i comprovació inicial. Els errors conserven categoria i posició sense reproduir secrets. En una fallada d’autenticació, compara identitat pública, short ID i server_name per un canal fiable. Sincronitza els rellotges abans d’ampliar max_time_diff. Comprova el port públic TCP i també UDP quan utilitzis QUIC.
+
+### Verificar la connexió
+
+```sh
+umbra --help
+curl --socks5-hostname 127.0.0.1:1080 https://example.com/
+```
+
+
+## Verificació i límits
+
+Veure el certificat real de la destinació és normal en una prova no autenticada. Si només falla UDP, comprova udp_transport, udp_listen, tallafoc i servei QUIC de la destinació. Per al rendiment, fes servir càrrega repetible i diagnòstics opcionals. Un informe útil inclou versió, plataforma, ordre sense secrets i categoria d’error; evita configuracions reals, claus privades, captures amb trànsit d’usuaris i detalls d’infraestructura activa.
+
+## Passos següents
+
+- [Configuració del servidor](/ca/docs/configuration/server/)
+- [Configuració del client](/ca/docs/configuration/client/)
+- [Rendiment i polítiques](/ca/docs/reference/configuration/)

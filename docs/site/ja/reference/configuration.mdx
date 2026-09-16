@@ -1,0 +1,66 @@
+---
+id: "reference/configuration"
+title: "性能とポリシー"
+description: "メモリ予算、適応型 mux、パディング、輻輳制御を設定します。"
+section: "reference"
+order: 15
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/resources.rs", "README.md", "docs/performance.md", "crates/umbra-transport/src/evasion.rs", "crates/umbra-inner/src/padding.rs", "docs/usage.md"]
+translation: "complete"
+---
+
+## 概要
+
+両端は省略可能な performance 表を受け付けます。上限は論理的なメモリ予約で、起動時の全量確保ではありません。OS、カーネルバッファ、アロケーター、ハンドシェイクに余裕を残します。同一の正規化資格情報を使う接続はグループ予算を共有し、利用者ごとの独立アカウントや等しい帯域を保証しません。
+
+## 詳細
+
+memory_mib は 16〜16384 MiB、group_memory_mib は最低16 MiBでプロセス上限以下です。ウィンドウは1〜64 MiBで、実効 QUIC ウィンドウや送信保存量は予算でも制限されます。adaptive_mux は新しいクライアント TCP CONNECT 多重化セッションを制御します。mux=false は引き続き専用 Vision です。
+
+### 任意の性能設定
+
+```toml
+[performance]
+memory_mib = 512
+group_memory_mib = 256
+max_window_mib = 64
+quic_stream_window_mib = 6
+quic_send_window_mib = 32
+adaptive_mux = true
+diagnostics_interval_secs = 0
+quic_congestion = "bbr"
+```
+
+| 項目 | 既定値 / 要件 | 意味 |
+|---|---|---|
+| `memory_mib` | `512` | プロセスの論理メモリ予約。16〜16384 MiB |
+| `group_memory_mib` | `256` | 資格情報グループ上限。16 MiB〜プロセス上限 |
+| `max_window_mib` | `64` | 適応型の合計ウィンドウ上限。1〜64 MiB |
+| `quic_stream_window_mib` | `6` | QUIC ストリーム受信ウィンドウ。1〜64 MiB |
+| `quic_send_window_mib` | `32` | QUIC 送信保存量。1〜64 MiB |
+| `adaptive_mux` | `true` | 新クライアント TCP mux の適応制御 |
+| `diagnostics_interval_secs` | `0` | サーバー診断間隔。0で無効、1〜3600秒 |
+| `quic_congestion` | `"bbr"` | 送信 QUIC の方式。bbr、cubic、new-reno |
+
+
+### パディングと TCP 書き込み
+
+default は方向ごとに最初の16回の業務 write の前後へ、それぞれ100〜1400バイトのランダムな PADDING フレームを加え、その後は32回ごとに1フレームを加えます。none は無効です。指定形式は early=N,min=N,max=N,later=N で、early は初期回数、min/max はバイト範囲、later は後期周期（0で無効）です。min は max 以下、max は65535以下で、初期パディングが有効なら max はゼロにできません。
+
+segment は順序付き write で、既定の閾値64バイト、先頭32バイトです。off は通常の write、指定形式は segment:threshold=N,first=M です。Geneva は拒否されます。
+
+```toml
+padding_scheme = "default"
+tcp_evasion = "segment"
+```
+
+
+## 確認と制約
+
+diagnostics_interval_secs=0 は収集を無効にし、1〜3600はサーバーの秒間隔です。数値は外側通信とターゲットを分け、アドレス、資格情報、SNI、内容を含めません。論理予約は RSS、書き込み受理は遠端配送、poll 時間は CPU 使用率を意味しません。quic_congestion は本端の送信 QUIC だけを変更します。大きなウィンドウを無条件に選ばず、再現可能な負荷で検証してください。
+
+## 次のステップ
+
+- [トランスポートと通信モード](/ja/docs/concepts/transports/)
+- [デプロイと運用](/ja/docs/guides/deployment/)
+- [トラブルシューティング](/ja/docs/troubleshooting/)

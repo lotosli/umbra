@@ -1,0 +1,37 @@
+---
+id: "guides/upgrade"
+title: "升級 Umbra"
+description: "為當前 alpha 版本安排相容的兩端升級。"
+section: "guides"
+order: 7
+version: "1.0.0-alpha"
+source: ["docs/performance.md", "README.md"]
+translation: "complete"
+---
+
+## 概覽
+
+當前原始碼版本為 1.0.0-alpha。升級前閱讀目標釋出說明，記錄用戶端和伺服器端版本，妥善備份設定，並保留已經驗證的舊二進位制。涉及線格式變化時需要按兩端一起升級來安排。網站顯示新版本，不代表遠端機器已經執行該版本，也不應替代實際驗證。
+
+## 詳細說明
+
+0.0.8 修正了 X25519MLKEM768 的金鑰份額和共享秘密順序，舊的反向順序不再支援，因此兩端必須升級。當前 alpha 增加可複用的硬體加速 TLS 密碼上下文、按就緒流排程的 mux、受預算約束的啟動視窗和 QUIC 批次入隊。新 TCP mux 會話預設啟用 adaptive_mux=true，需要升級後的伺服器端；設為 false 可明確選用舊 mux，但不會自動重放業務或降級。
+
+### 可選效能設定表
+
+```toml
+[performance]
+adaptive_mux = true
+quic_congestion = "bbr"
+```
+
+
+## 驗證與邊界
+
+沒有輪換要求時，身份金鑰、short ID 和 SNI 可繼續使用。mux=false 仍選擇獨立 Vision，udp_transport 仍單獨控制 UDP。升級後檢查普通 TCP 請求、已設定的 UDP 和退出重啟行為。比較效能時應保持路徑與負載可比。QUIC 預設 Quinn BBR 與 Linux TCP 擁塞控制相互獨立，不能據此保證吞吐提升。
+
+## 下一步
+
+- [傳輸與流量模式](/zh-hant/docs/concepts/transports/)
+- [效能與策略參考](/zh-hant/docs/reference/configuration/)
+- [故障排查](/zh-hant/docs/troubleshooting/)

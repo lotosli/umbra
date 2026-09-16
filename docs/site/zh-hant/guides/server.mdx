@@ -1,0 +1,41 @@
+---
+id: "guides/server"
+title: "設定伺服器端"
+description: "設定真實目標站點並啟動伺服器端。"
+section: "guides"
+order: 4
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## 概覽
+
+伺服器端接收已認證的 Umbra 連線，並把其他流量轉發到固定的真實目標。目標需要支援 TLS 1.3，且從執行 Umbra 的主機可達。目標身份、允許的 server_names 和用戶端 SNI 應保持一致。本文使用的佔位域名不是部署推薦，也不代表該域名具有可用服務。
+
+## 詳細說明
+
+生成新身份，在 server.toml 中填寫必填欄位，並保護包含私鑰和簽名種子的設定檔案。listen 是 TCP 監聽地址；只有需要原生 QUIC 時才新增 udp_listen。TCP 和 UDP 可以使用相同埠號，但屬於不同協議。QUIC 回落還要求 dest 提供可用的真實 QUIC/HTTP3 服務，僅有 TCP HTTPS 不夠。
+
+### 伺服器端模板
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+## 驗證與邊界
+
+先在前臺啟動伺服器端。啟動時總會探測目標；prebuild=false 只關閉週期重新整理，並不跳過啟動探測。探測失敗會中止啟動。確認監聽地址和網路規則後，再連線匹配的用戶端。未認證 TLS 探測看到目標站點的真實證書屬於預期行為，不能單憑這一現象判斷認證路徑失敗。基礎鏈路驗證成功後，再設定程序管理服務。
+
+## 下一步
+
+- [伺服器端設定](/zh-hant/docs/configuration/server/)
+- [部署與運維](/zh-hant/docs/guides/deployment/)
+- [安全模型](/zh-hant/docs/concepts/security-model/)

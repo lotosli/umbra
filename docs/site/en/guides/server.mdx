@@ -1,0 +1,41 @@
+---
+id: "guides/server"
+title: "Set up a server"
+description: "Configure a real destination and bring the server online."
+section: "guides"
+order: 4
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Overview
+
+The server accepts authenticated Umbra connections and forwards other traffic to a fixed real destination. Choose a destination that supports TLS 1.3 and is reachable from the host running Umbra. Its identity must be coherent with the accepted server_names and client SNI. Placeholder domains in these documents are intentionally not deployment recommendations.
+
+## Details
+
+Generate a fresh identity, fill the required fields in server.toml and protect the file because it contains a private key and signing seed. listen is a TCP socket address. Add udp_listen only when you intend to accept native QUIC; TCP and UDP may use the same numeric port. The destination must also offer a usable real QUIC/HTTP3 service for QUIC fallback: TCP-only HTTPS is insufficient.
+
+### Server template
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+## Verify
+
+Run the server in the foreground first. The startup destination probe always runs; prebuild=false only disables periodic refresh and does not skip this initial requirement. A failed probe stops startup. Confirm bind addresses and network rules, then connect a matching client. Do not interpret a genuine destination certificate seen by an unauthenticated TLS probe as a failure: real-site forwarding is the intended behavior. Move to a managed service after this basic path works.
+
+## Next steps
+
+- [Server configuration](/en/docs/configuration/server/)
+- [Deploy and operate](/en/docs/guides/deployment/)
+- [Security model](/en/docs/concepts/security-model/)

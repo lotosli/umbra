@@ -1,0 +1,66 @@
+---
+id: "reference/configuration"
+title: "性能与策略参考"
+description: "内存预算、自适应 mux、填充和拥塞控制。"
+section: "reference"
+order: 15
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/resources.rs", "README.md", "docs/performance.md", "crates/umbra-transport/src/evasion.rs", "crates/umbra-inner/src/padding.rs", "docs/usage.md"]
+translation: "complete"
+---
+
+## 概览
+
+客户端和服务端都接受可选 performance 表。默认值表示有界的逻辑资源承诺，不是启动时一次性分配的全部内存。应为操作系统、内核缓冲、分配器及握手保留空间。共享同一凭据的连接共享组预算，不会自动变成独立用户账户，也不保证每个人获得相同带宽。
+
+## 详细说明
+
+memory_mib 范围为 16–16384 MiB，group_memory_mib 至少 16 MiB 且不超过进程预算。窗口字段接受 1–64 MiB，实际 QUIC 窗口和发送存储还会受预算裁剪。adaptive_mux 控制客户端新的 TCP CONNECT mux 会话，mux=false 仍然选择独立 Vision，不受这个模式开关替代。
+
+### 可选性能配置表
+
+```toml
+[performance]
+memory_mib = 512
+group_memory_mib = 256
+max_window_mib = 64
+quic_stream_window_mib = 6
+quic_send_window_mib = 32
+adaptive_mux = true
+diagnostics_interval_secs = 0
+quic_congestion = "bbr"
+```
+
+| 字段 | 默认值 / 要求 | 含义 |
+|---|---|---|
+| `memory_mib` | `512` | 进程逻辑内存承诺，16–16384 MiB |
+| `group_memory_mib` | `256` | 凭据组上限，至少16 MiB且不超过进程预算 |
+| `max_window_mib` | `64` | 自适应总接收窗口上限，1–64 MiB |
+| `quic_stream_window_mib` | `6` | QUIC 单流接收窗口，1–64 MiB |
+| `quic_send_window_mib` | `32` | QUIC 保留发送存储，1–64 MiB |
+| `adaptive_mux` | `true` | 客户端新 TCP mux 会话的自适应开关 |
+| `diagnostics_interval_secs` | `0` | 服务端诊断周期：0关闭，1–3600秒 |
+| `quic_congestion` | `"bbr"` | 发送 QUIC 算法：bbr、cubic、new-reno |
+
+
+### 填充与 TCP 写入
+
+default：每个方向前16次业务写入的前后各加一个100–1400字节的随机 PADDING 帧，之后每32次业务写入加一个填充帧。none 关闭填充。自定义形式：early=N,min=N,max=N,later=N；early 为初期写入次数，min/max 为填充字节范围，later 为后期周期，0关闭后期填充。min 不得超过 max，max 不得超过65535；开启初期填充时 max 必须非零。
+
+segment：有序分块写入，默认阈值64字节、首块32字节。off：普通写入。自定义形式：segment:threshold=N,first=M。Geneva 策略会被拒绝。
+
+```toml
+padding_scheme = "default"
+tcp_evasion = "segment"
+```
+
+
+## 验证与边界
+
+diagnostics_interval_secs=0 关闭收集与报告，1–3600 表示服务端输出周期秒数。数值观察区分外层与目标字节，并省略地址、凭据、SNI 和负载。逻辑承诺不是 RSS，写入接收不是远端投递证明，调度 poll 时间不是 CPU 使用率。quic_congestion 仅改变本端发送 QUIC 的行为。先使用默认值，以相同负载对比后再调整，不能假定更大的窗口必然更快。
+
+## 下一步
+
+- [传输与流量模式](/zh-hans/docs/concepts/transports/)
+- [部署与运维](/zh-hans/docs/guides/deployment/)
+- [故障排查](/zh-hans/docs/troubleshooting/)

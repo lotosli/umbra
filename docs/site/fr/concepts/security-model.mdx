@@ -1,0 +1,30 @@
+---
+id: "concepts/security-model"
+title: "Modèle de sécurité"
+description: "Comprendre l’authentification, les secrets et les limites de protection."
+section: "concepts"
+order: 13
+version: "1.0.0-alpha"
+source: ["README.md", "crates/umbra-core/src/socks.rs"]
+translation: "complete"
+---
+
+## Vue d’ensemble
+
+Umbra associe une authentification avant la première réponse et un repli vers un site réel. Les connexions non authentifiées sont transmises à cette destination au lieu d’obtenir une erreur de proxy reconnaissable. Les clients authentifiés vérifient les éléments d’identité attendus. Le cache anti-rejeu est borné en taille et en temps ; il ne constitue pas une défense illimitée contre l’épuisement des ressources.
+
+## Détails
+
+Le code centralise les vérifications en temps constant et l’effacement des secrets. Gardez private_key et mldsa_seed sur le serveur, distribuez la configuration client avec soin et excluez clés, destinations et contenus des rapports publics. SOCKS local n’authentifie pas l’utilisateur : liez-le au bouclage. Les applications doivent continuer à utiliser HTTPS ou leur propre chiffrement authentifié de bout en bout.
+
+[GitHub Security](https://github.com/lotosli/umbra/security)
+
+## Vérification et limites
+
+Un transport privé ne répare pas un terminal compromis et ne fournit pas l’anonymat d’un réseau à plusieurs sauts. Cette alpha ne revendique ni audit indépendant ni équivalence complète avec Chrome actuel. chrome-latest reste basé sur Chrome 150 ; une capture Chrome 153 ne prouve pas la conformité. Consultez les informations de sécurité publiées par le projet avant de signaler un problème sensible, sans divulguer de secrets dans un ticket public.
+
+## Pour continuer
+
+- [Référence du protocole](/fr/docs/reference/protocol/)
+- [Dépannage](/fr/docs/troubleshooting/)
+- [Contribuer](/fr/docs/contributing/)

@@ -1,0 +1,9 @@
+{
+  "title": "ガイド",
+  "pages": [
+    "server",
+    "client",
+    "deployment",
+    "upgrade"
+  ]
+}

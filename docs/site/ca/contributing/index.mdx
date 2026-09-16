@@ -1,0 +1,36 @@
+---
+id: "contributing"
+title: "Contribuir"
+description: "Contribueix amb especificacions, revisions i proves útils."
+section: "contributing"
+order: 18
+version: "1.0.0-alpha"
+source: ["CONTRIBUTING.md", "README.md", "LICENSE"]
+translation: "complete"
+---
+
+## Visió general
+
+Umbra fa servir desenvolupament guiat per especificacions. Proposa un canvi OpenSpec i obtén revisió i aprovació dels requisits abans d’implementar. Completa les tasques amb proves associades als escenaris. El codi Rust, les API públiques i el protocol continuen subjectes a AGENTS.md i a les normes de contribució del repositori.
+
+## Detalls
+
+Executa formatació, lint estricte, proves, revisió de dependències i cobertura segons el canvi. La cobertura de línies ha de continuar com a mínim al 90 %, sense abaixar el llindar ni afegir proves sense assercions útils. Els analitzadors de xarxa necessiten casos límit i d’error; criptografia i empremtes requereixen vectors o evidències de captura. Centralitza dependències i conserva un graf sense cicles.
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
+cargo deny check
+cargo xtask coverage
+npx --yes @fission-ai/openspec@latest validate --all --strict
+```
+
+## Verificació i límits
+
+La documentació manté identificadors estables, fonts públiques actuals i set traduccions completes. Distingeix objectius d’implementació i exclou secrets, infraestructura privada i vulnerabilitats inèdites. Una persona responsable ha d’entendre, revisar i provar les contribucions assistides per IA, declarant generacions importants a la PR o al commit. Segueix Conventional Commits i revisa la compatibilitat de dependències amb la llicència MIT del projecte.
+
+## Passos següents
+
+- [Arquitectura](/ca/docs/concepts/architecture/)
+- [Referència del protocol](/ca/docs/reference/protocol/)
+- [Introducció](/ca/docs/getting-started/introduction/)

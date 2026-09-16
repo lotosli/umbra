@@ -1,0 +1,71 @@
+name: Website checks
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'apps/web/**'
+      - 'docs/**'
+      - 'README*.md'
+      - 'CONTRIBUTING.md'
+      - 'Cargo.toml'
+      - 'crates/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.node-version'
+      - '.github/workflows/web*.yml'
+      - '.github/workflows/dist.yml'
+  pull_request:
+    paths:
+      - 'apps/web/**'
+      - 'docs/**'
+      - 'README*.md'
+      - 'CONTRIBUTING.md'
+      - 'Cargo.toml'
+      - 'crates/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.node-version'
+      - '.github/workflows/web*.yml'
+      - '.github/workflows/dist.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Content, build, types, lint, coverage and browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.1'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @umbra/web run licenses
+      # Building also generates the file router, content metadata and search assets.
+      - run: pnpm build
+      - run: pnpm check
+      - run: pnpm test
+      - run: pnpm --filter @umbra/web exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - name: Save browser and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: website-verification
+          path: |
+            apps/web/coverage
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: ignore
+          retention-days: 14

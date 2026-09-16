@@ -1,0 +1,37 @@
+---
+id: "guides/upgrade"
+title: "Actualizar Umbra"
+description: "Planifica una actualización compatible de ambos extremos."
+section: "guides"
+order: 7
+version: "1.0.0-alpha"
+source: ["docs/performance.md", "README.md"]
+translation: "complete"
+---
+
+## Descripción general
+
+La versión de las fuentes es 1.0.0-alpha. Lee las notas de la publicación elegida antes de sustituir binarios. Registra ambas versiones, guarda una copia protegida de la configuración y conserva un ejecutable funcional. Los cambios en el formato requieren coordinar cliente y servidor; que el sitio publique una versión nueva no prueba que tu instalación remota ya la ejecute.
+
+## Detalles
+
+La versión 0.0.8 corrigió el orden de las partes y del secreto compartido X25519MLKEM768. El orden invertido anterior ya no se admite: actualiza ambos extremos. La alpha añade contextos TLS acelerados reutilizables, planificación mux por flujos listos y recepción QUIC por lotes. Los nuevos clientes habilitan adaptive_mux=true por defecto y necesitan un servidor compatible. false selecciona explícitamente mux antiguo; no se repiten automáticamente los datos de negocio.
+
+### Tabla de rendimiento opcional
+
+```toml
+[performance]
+adaptive_mux = true
+quic_congestion = "bbr"
+```
+
+
+## Verificación y límites
+
+Las claves de identidad, short IDs y SNI pueden conservarse si la publicación no exige rotación. mux=false mantiene Vision y udp_transport continúa independiente. Comprueba TCP, UDP si está configurado, y el cierre y reinicio. Compara rendimiento en rutas equivalentes. BBR de Quinn afecta QUIC de forma separada al control TCP de Linux, sin prometer una mejora de velocidad.
+
+## Siguientes pasos
+
+- [Transportes y modos de tráfico](/es/docs/concepts/transports/)
+- [Rendimiento y políticas](/es/docs/reference/configuration/)
+- [Resolución de problemas](/es/docs/troubleshooting/)

@@ -1,0 +1,49 @@
+---
+id: "getting-started/installation"
+title: "安裝"
+description: "選擇適合平臺的釋出產物，或從 Rust 原始碼構建。"
+section: "getting-started"
+order: 2
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", ".github/workflows/dist.yml"]
+translation: "complete"
+---
+
+## 概覽
+
+釋出工作流面向 macOS、Linux 和 Windows。請按實際執行機器的架構選擇產物。下表列的是構建目標，某個具體預釋出是否提供相應檔案，應以 GitHub Release 的實際附件為準。這裡不會把構建目標冒充已釋出檔案，也不提供未經核驗的校驗和或簽名宣告。
+
+## 詳細說明
+
+從專案的釋出頁面下載。在 macOS 或 Linux 上，給選中的準確檔名新增執行許可權，按需重新命名為 umbra 並放入 PATH 目錄；Windows 使用對應的 .exe 檔案。在執行前閱讀該版本說明，並核對釋出頁面實際提供的校驗資訊。不要把本地系統的下載安全策略當成專案已完成程式碼簽名的證明。
+
+### 釋出下載
+
+[釋出下載](https://github.com/lotosli/umbra/releases)
+
+| 平臺 | 架構 | 構建產物目標 |
+|---|---|---|
+| macOS | Apple Silicon | `umbra-aarch64-apple-darwin` |
+| macOS | Intel | `umbra-x86_64-apple-darwin` |
+| Linux | x86_64 | `umbra-x86_64-unknown-linux-gnu` |
+| Linux | aarch64 | `umbra-aarch64-unknown-linux-gnu` |
+| Windows | x86_64 | `umbra-x86_64-pc-windows-msvc.exe` |
+
+### 原始碼構建
+
+```sh
+git clone https://github.com/lotosli/umbra.git
+cd umbra
+cargo build --release
+./target/release/umbra --help
+```
+
+
+## 驗證與邊界
+
+從原始碼構建時使用倉庫鎖定的 Rust 1.96.1 工具鏈。克隆公開倉庫後執行 cargo build --release，程式位於 target/release。透過 umbra --help 檢查 server、client、keygen 子命令。用戶端與伺服器端使用同一個二進位制檔案。安裝本身不會啟動後臺服務，也不會自動建立監聽器；接著按快速開始生成自己的身份材料。
+
+## 下一步
+
+- [快速開始](/zh-hant/docs/getting-started/quick-start/)
+- [參與貢獻](/zh-hant/docs/contributing/)

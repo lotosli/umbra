@@ -1,0 +1,37 @@
+---
+id: "guides/upgrade"
+title: "Upgrade Umbra"
+description: "Plan compatible upgrades for the current alpha release."
+section: "guides"
+order: 7
+version: "1.0.0-alpha"
+source: ["docs/performance.md", "README.md"]
+translation: "complete"
+---
+
+## Overview
+
+The current source release is 1.0.0-alpha. Treat it as a prerelease and read the selected release notes before replacing binaries. Record the version at both endpoints, keep a protected backup of configuration and retain a known working binary. Upgrades should be planned as a client/server pair when wire behavior changes; a fresh website build is not proof that a remote installation has been upgraded.
+
+## Details
+
+Version 0.0.8 corrected X25519MLKEM768 share and shared-secret ordering. The earlier reversed format is not supported; both endpoints must be upgraded. The alpha introduces accelerated reusable TLS ciphers, ready-stream mux scheduling, funded startup windows and batched QUIC ingress. New TCP mux sessions use adaptive_mux=true by default and need an upgraded server. Setting adaptive_mux=false explicitly selects legacy mux; business payloads are not automatically replayed or downgraded.
+
+### Optional performance table
+
+```toml
+[performance]
+adaptive_mux = true
+quic_congestion = "bbr"
+```
+
+
+## Verify
+
+Existing identity keys, short IDs and SNI can remain when a release does not require their rotation. mux=false keeps dedicated Vision behavior, and udp_transport remains independent. After upgrading, verify a normal TCP request, UDP if configured, and shutdown/restart behavior. Compare performance only under comparable path and workload conditions. QUIC defaults to Quinn BBR, which is separate from Linux TCP congestion control and does not guarantee a throughput increase.
+
+## Next steps
+
+- [Transports and traffic modes](/en/docs/concepts/transports/)
+- [Performance and policy reference](/en/docs/reference/configuration/)
+- [Troubleshooting](/en/docs/troubleshooting/)

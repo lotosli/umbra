@@ -1,0 +1,41 @@
+---
+id: "guides/server"
+title: "Configurar un servidor"
+description: "Configura una destinació real i engega el servidor."
+section: "guides"
+order: 4
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Visió general
+
+El servidor accepta connexions Umbra autenticades i reenvia les altres a una destinació real fixa. El lloc triat ha d’admetre TLS 1.3 i ser accessible des del servidor. La identitat ha de ser coherent amb server_names i amb el SNI del client. Els dominis de mostra són marcadors, no recomanacions concretes de desplegament.
+
+## Detalls
+
+Genera una identitat nova, completa server.toml i protegeix el fitxer perquè conté una clau privada i una llavor de signatura. listen és una adreça TCP numèrica. Afegeix udp_listen només si vols QUIC natiu; TCP i UDP poden fer servir el mateix número de port. El retorn QUIC exigeix un servei real QUIC/HTTP3 a dest: un lloc HTTPS limitat a TCP no és suficient.
+
+### Plantilla del servidor
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+## Verificació i límits
+
+Engega primer en primer pla. La comprovació inicial sempre s’executa; prebuild=false desactiva només l’actualització periòdica. Si la comprovació falla, el servidor no s’inicia. Revisa les adreces i les regles de xarxa abans de connectar un client compatible. Una prova TLS no autenticada que rep el certificat real de la destinació observa el comportament esperat. Configura la supervisió com a servei després de validar aquest recorregut bàsic.
+
+## Passos següents
+
+- [Configuració del servidor](/ca/docs/configuration/server/)
+- [Desplegament i operació](/ca/docs/guides/deployment/)
+- [Model de seguretat](/ca/docs/concepts/security-model/)

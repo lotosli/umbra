@@ -1,0 +1,68 @@
+---
+id: "getting-started/introduction"
+title: "Pourquoi choisir Umbra"
+description: "Découvrez la couverture par un site réel, les chemins TCP et QUIC, l’intégration aux clients existants et les cas où Umbra convient."
+section: "getting-started"
+order: 1
+version: "1.0.0-alpha"
+source: ["README.md", "docs/usage.md", "docs/performance.md"]
+translation: "complete"
+---
+
+## Vue d’ensemble
+
+Umbra est un outil de transport open source dédié à la confidentialité, conçu pour les nœuds que vous hébergez vous-même. Vous exécutez le même binaire dans des modes différents sur le serveur et sur vos appareils ; les applications s’y connectent par un point d’entrée SOCKS5 local. Il réunit la couverture par un site réel, TLS 1.3/TCP et QUIC dans un même ensemble client-serveur, pour vous permettre de choisir le mode de connexion adapté à votre réseau.
+
+Ce n’est pas un service VPN prêt à l’emploi : il ne fournit pas d’abonnements à des nœuds et ne prend pas automatiquement en charge tout le trafic du système après l’installation. Il vous faut un serveur joignable, une configuration aux deux extrémités et des applications ou un client proxy capables d’utiliser SOCKS5. Le projet est destiné à la protection légale de la vie privée et à l’accès à l’internet ouvert.
+
+## Ce qu’Umbra apporte concrètement
+
+### Ne pas exposer directement l’entrée du proxy aux sondages
+
+Le serveur vérifie d’abord l’identité de la connexion. Le trafic qui ne passe pas l’authentification est transmis au véritable site de destination configuré, au lieu de recevoir un refus propre à un proxy. Le déploiement ne se limite donc pas à « chiffrer le trafic » : il prend aussi en compte ce qu’un observateur extérieur voit en se connectant activement. Cela ne garantit pas que l’adresse IP du nœud échappera au blocage, ni que le trafic sera absolument indétectable.
+
+### Une configuration pour TCP et UDP
+
+Un seul client peut faire passer les requêtes TCP par TCP/Vision et les requêtes UDP par QUIC, tout en ne présentant qu’un point d’entrée SOCKS5 aux applications. Une seule instance serveur suffit également, avec des écoutes TCP et UDP activées simultanément. Vous n’avez pas à maintenir deux nœuds proxy locaux pour ces deux types de trafic.
+
+Si le réseau n’autorise pas UDP, commencez par TCP. Si les connexions TCP subissent des réinitialisations et qu’UDP est accessible, vous pouvez essayer QUIC. Il s’agit d’un choix explicite dans la configuration, pas d’un basculement automatique en cas d’échec. La vitesse de QUIC dépend du chemin réseau ; le nom du protocole ne suffit pas à la prédire.
+
+### Choisir les compromis de traitement selon les connexions
+
+Le mode de multiplexage TCP permet à plusieurs requêtes de partager une connexion extérieure, ce qui réduit le besoin d’établir de nouvelles connexions. Pour le trafic TLS 1.3 interne éligible, le mode Vision dédié transmet les enregistrements déjà chiffrés après une négociation authentifiée, afin de réduire le double chiffrement et l’encapsulation supplémentaire ; les autres trafics restent chiffrés.
+
+Ces deux modes font des compromis différents : le multiplexage partage la connexion, mais aussi l’attente causée par les pertes de paquets TCP ; Vision utilise des connexions dédiées. Il n’existe actuellement aucune comparaison de performances avec d’autres proxys dans des conditions identiques : ces mécanismes ne permettent pas d’affirmer qu’Umbra est plus rapide.
+
+### Garder votre client proxy habituel
+
+Les clients de type Clash qui prennent en charge les sorties SOCKS5 peuvent utiliser Umbra local comme nœud, tout en conservant la gestion des règles, du routage par application et de l’interface. Umbra assure le transport vers le serveur distant, sans vous imposer de réorganiser vos règles existantes.
+
+Cela ne signifie pas une compatibilité native avec VLESS, VMess ou Trojan : il faut exécuter un serveur Umbra à l’autre extrémité, et les nœuds de ces protocoles ne peuvent pas être importés directement comme nœuds Umbra. Consultez le guide de [connexion des clients](/fr/docs/guides/client/).
+
+## Dans quels cas l’utiliser
+
+| Votre besoin | Recommandation |
+| --- | --- |
+| Héberger votre propre nœud, privilégier la couverture par un site réel et accepter la ligne de commande | Vous pouvez essayer Umbra, en validant d’abord la connexion d’une seule application |
+| Faire passer TCP et UDP sur QUIC par une même entrée, avec des chemins distincts | Utilisez la configuration de transport mixte dans une seule instance |
+| Conserver les règles et l’interface d’un client de type Clash existant | Reliez-le à Umbra via un nœud SOCKS5 local |
+| Utiliser directement des abonnements VLESS / VMess existants | Gardez votre client compatible ; Umbra n’est pas un module de remplacement de protocole |
+| Disposer d’un client graphique éprouvé, de nœuds prêts à l’emploi ou d’une solution de production auditée | Ne migrez pas vers cette version alpha sur la seule base de sa liste de fonctionnalités |
+
+Pour comprendre les différences, lisez la [comparaison avec Xray, VMess et d’autres solutions](/fr/docs/reference/protocol/). Elle porte sur des combinaisons précises de protocoles, sans établir un classement simpliste des proxys.
+
+## À savoir avant de commencer
+
+- La version actuelle est **1.0.0-alpha**. Évaluez vous-même la stabilité de ce logiciel en préversion ; un code ouvert ne signifie pas qu’un audit de sécurité indépendant a été réalisé.
+- La page d’installation présente les cibles de compilation macOS, Linux et Windows ; les fichiers effectivement téléchargeables dépendent de la version publiée.
+- Le point d’entrée SOCKS5 local n’a pas d’authentification par mot de passe : conservez l’écoute sur l’interface de bouclage `127.0.0.1:1080`.
+- Continuez à utiliser HTTPS au niveau applicatif. Le transport proxy ne procure pas un anonymat complet et ne peut pas protéger un appareil ou un navigateur déjà compromis.
+- `chrome-latest` utilise actuellement un profil historique de Chrome 150 ; les captures de Chrome 153 ne prouvent pas une correspondance complète avec l’empreinte du navigateur.
+- Le code source est sous licence MIT et aucun compte cloud Umbra n’est requis. Le serveur, le réseau et la maintenance quotidienne restent à votre charge.
+
+## Pour continuer
+
+1. [Installer le client et le serveur](/fr/docs/getting-started/installation/).
+2. [Générer les clés et établir la première connexion](/fr/docs/getting-started/quick-start/).
+3. [Connecter des applications ou un client de type Clash](/fr/docs/guides/client/).
+4. [Choisir TCP, Vision ou QUIC](/fr/docs/concepts/transports/) et lire le [modèle de sécurité](/fr/docs/concepts/security-model/).

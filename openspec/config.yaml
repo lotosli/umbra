@@ -5,6 +5,8 @@ context: |
   规范：docs/protocol-design.md（最终技术形态，组件 A–K）；架构：docs/architecture.md；开发约束：AGENTS.md。
   技术栈：Rust（edition 2021，工具链固定 1.96.1），Cargo workspace（crates/*），tokio 异步；
     密码学用 RustCrypto/dalek 系（x25519-dalek/hkdf/sha2/hmac/aes-gcm/chacha20poly1305/ml-kem/ml-dsa）。
+  官网：apps/web 使用独立 pnpm workspace，React 19.2 / TypeScript strict / Vite 8 / TanStack Start 与 Router / Tailwind CSS 4.3 / Fumadocs。
+    docs/site 维护七语公开内容，URL为umbra.cat/{locale}/；Cloudflare Workers SSR，无数据库。pnpm build/check/test/test:e2e独立验证，前端行覆盖率同样>=90%。
   约定：
     - SDD：没有已批准的 openspec 变更就不写实现代码。
     - 依赖一律走根 Cargo.toml 的 [workspace.dependencies] catalog（dep.workspace = true），不在 crate 内写死版本。

@@ -1,0 +1,49 @@
+---
+id: "getting-started/installation"
+title: "Instal·lació"
+description: "Tria una versió per a la teva plataforma o compila el binari Rust."
+section: "getting-started"
+order: 2
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", ".github/workflows/dist.yml"]
+translation: "complete"
+---
+
+## Visió general
+
+El flux de publicació preveu macOS, Linux i Windows. Tria l’arquitectura de l’equip on executaràs Umbra. La taula identifica objectius de compilació; comprova els fitxers adjunts de la versió de GitHub escollida per saber quins existeixen realment. Un objectiu no garanteix que cada versió preliminar contingui aquell fitxer, i aquí no s’inventen signatures ni sumes de verificació.
+
+## Detalls
+
+Baixa el programa des de la pàgina de versions del projecte. A macOS o Linux, dona permís d’execució al fitxer concret i posa’l en un directori del PATH, canviant-li el nom a umbra si cal. A Windows, utilitza el fitxer .exe des d’un terminal. Llegeix les notes i comprova les sumes quan aquella publicació les proporcioni.
+
+### Baixades de versions
+
+[Baixades de versions](https://github.com/lotosli/umbra/releases)
+
+| Plataforma | Arquitectura | Objectiu de compilació |
+|---|---|---|
+| macOS | Apple Silicon | `umbra-aarch64-apple-darwin` |
+| macOS | Intel | `umbra-x86_64-apple-darwin` |
+| Linux | x86_64 | `umbra-x86_64-unknown-linux-gnu` |
+| Linux | aarch64 | `umbra-aarch64-unknown-linux-gnu` |
+| Windows | x86_64 | `umbra-x86_64-pc-windows-msvc.exe` |
+
+### Compilar les fonts
+
+```sh
+git clone https://github.com/lotosli/umbra.git
+cd umbra
+cargo build --release
+./target/release/umbra --help
+```
+
+
+## Verificació i límits
+
+Per compilar, fes servir Rust 1.96.1, fixat pel repositori. Clona el repositori públic i executa cargo build --release; trobaràs el programa a target/release. Comprova que umbra --help mostri server, client i keygen. Tots dos rols utilitzen el mateix binari. Instal·lar-lo no inicia cap servei ni crea escoltes automàticament; continua generant una identitat pròpia amb l’inici ràpid.
+
+## Passos següents
+
+- [Inici ràpid](/ca/docs/getting-started/quick-start/)
+- [Contribuir](/ca/docs/contributing/)

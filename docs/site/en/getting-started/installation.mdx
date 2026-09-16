@@ -1,0 +1,49 @@
+---
+id: "getting-started/installation"
+title: "Installation"
+description: "Choose a release for your platform or build the Rust binary."
+section: "getting-started"
+order: 2
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", ".github/workflows/dist.yml"]
+translation: "complete"
+---
+
+## Overview
+
+The release workflow targets macOS, Linux and Windows. Choose the architecture of the machine that will run Umbra. The table names build targets; availability must be checked on the selected GitHub Release. A target listed here does not promise that every prerelease contains that asset, and this documentation does not invent checksums or signing status.
+
+## Details
+
+Download from the project release page. On macOS or Linux, grant execute permission to the exact downloaded file, rename it to umbra if desired and place it in a directory on PATH. On Windows use the .exe file from a terminal. Check the selected release notes and any checksums provided with that release before running it.
+
+### Release downloads
+
+[Release downloads](https://github.com/lotosli/umbra/releases)
+
+| Platform | Architecture | Artifact target |
+|---|---|---|
+| macOS | Apple Silicon | `umbra-aarch64-apple-darwin` |
+| macOS | Intel | `umbra-x86_64-apple-darwin` |
+| Linux | x86_64 | `umbra-x86_64-unknown-linux-gnu` |
+| Linux | aarch64 | `umbra-aarch64-unknown-linux-gnu` |
+| Windows | x86_64 | `umbra-x86_64-pc-windows-msvc.exe` |
+
+### Source build
+
+```sh
+git clone https://github.com/lotosli/umbra.git
+cd umbra
+cargo build --release
+./target/release/umbra --help
+```
+
+
+## Verify
+
+For a source build, use the repository toolchain pinned to Rust 1.96.1. Clone the public repository and run cargo build --release; the CLI is produced under target/release. Confirm that umbra --help lists server, client and keygen. Both client and server use the same binary. Installation alone does not configure listeners or start a background service; continue with the quick start and generate your own identity.
+
+## Next steps
+
+- [Quick start](/en/docs/getting-started/quick-start/)
+- [Contributing](/en/docs/contributing/)

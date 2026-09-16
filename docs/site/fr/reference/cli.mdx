@@ -1,0 +1,76 @@
+---
+id: "reference/cli"
+title: "Référence CLI"
+description: "Commandes server, client et keygen et leurs options."
+section: "reference"
+order: 14
+version: "1.0.0-alpha"
+source: ["crates/umbra/src/main.rs", "README.md"]
+translation: "complete"
+---
+
+## Vue d’ensemble
+
+La CLI expose trois sous-commandes : server démarre les écouteurs, client lance SOCKS local et keygen produit une identité sur stdout. Consultez umbra --help et l’aide de chaque sous-commande pour connaître votre binaire installé. Une documentation visant une autre version ne remplace pas les options effectivement prises en charge par cette version.
+
+## Détails
+
+Utilisez -c ou --config pour charger TOML. Les valeurs CLI remplacent les champs correspondants ; les options omises conservent le fichier. short IDs et server names acceptent des listes séparées par virgules. Les booléens --mux et --prebuild exigent une valeur explicite. Les paramètres performance restent dans leur table TOML : toutes les options imbriquées ne possèdent pas de drapeau CLI.
+
+### Aide et génération d’identité
+
+```sh
+umbra --help
+umbra server --help
+umbra client --help
+umbra keygen
+```
+
+
+### umbra server
+
+| Commande / option | Rôle |
+|---|---|
+| `-c, --config` | `server.toml` |
+| `--listen` | Adresse numérique d’écoute TCP |
+| `--udp-listen` | Remplacer l’adresse d’écoute QUIC UDP |
+| `--private-key` | Clé privée X25519, base64, exactement 32 octets |
+| `--short-ids` | Liste non vide d’ID hexadécimaux de 0–8 octets |
+| `--dest` | Destination réelle de repli, hôte:port |
+| `--server-names` | Liste non vide de SNI acceptés |
+| `--max-time-diff` | Écart d’horloge autorisé, au moins une seconde |
+| `--mldsa-seed` | Graine ML-DSA, base64, exactement 32 octets |
+| `--prebuild` | Rafraîchissement périodique ; sonde initiale obligatoire |
+| `--padding-scheme` | Politique de remplissage interne |
+| `--tcp-evasion` | Écritures ordonnées du ClientHello |
+
+
+### umbra client
+
+| Commande / option | Rôle |
+|---|---|
+| `-c, --config` | `client.toml` |
+| `--server` | Serveur Umbra, hôte:port |
+| `--transport` | Transport principal : tcp ou quic |
+| `--udp-transport` | Remplacer le transport UDP : tcp ou quic |
+| `--public-key` | Identité publique X25519, 32 octets décodés |
+| `--short-id` | Un short ID accepté par le serveur |
+| `--server-name` | SNI accepté par le serveur |
+| `--fingerprint` | Nom du profil d’empreinte intégré |
+| `--mldsa-verify` | Clé de vérification ML-DSA, base64 non vide |
+| `--socks-listen` | Écoute SOCKS5 locale, sans authentification |
+| `--spider-path` | Chemin du site réel ; commence par /, sans CR/LF |
+| `--mux` | Mux chiffré ; false sélectionne TCP/Vision dédié |
+| `--padding-scheme` | Politique de remplissage interne |
+| `--tcp-evasion` | Écritures ordonnées du ClientHello |
+
+
+## Vérification et limites
+
+keygen n’a pas d’option supplémentaire et imprime x25519_private, x25519_public, mldsa_seed et mldsa_verify en base64. Cette sortie contient des secrets : utilisez un terminal privé et des fichiers protégés. Préférez ces fichiers aux arguments visibles dans l’historique ou la liste des processus. Le tableau recense les options de configuration ; aucune commande de compte cloud, de migration de base de données ou d’installation automatique de service n’est fournie.
+
+## Pour continuer
+
+- [Configuration du serveur](/fr/docs/configuration/server/)
+- [Configuration du client](/fr/docs/configuration/client/)
+- [Performances et politiques](/fr/docs/reference/configuration/)

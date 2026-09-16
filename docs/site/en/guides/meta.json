@@ -1,0 +1,9 @@
+{
+  "title": "Guides",
+  "pages": [
+    "server",
+    "client",
+    "deployment",
+    "upgrade"
+  ]
+}

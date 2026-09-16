@@ -1,0 +1,55 @@
+---
+id: "configuration/server"
+title: "伺服器端設定"
+description: "伺服器端必填欄位、預設值與校驗規則。"
+section: "configuration"
+order: 8
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## 概覽
+
+伺服器端使用 TOML 設定。檔案和命令列合併後必須具備全部必填值，未知欄位及錯誤型別會被拒絕。listen 和 udp_listen 使用數字 IP:port 地址，需要 IPv6 時採用帶方括號的形式；dest 為 host:port。下表覆蓋伺服器端頂層欄位，performance 表單獨在參考章節說明。
+
+## 詳細說明
+
+private_key 和 mldsa_seed 必須分別從 base64 解碼為準確的 32 位元組。真實部署不能使用文件中的佔位字串。short_ids 至少有一個條目；每項是偶數長度的十六進位制字串，編碼零到八位元組，解析器允許空字串。max_time_diff 支援 ms、s、m、h 字尾或不帶字尾的秒數，但最終時長至少是一秒。
+
+### 伺服器端模板
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+| 欄位 | 預設值 / 要求 | 含義 |
+|---|---|---|
+| `listen` | 必填 | TCP 數字監聽地址 |
+| `udp_listen` | `—` | 可選 QUIC UDP 地址；省略即關閉 |
+| `private_key` | 必填 | X25519 私鑰，base64 解碼為準確32位元組 |
+| `short_ids` | 必填 | 非空十六進位制 ID 列表；每項0–8位元組 |
+| `dest` | 必填 | 真實回落目標，host:port |
+| `server_names` | 必填 | 非空的允許 SNI 列表 |
+| `max_time_diff` | 必填 | 允許的時間戳偏差，至少1秒 |
+| `mldsa_seed` | 必填 | ML-DSA 簽名種子，base64 解碼為32位元組 |
+| `prebuild` | `true` | 週期重新整理目標；啟動探測始終執行 |
+| `padding_scheme` | `"default"` | 內層填充策略 |
+| `tcp_evasion` | `"segment"` | ClientHello 有序分塊寫入策略 |
+
+## 驗證與邊界
+
+server_names 不能為空；各項必須透過長度受限、ASCII、無空白的語法校驗。執行時仍需選擇與真實目標一致的有意義 SNI，語法有效不代表目標可用。啟動探測始終執行。命令列使用 --udp-listen 等連字元選項覆蓋檔案，省略的選項保留檔案值。私密欄位建議放在受保護檔案中，避免出現在 shell 歷史或程序引數裡。
+
+## 下一步
+
+- [設定伺服器端](/zh-hant/docs/guides/server/)
+- [效能與策略參考](/zh-hant/docs/reference/configuration/)
+- [CLI 命令參考](/zh-hant/docs/reference/cli/)

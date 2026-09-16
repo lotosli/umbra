@@ -1,0 +1,58 @@
+---
+id: "configuration/client"
+title: "クライアント設定"
+description: "通信方式、識別情報、ローカルプロキシを設定します。"
+section: "configuration"
+order: 9
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## 概要
+
+クライアントの TOML は遠隔識別情報とローカル SOCKS 待ち受けを定義し、CLI との統合後に検証します。transport は必須で tcp または quic です。udp_transport を省略すると統合後の transport を継承し、指定すると UDP だけが変わり TCP CONNECT の経路は維持されます。
+
+## 詳細
+
+public_key は32バイトに復号できる必要があります。mldsa_verify は空でない base64 値で、対応サーバーの keygen から取得します。short_id と server_name は許可された値に一致させます。fingerprint は必須で、組み込み名に chrome-latest と chrome-150-macos があります。現版の chrome-latest は新しい採取記録があっても歴史的 Chrome 150 プロファイルを使用します。
+
+### クライアントテンプレート
+
+```toml
+server = "198.51.100.10:443"
+transport = "tcp"
+public_key = "<X25519_PUBLIC_BASE64>"
+short_id = "<SHORT_ID_HEX>"
+server_name = "cover.example"
+fingerprint = "chrome-latest"
+mldsa_verify = "<MLDSA_VERIFY_BASE64>"
+socks_listen = "127.0.0.1:1080"
+```
+
+
+| 項目 | 既定値 / 要件 | 意味 |
+|---|---|---|
+| `server` | 必須 | Umbra サーバー host:port |
+| `transport` | 必須 | 主要な外側方式。tcp または quic |
+| `udp_transport` | `transport` | UDP 方式。省略時は transport を継承 |
+| `public_key` | 必須 | サーバー X25519 公開鍵。復号後32バイト |
+| `short_id` | 必須 | サーバーが許可する short ID 一つ |
+| `server_name` | 必須 | サーバーが許可する SNI |
+| `fingerprint` | 必須 | 組み込みフィンガープリントの名前 |
+| `mldsa_verify` | 必須 | サーバー ML-DSA 検証鍵。空でない base64 |
+| `socks_listen` | 必須 | 認証なしのローカル SOCKS5 待ち受け |
+| `spider_path` | `"/"` | 実サイトのパス。先頭は /、CR/LF 不可 |
+| `mux` | `true` | 暗号化 mux。false は専用 TCP/Vision |
+| `padding_scheme` | `"default"` | 内部パディング方式 |
+| `tcp_evasion` | `"segment"` | ClientHello の順序付き分割 write |
+
+## 確認と制約
+
+SOCKS は認証しないため、socks_listen はループバックを指定します。mux は既定 true で、false は TCP の専用 Vision を選びます。spider_path は既定 / で、/ から始まり CR や LF を含められません。Umbra 認証セッションが成立しない場合の実サイト動作に使用します。設定の構文が正しくても鍵の一致やネットワーク到達性は別途確認が必要です。
+
+## 次のステップ
+
+- [クライアントの接続](/ja/docs/guides/client/)
+- [性能とポリシー](/ja/docs/reference/configuration/)
+- [CLI リファレンス](/ja/docs/reference/cli/)

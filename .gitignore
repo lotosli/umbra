@@ -39,4 +39,16 @@ client-info.env
 # node (openspec runs via npx; no node_modules expected, but just in case)
 node_modules/
 
+# website generated output
+apps/web/dist/
+apps/web/.wrangler/
+apps/web/.source/
+apps/web/.tanstack/
+apps/web/coverage/
+apps/web/playwright-report/
+apps/web/test-results/
+apps/web/src/routeTree.gen.ts
+apps/web/src/content/*.generated.ts
+apps/web/public/search/
+
 # NOTE: Cargo.lock IS committed (this workspace ships binaries).

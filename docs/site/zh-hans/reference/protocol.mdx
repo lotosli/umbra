@@ -1,0 +1,102 @@
+---
+id: "reference/protocol"
+title: "Umbra 与主流代理方案对比"
+description: "从真实站点掩护、证书维护、TCP/UDP 路径和客户端接入，对比 Xray、VMess、Trojan、Shadowsocks 与 Hysteria 2。"
+section: "reference"
+order: 16
+version: "1.0.0-alpha"
+source: ["README.md", "docs/usage.md", "docs/performance.md", "crates/umbra-core/src/runtime.rs", "crates/umbra-reality/src/prebuild.rs", "crates/umbra-reality/src/cert.rs", "crates/umbra-tls/src/server.rs"]
+translation: "complete"
+---
+
+## 概览
+
+选代理方案，先看它是否适合你的网络、应用和维护方式，而不是算法数量或测试覆盖率。Umbra 的定位是自建隐私传输：把真实站点掩护、TCP/Vision、QUIC 与本地 SOCKS5 入口整合在一套客户端和服务端里。
+
+**比较范围：**  Umbra 1.0.0-alpha；其他项目以 2026-09-16 查阅的官方资料为准。这是功能与部署方式对照，不是速度测试、安全排名或匿名性保证。后续版本和不同客户端可能改变具体行为。
+
+Xray 是支持多协议与路由的代理平台；VMess、VLESS 和 Trojan 是协议。为了可比，下文将 Xray 明确限定为常见的 **VLESS + REALITY + Vision，RAW/TCP 外层**。不能把一种配置的限制说成整个 Xray 的限制。
+
+## 选型速览
+
+| 方案 | 外层连接与站点行为 | 部署维护 | TCP 与 UDP |
+| --- | --- | --- | --- |
+| **Umbra** | REALITY 风格真实站点掩护；未认证连接转发目标站点 | 自建两端、身份密钥与可达真实站点；无需自行申请节点 CA 证书；当前 alpha | TCP/Vision、TCP mux 或 QUIC；一个 SOCKS5 入口可让 TCP 与 UDP 分别选择外层 |
+| **Xray + VLESS + REALITY + Vision** | 借用真实站点身份，Vision 处理适用的内层 TLS 流量 | 维护 Xray 配置、密钥和目标站点；不必为 REALITY 节点自行申请证书 | 此处比较 TCP 外层；也能代理 UDP 请求，受 flow 与客户端配置影响 |
+| **VMess AEAD** | 自身提供加密代理；TLS、WebSocket 等属于另选的传输配置 | VMess 本身不要求网站证书；叠加 TLS 时需配置相应身份验证 | 支持 TCP 和 UDP 请求；实际外层取决于配置 |
+| **Trojan（原始 TLS 方案）** | 真实 TLS 握手；认证失败或非 Trojan 请求可回落到 HTTP 服务 | 常见部署维护域名、TLS 证书和私钥；证书不等于需要付费购买 | TCP 与 UDP 请求均可代理，UDP 封装在 TLS/TCP 中 |
+| **Shadowsocks AEAD / 2022** | 原生加密 TCP/UDP；浏览器 TLS 和真实站点掩护不是基础协议自带能力 | 无需网站域名或 TLS 证书；维护密钥和匹配客户端，插件另行配置 | 原生支持 TCP/UDP；不能把仅转发 TCP 的 SIP003 插件当成 UDP 伪装 |
+| **Hysteria 2** | QUIC/UDP；未认证时具有 HTTP/3 网站行为 | 需要可用 UDP 路径和 TLS 配置，可使用证书文件或 ACME | TCP 使用 QUIC 流，UDP 使用不可靠数据报；不是 TCP 外层方案 |
+
+## 优势与局限
+
+这里的每个方案都有各自适合的场景和代价。下面的清单浓缩了各方案的优势与局限，方便你按自己的网络条件和维护意愿来匹配。
+
+- **Umbra** — 优势：一个入口同时承载两条路径（TCP Vision 与 QUIC UDP），客户端只需配置一个本地 SOCKS5 节点；身份密钥与临时证书绑定免去了公网证书的申请和续期；掩护、传输与 SOCKS5 以一套经过测试的客户端和服务端整体交付。局限：当前为 alpha 且仅有 CLI；不能导入 VLESS、VMess 或 Trojan 节点；版本间的协议变化要求两端同步升级。
+- **Xray + VLESS + REALITY + Vision** — 优势：成熟的多协议平台，路由能力丰富、现成客户端多、社区说明文档完善；REALITY 和 Vision 在这里同样可用。局限：整套栈要自己组装和维护——核心配置、传输层、路由规则和匹配的客户端；共享机制不等于与 Umbra 互通。
+- **VMess AEAD** — 优势：各平台客户端覆盖很广，包括较老和低性能设备。局限：协议负责加密，伪装要另加——掩护完全取决于你叠加的传输层；旧的非 AEAD 模式已废弃，请选用实现 AEAD 的客户端。
+- **Trojan（原始 TLS 方案）** — 优势：真实 TLS 握手，回落行为有文档说明，设计多年稳定。局限：常见部署要维护域名并续期公开可信的证书；UDP 封装在 TLS over TCP 内，UDP 时延跟随 TCP 路径。
+- **Shadowsocks AEAD / 2022** — 优势：组件最少——密钥加匹配客户端即可，无需域名或证书；原生支持 TCP 和 UDP。局限：基础协议提供加密而非伪装，需要掩护时插件要单独评估；不能把仅转发 TCP 的 SIP003 插件当成 UDP 伪装。
+- **Hysteria 2** — 优势：面向有损网络设计的不可靠数据报 UDP 路径，拥塞控制针对恶劣条件调优；未认证时表现为 HTTP/3 网站。局限：UDP 被封锁或受限时失去主要优势；TCP 仍以 QUIC 流承载，丢包同样可能阻塞流，其设计也不保证在你的网络上更快。
+
+## Umbra 值得考虑的地方
+
+### 把两条传输路径放进一个入口
+
+一个 Umbra 客户端可以设置 `transport = "tcp"`、`udp_transport = "quic"`、`mux = false`，让 TCP 使用 Vision、UDP 使用 QUIC；同一个服务端同时开放 TCP 与 UDP。现有客户端只连接一个本地 SOCKS5 节点，不必把两条路径拆成两套 Umbra 进程。
+
+这是配置和使用上的便利，不代表其他平台无法通过不同出站或路由达到相近效果。Umbra 不会自动判断哪条路径最快，也不提供自动 TCP/QUIC 故障切换。
+
+### 减少符合条件流量的重复处理
+
+TCP/Vision 在完成认证边界交换后，可以直接转发符合条件的内层 TLS 1.3 加密记录，省去后续外层 TLS 加密与额外封装。非 TLS 和不支持的 TLS 仍保持加密。TCP mux 则让多个请求共享外层连接，减少重复建连的需求。
+
+REALITY 和 Vision 都不是 Umbra 独有的概念，不能用它们声称全面优于 Xray。这里是用户态转发，不是内核零拷贝；没有统一环境下的竞品基准测试，就不写“更快多少”。
+
+### 不必自行维护节点的公网证书
+
+Umbra 使用身份密钥和临时证书绑定，部署时不要求自己申请或续期公网 CA 证书。你仍要管理服务端秘密、客户端凭证和可访问的真实目标站点。启用 QUIC 时还要满足真实 QUIC 回落与 UDP 可达性要求。
+
+同样，REALITY 组合也能减少这类证书维护，Shadowsocks 原生部署也不依赖网站证书。这是一种部署取舍，不是 Umbra 独占的优势。
+
+## 按现有方案判断是否迁移
+
+- **已经使用 Xray / VLESS / REALITY：** 若依赖多协议、复杂路由与现有客户端生态，不必只为同类掩护机制迁移。选择 Umbra 的理由应是它的单实例双传输方式适合你的使用，而不是“REALITY 更高级”。
+- **已经使用 VMess：** 先确认实际是何种 TLS、WebSocket 或其他承载。不能仅凭 VMess 名称推断明文、缺少伪装或无法传输 UDP。Umbra 不能直接导入 VMess 节点。
+- **希望维护标准 TLS 服务：** Trojan 的真实 TLS 和回落有明确部署方式；不要把它描述成没有探测抵抗。它与 Umbra 的区别包括证书维护和 UDP 承载路径。
+- **只需要轻量加密代理：** Shadowsocks 可能更贴近需求。AEAD 与 2022 应按版本讨论，2022 包含完整重放保护；插件能力不等于基础协议能力。
+- **主要考虑 QUIC 与有损网络：** 可以同时评估 Hysteria 2。它的 UDP 使用不可靠数据报，Umbra 当前把 UDP 关联数据封装在可靠 QUIC 流内；丢包时同一流仍可能等待重传，不能宣传“所有 UDP 都没有队头阻塞”。是否更适合游戏、通话或下载，需要实际路径测试。
+- **需要成熟图形界面、移动端或现成订阅：** 先确认具体客户端与版本。Umbra 当前是 CLI 传输工具，可接入支持 SOCKS5 的规则客户端，但不自带这些生态能力。
+
+## 已实现的连接流程
+
+1. **建立外层握手。** TCP 客户端自行构造 TLS 1.3 ClientHello 与记录；原生 QUIC 使用 Quinn。认证材料与 ClientHello 绑定，放入 `legacy_session_id`。
+2. **判断连接身份。** 服务端在选择认证传输路径前检查材料；未认证连接走配置的真实目标。客户端验证临时证书的绑定信息，避免把普通真实站点当成 Umbra 服务端。
+3. **传输应用请求。** 认证后的连接根据模式承载地址、流与填充；Vision 只在满足条件并完成协商后切换转发方式。
+
+真实站点回落不保证永远不可识别。目标站点故障、网络条件、超时及观察者能力都会影响实际表现，服务器 IP 也可能被直接封锁。
+
+## 浏览器指纹与后量子边界
+
+- `chrome-latest` 仍使用历史 Chrome 150 档案。扩展顺序、GREASE、JA3/JA4 检查和 Chrome 153 实际采样，均不能单独证明与当前浏览器完整等价。
+- ML-DSA-65 用于临时证书公钥的签名绑定，不意味着所有认证环节都变成后量子认证。
+- 代码具有 X25519 + ML-KEM-768 混合交换路径，但只有实际协商混合组时才使用该共享秘密。当前标准 CLI 的目标探测使用不支持 ML-KEM 的 ring 提供者，服务端跟随探测组，因此不能宣称默认连接已经启用混合后量子交换。
+- 当前 Xray REALITY 官方配置也包含可选 ML-DSA，以及与目标站点协商组相关的混合交换支持。不能将后量子能力宣传为 Umbra 独有。
+- 当前 Umbra 不支持 Geneva DSL 发送、0-RTT 或回落预连接；协议设计中的规划不等于现有产品能力。
+
+## 官方对比依据
+
+下列链接为本页其他方案的依据，查阅于 **2026-09-16**。Umbra 的依据为本页元数据所列的 README、使用指南、性能说明和运行代码。
+
+- Xray：[REALITY 官方示例（固定修订）](https://github.com/XTLS/REALITY/blob/431b6ff8c67cc18811d48b18df9ec28e1ecf57f7/README.md)、[REALITY 配置与后量子选项（固定修订）](https://github.com/XTLS/Xray-docs-next/blob/9125d3237c2f1717425dc94f1b54d2743ec1797a/docs/config/transports/reality.md)、[VLESS / Vision 配置](https://xtls.github.io/config/outbounds/vless.html)、[路由](https://xtls.github.io/config/routing.html)。
+- VMess：[V2Fly 协议说明](https://www.v2fly.org/developer/protocols/vmess.html)、[Xray 传输分层](https://github.com/XTLS/Xray-docs-next/blob/main/docs/config/transport.md)。
+- Trojan：[协议](https://trojan-gfw.github.io/trojan/protocol)、[TLS 与服务端配置](https://trojan-gfw.github.io/trojan/config)。
+- Shadowsocks：[AEAD](https://shadowsocks.org/doc/aead.html)、[2022 / SIP022](https://shadowsocks.org/doc/sip022.html)、[SIP003 插件边界](https://shadowsocks.org/doc/sip003.html)。
+- Hysteria 2：[协议规范](https://v2.hysteria.network/docs/developers/Protocol/)、[服务端部署](https://v2.hysteria.network/docs/getting-started/Server/)、[客户端模式](https://v2.hysteria.network/docs/advanced/Full-Client-Config/)。
+
+## 下一步
+
+- [判断 Umbra 是否适合你](/zh-hans/docs/getting-started/introduction/)
+- [选择传输模式](/zh-hans/docs/concepts/transports/)
+- [接入应用与已有客户端](/zh-hans/docs/guides/client/)
+- [了解安全模型](/zh-hans/docs/concepts/security-model/)

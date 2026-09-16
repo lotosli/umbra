@@ -1,0 +1,42 @@
+@import '@fontsource-variable/roboto';
+@import '@fontsource-variable/roboto-mono';
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+@import './site.css';
+
+@source '../../node_modules/fumadocs-ui/dist/**/*.js';
+
+@theme {
+  --font-sans: 'Roboto Variable', -apple-system, 'Noto Sans', 'Noto Sans CJK SC', 'Noto Sans CJK TC', 'Hiragino Sans', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'Roboto Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+:root { --color-fd-primary: #4051b5; --color-fd-primary-foreground: #fff; }
+.dark { --color-fd-background: hsl(232, 15%, 14%); --color-fd-card: hsl(232, 15%, 17%); --color-fd-muted: hsl(232, 15%, 18%); --color-fd-primary: #707598; --color-fd-primary-foreground: #fff; --color-fd-border: hsl(232, 15%, 90%, 0.12); }
+html { scroll-padding-top: 6rem; }
+.umbra-docs-logo { display: inline-flex; align-items: center; gap: .55rem; font-size: 1.35rem; letter-spacing: -.01em; font-weight: 500; }
+.umbra-docs-logo .eclipse-mark { width: 24px; height: 24px; color: var(--site-accent); }
+.skip-link:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 3px; }
+.umbra-docs-logo small { margin-left: .5rem; padding-left: .8rem; border-left: 1px solid var(--color-fd-border); font-size: .7rem; letter-spacing: .03em; font-weight: 450; color: var(--color-fd-muted-foreground); }
+.umbra-docs-meta { display: flex; flex-wrap: wrap; gap: .5rem 1rem; font-size: .75rem; color: var(--color-fd-muted-foreground); margin-bottom: 1.5rem; }
+.umbra-docs-meta span { padding: .2rem .6rem; border: 1px solid var(--color-fd-border); border-radius: 2rem; }
+.umbra-docs-sources { border-top: 1px solid var(--color-fd-border); margin-top: 3rem; padding-top: 1rem; font-size: .8rem; color: var(--color-fd-muted-foreground); }
+.umbra-docs-sources a { text-decoration: underline; text-underline-offset: 3px; }
+.umbra-docs-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1rem; margin-top: 2rem; }
+.umbra-docs-card { padding: 1.35rem; border: 1px solid var(--color-fd-border); border-radius: 6px; background: var(--color-fd-card); transition: border-color .15s; }
+.umbra-docs-card:hover { border-color: var(--color-fd-primary); }
+.umbra-docs-card h2 { font-size: 1rem; font-weight: 500; margin: 0 0 .6rem; letter-spacing: -.01em; }
+.umbra-docs-card p { font-size: .85rem; color: var(--color-fd-muted-foreground); line-height: 1.7; margin: 0; }
+.umbra-search-results { padding: .7rem; }
+.umbra-search-results p { padding: 1rem; color: var(--color-fd-muted-foreground); }
+.umbra-search-results li a { display: flex; flex-direction: column; padding: .85rem; gap: .25rem; border-radius: .5rem; }
+.umbra-search-results li a:hover, .umbra-search-results li a:focus { background: var(--color-fd-muted); outline: 2px solid var(--color-fd-primary); }
+.umbra-search-results li span, .umbra-search-results li small { color: var(--color-fd-muted-foreground); font-size: .8rem; }
+.umbra-search-results button { margin: 0 1rem 1rem; color: var(--color-fd-primary); text-decoration: underline; }
+.umbra-not-found { max-width: 52rem; padding: 4rem 2rem 8rem; margin: 0 auto; min-height: 90vh; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 1.5rem; }
+.umbra-not-found h1 { font-size: clamp(2.5rem,7vw,5rem); line-height: 1.15; letter-spacing: -.01em; font-weight: 300; color: var(--site-muted); }
+.umbra-not-found p { max-width: 34rem; line-height: 1.8; color: var(--color-fd-muted-foreground); }
+.umbra-not-found > div { display: flex; gap: 2rem; align-items: center; }
+@media(max-width:600px) { .umbra-docs-grid { grid-template-columns: 1fr; } }
+@media(prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }

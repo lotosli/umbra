@@ -1,0 +1,58 @@
+---
+id: "configuration/client"
+title: "Configuration du client"
+description: "Transport, identité et écoute du proxy local."
+section: "configuration"
+order: 9
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Vue d’ensemble
+
+Le fichier TOML du client définit l’identité distante et l’écoute SOCKS locale. La validation intervient après fusion des options CLI. transport est obligatoire et accepte tcp ou quic. Sans udp_transport, UDP hérite de la valeur finale de transport ; le préciser modifie les associations UDP sans changer le chemin des requêtes TCP CONNECT.
+
+## Détails
+
+public_key doit décoder 32 octets. mldsa_verify doit être une valeur base64 non vide issue de l’identité du serveur. short_id et server_name doivent correspondre aux valeurs autorisées. fingerprint est obligatoire ; les noms intégrés comprennent chrome-latest et chrome-150-macos. Dans cette version, chrome-latest utilise encore le profil historique Chrome 150, malgré l’existence d’une capture plus récente.
+
+### Modèle client
+
+```toml
+server = "198.51.100.10:443"
+transport = "tcp"
+public_key = "<X25519_PUBLIC_BASE64>"
+short_id = "<SHORT_ID_HEX>"
+server_name = "cover.example"
+fingerprint = "chrome-latest"
+mldsa_verify = "<MLDSA_VERIFY_BASE64>"
+socks_listen = "127.0.0.1:1080"
+```
+
+
+| Champ | Valeur par défaut / exigence | Signification |
+|---|---|---|
+| `server` | Obligatoire | Serveur Umbra, hôte:port |
+| `transport` | Obligatoire | Transport principal : tcp ou quic |
+| `udp_transport` | `transport` | Transport UDP ; hérite de transport si absent |
+| `public_key` | Obligatoire | Identité publique X25519, 32 octets décodés |
+| `short_id` | Obligatoire | Un short ID accepté par le serveur |
+| `server_name` | Obligatoire | SNI accepté par le serveur |
+| `fingerprint` | Obligatoire | Nom du profil d’empreinte intégré |
+| `mldsa_verify` | Obligatoire | Clé de vérification ML-DSA, base64 non vide |
+| `socks_listen` | Obligatoire | Écoute SOCKS5 locale, sans authentification |
+| `spider_path` | `"/"` | Chemin du site réel ; commence par /, sans CR/LF |
+| `mux` | `true` | Mux chiffré ; false sélectionne TCP/Vision dédié |
+| `padding_scheme` | `"default"` | Politique de remplissage interne |
+| `tcp_evasion` | `"segment"` | Écritures ordonnées du ClientHello |
+
+## Vérification et limites
+
+Liez socks_listen au bouclage puisque SOCKS n’utilise pas de mot de passe. mux vaut true par défaut ; false choisit Vision dédié pour TCP. spider_path vaut /, doit commencer par / et ne peut contenir ni retour chariot ni saut de ligne. Il participe au comportement de site réel lorsque l’authentification n’établit pas de session Umbra. Une configuration syntaxiquement valide ne garantit ni des clés correspondantes ni une destination joignable.
+
+## Pour continuer
+
+- [Connecter un client](/fr/docs/guides/client/)
+- [Performances et politiques](/fr/docs/reference/configuration/)
+- [Référence CLI](/fr/docs/reference/cli/)

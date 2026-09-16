@@ -183,3 +183,11 @@ CI（`.github/workflows/ci.yml`）闸门：**fmt · clippy(-D warnings) · nexte
   - `umbra-coverage-gate` — 本地测量并强制 90% 覆盖率。
   - `umbra-fingerprint-check` — 校验 ClientHello/QUIC 指纹与目标 Chrome 一致（组件 A/J）。
   - `umbra-add-crate` — 一致地新增 workspace crate。
+
+## 11. 官网 workspace
+
+- `apps/web` 是独立 pnpm 应用，`docs/site` 是七语公开文档；现有 Cargo workspace 路径保持不变。
+- 使用 `.node-version` / 根 `packageManager` 固定的 Node 与 pnpm；前端依赖走 `pnpm-workspace.yaml` catalog 并提交 `pnpm-lock.yaml`。
+- 验证顺序：`pnpm build`（生成内容与文件路由）→ `pnpm check` → `pnpm test`（行覆盖率 >=90%）→ `pnpm test:e2e`。Rust 覆盖率独立计算，不得混算或削弱。
+- 公开内容必须包含有效来源、适用版本、完整七语对应关系；不得 glob 发布 openspec、运营记录或私密配置。说明当前实现边界，不把协议设计目标当成已验证事实。
+- 官网部署配置不代表已发布；生产发布使用明确的手动部署工作流。维护细节见 `docs/website-development.md`。

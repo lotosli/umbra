@@ -1,0 +1,30 @@
+---
+id: "concepts/security-model"
+title: "Modelo de seguridad"
+description: "Comprende la autenticación, los secretos y los límites de protección."
+section: "concepts"
+order: 13
+version: "1.0.0-alpha"
+source: ["README.md", "crates/umbra-core/src/socks.rs"]
+translation: "complete"
+---
+
+## Descripción general
+
+Umbra combina autenticación previa a la primera respuesta con respaldo en un sitio real. Las conexiones sin autenticar se transmiten a ese destino sin recibir un error reconocible de proxy. Los clientes autenticados verifican la identidad esperada. La caché contra repetición tiene límites de capacidad y tiempo y no supone defensa ilimitada contra agotamiento de recursos.
+
+## Detalles
+
+El código concentra verificaciones en tiempo constante y borrado de secretos. Conserva private_key y mldsa_seed en el servidor y distribuye la configuración del cliente de forma segura. Excluye claves, destinos y contenido de los informes públicos. SOCKS local no autentica al usuario, por lo que conviene vincularlo al bucle local. Las aplicaciones deben mantener HTTPS o su propio cifrado autenticado de extremo a extremo.
+
+[GitHub Security](https://github.com/lotosli/umbra/security)
+
+## Verificación y límites
+
+Un transporte privado no repara dispositivos comprometidos ni proporciona el anonimato de una red de varios saltos. Esta alpha no afirma tener auditoría independiente ni equivalencia completa con Chrome actual. chrome-latest sigue Chrome 150; una captura Chrome 153 no demuestra conformidad total. Consulta la información de seguridad publicada por el proyecto antes de comunicar detalles sensibles y no reveles secretos en una incidencia pública ordinaria.
+
+## Siguientes pasos
+
+- [Referencia del protocolo](/es/docs/reference/protocol/)
+- [Resolución de problemas](/es/docs/troubleshooting/)
+- [Contribuir](/es/docs/contributing/)

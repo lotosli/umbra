@@ -1,0 +1,90 @@
+---
+id: "concepts/transports"
+title: "How to choose TCP, Vision or QUIC"
+description: "Choose a mode for your network and application traffic, carrying TCP and UDP separately through one SOCKS5 endpoint."
+section: "concepts"
+order: 12
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "docs/performance.md"]
+translation: "complete"
+---
+
+## Overview
+
+Start by separating two questions: does the application send TCP or UDP, and does Umbra use TCP or QUIC to carry it to the server? The application's traffic type and the outer transport are not the same thing. `transport` selects the main outer transport; `udp_transport` can select a separate transport for UDP requests and inherits `transport` when omitted.
+
+## Choose for your needs
+
+| Need or network condition | Starting point | What to watch for |
+| --- | --- | --- |
+| Establish an initial connection, or the network filters UDP | `transport = "tcp"` | Open the server's TCP port; mux is enabled by default |
+| Reuse existing connections for multiple concurrent TCP requests | TCP + `mux = true` | Requests share outer TCP connections, so packet loss may still affect other streams |
+| Mostly HTTPS traffic, with less redundant encryption for eligible traffic | TCP + `mux = false` | Uses dedicated Vision connections; not all TLS traffic supports splicing |
+| TCP frequently suffers RST resets and UDP is reachable | `transport = "quic"` | QUIC must be usable at both ends; UDP can also be throttled or blocked |
+| Keep TCP on Vision while sending UDP separately over QUIC | TCP + `udp_transport = "quic"` + `mux = false` | Enable TCP and UDP listeners on the same server |
+
+No mode is fastest on every network. Verify reachability first, then compare latency, stability and throughput with your actual applications; do not change multiple parameters at once. These choices do not automatically detect network conditions and switch transports.
+
+## TCP multiplexing
+
+```toml
+transport = "tcp"
+mux = true
+```
+
+Multiple requests share encrypted outer connections, reducing the need to establish connections repeatedly. The current version adjusts windows according to actual traffic consumption and round-trip time, within a memory budget. It is worth trying for concurrent requests, but it does not eliminate TCP transport-layer head-of-line blocking.
+
+Adaptive mux requires compatible versions at both ends; update both the client and server when upgrading to 1.0.0-alpha. See the [configuration reference](/en/docs/reference/configuration/) for resource parameters.
+
+## Dedicated TCP / Vision
+
+```toml
+transport = "tcp"
+mux = false
+```
+
+For eligible inner TLS 1.3 traffic, records that are already encrypted can be forwarded after authenticated boundary negotiation, without continuing outer TLS encryption and extra encapsulation. Non-TLS and unsupported TLS traffic remain encrypted; enabling Vision does not send application plaintext unprotected.
+
+Vision uses userspace I/O, not kernel zero-copy. Reducing redundant processing is a benefit of the mechanism, not a measured speed advantage over competitors. Keep using application-layer HTTPS.
+
+## QUIC
+
+```toml
+transport = "quic"
+```
+
+QUIC runs over UDP and can avoid TCP RST injection and head-of-line blocking caused by transport-layer retransmissions between different QUIC streams; each reliable stream still requires in-order delivery, and all streams share path capacity and congestion control. The server needs `udp_listen` enabled, its UDP firewall port open, and access to the configured real QUIC fallback site.
+
+Quinn BBR is currently the default, with `cubic` and `new-reno` also available. These are QUIC settings and do not change Linux TCP congestion control. If the network restricts UDP, QUIC is not a dependable alternative to TCP.
+
+### TCP / Vision + QUIC UDP
+
+Add the following to an existing complete client configuration:
+
+```toml
+transport = "tcp"
+udp_transport = "quic"
+mux = false
+socks_listen = "127.0.0.1:1080"
+```
+
+Configure both listeners on the same server:
+
+```toml
+listen = "0.0.0.0:443"
+udp_listen = "0.0.0.0:443"
+```
+
+These snippets must be merged into a complete configuration; they do not replace keys, the real destination site or other required fields. One client, one server and one local SOCKS5 endpoint can carry both paths. In a Clash-style client, `udp: true` only allows UDP requests; it does not force ordinary TCP traffic onto QUIC.
+
+## Padding and TCP write strategy
+
+Default padding adds randomly sized data early in a connection, then reduces its frequency, to interfere with identification of inner handshakes directly from record lengths. It consumes extra bandwidth and does not promise to eliminate all traffic signatures. Usually, keep `padding_scheme = "default"` and adjust only with clear test evidence.
+
+`tcp_evasion = "segment"` only splits the ClientHello into ordered application writes; it does not guarantee the boundaries of the TCP packets ultimately sent by the operating system. If compatibility problems arise, test `off`; Geneva DSL is not currently supported and should not be deployed as an available feature.
+
+## Next steps
+
+- [Connect applications to Umbra](/en/docs/guides/client/)
+- [Complete configuration examples](/en/docs/configuration/examples/)
+- [Comparison with mainstream proxy options](/en/docs/reference/protocol/)

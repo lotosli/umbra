@@ -1,0 +1,76 @@
+---
+id: "reference/cli"
+title: "CLI 命令参考"
+description: "server、client、keygen 子命令及其选项。"
+section: "reference"
+order: 14
+version: "1.0.0-alpha"
+source: ["crates/umbra/src/main.rs", "README.md"]
+translation: "complete"
+---
+
+## 概览
+
+Umbra 提供三个子命令：server 启动服务端监听与运行时，client 启动本地 SOCKS 代理，keygen 向标准输出写入新身份材料。使用 umbra --help 和各子命令 --help 查看已安装程序实际支持的选项；若使用不同版本，应以对应二进制与版本文档为准。
+
+## 详细说明
+
+使用 -c 或 --config 读取 TOML。命令行值覆盖匹配的文件字段，省略的选项保持原值。服务端 short ID 和 server name 接受逗号分隔列表。--mux 与 --prebuild 等布尔选项需要显式布尔值。performance 参数放在 TOML 表中，CLI 并不为每个嵌套性能字段提供开关。
+
+### 帮助与身份生成
+
+```sh
+umbra --help
+umbra server --help
+umbra client --help
+umbra keygen
+```
+
+
+### umbra server
+
+| 命令 / 选项 | 用途 |
+|---|---|
+| `-c, --config` | `server.toml` |
+| `--listen` | TCP 数字监听地址 |
+| `--udp-listen` | 覆盖配置文件中的 QUIC UDP 监听地址 |
+| `--private-key` | X25519 私钥，base64 解码为准确32字节 |
+| `--short-ids` | 非空十六进制 ID 列表；每项0–8字节 |
+| `--dest` | 真实回落目标，host:port |
+| `--server-names` | 非空的允许 SNI 列表 |
+| `--max-time-diff` | 允许的时间戳偏差，至少1秒 |
+| `--mldsa-seed` | ML-DSA 签名种子，base64 解码为32字节 |
+| `--prebuild` | 周期刷新目标；启动探测始终执行 |
+| `--padding-scheme` | 内层填充策略 |
+| `--tcp-evasion` | ClientHello 有序分块写入策略 |
+
+
+### umbra client
+
+| 命令 / 选项 | 用途 |
+|---|---|
+| `-c, --config` | `client.toml` |
+| `--server` | Umbra 服务端，host:port |
+| `--transport` | 主要外层传输：tcp 或 quic |
+| `--udp-transport` | 覆盖 UDP 传输：tcp 或 quic |
+| `--public-key` | 服务端 X25519 公钥，base64 解码为32字节 |
+| `--short-id` | 服务端允许的一个 short ID |
+| `--server-name` | 服务端允许的 SNI |
+| `--fingerprint` | 内置指纹档案名称 |
+| `--mldsa-verify` | 服务端 ML-DSA 验证密钥，非空 base64 |
+| `--socks-listen` | 本地 SOCKS5 地址，免认证 |
+| `--spider-path` | 真实站点路径；以 / 开头，无 CR/LF |
+| `--mux` | 加密多路复用；false 选择独立 TCP/Vision |
+| `--padding-scheme` | 内层填充策略 |
+| `--tcp-evasion` | ClientHello 有序分块写入策略 |
+
+
+## 验证与边界
+
+keygen 没有额外选项，输出四项 base64：x25519_private、x25519_public、mldsa_seed、mldsa_verify。输出包含秘密，应在私密终端生成并写入受保护文件。避免使用会被 shell 历史或进程列表记录的私密参数。下表列出实际配置相关选项，程序不包含登录、云账户、数据库迁移或自动安装系统服务命令。命令启动成功后仍应验证实际应用链路。
+
+## 下一步
+
+- [服务端配置](/zh-hans/docs/configuration/server/)
+- [客户端配置](/zh-hans/docs/configuration/client/)
+- [性能与策略参考](/zh-hans/docs/reference/configuration/)

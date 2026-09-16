@@ -1,0 +1,12 @@
+{
+  "title": "Documentació",
+  "pages": [
+    "getting-started",
+    "guides",
+    "configuration",
+    "concepts",
+    "reference",
+    "troubleshooting",
+    "contributing"
+  ]
+}

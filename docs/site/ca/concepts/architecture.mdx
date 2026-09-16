@@ -1,0 +1,41 @@
+---
+id: "concepts/architecture"
+title: "Arquitectura"
+description: "Com es reparteixen les responsabilitats entre els crates Rust."
+section: "concepts"
+order: 11
+version: "1.0.0-alpha"
+source: ["README.md"]
+translation: "complete"
+---
+
+## Visió general
+
+Umbra és un workspace Cargo amb crates separats per a tipus del protocol, criptografia, TLS, autenticació, trànsit intern i orquestració. Aquesta divisió permet provar analitzadors, vectors criptogràfics i cicles de connexió separadament. La CLI combina els components amb server, client i keygen. El lloc no ofereix cap API de gestió remota del procés.
+
+## Detalls
+
+umbra-proto defineix tipus i adreces. umbra-crypto centralitza intercanvi de claus, signatures, derivació, MAC i AEAD. umbra-fingerprint conté perfils i eines JA3/JA4. umbra-tls construeix i analitza TLS. umbra-reality gestiona autenticació, repetició i preparació de la destinació; umbra-inner proporciona multiplexació, farciment i Vision; umbra-transport implementa els camins TCP i QUIC.
+```text
+umbra CLI
+    ↓
+umbra-core
+    ↓
+umbra-reality · umbra-inner · umbra-transport
+    ↓
+umbra-tls
+    ↓
+umbra-crypto · umbra-fingerprint
+    ↓
+umbra-proto
+```
+
+## Verificació i límits
+
+umbra-core uneix configuració, distribució, SOCKS local, connexions a destinacions i propietat dels recursos. Les sessions autenticades segueixen el mode intern escollit; les altres van al lloc real. umbra-testkit proporciona proves en bucle local i xtask executa controls i compilacions de distribució. El document d’arquitectura també conté objectius futurs: esmentar un component no demostra que totes les funcions previstes estiguin disponibles. Consulta les guies actuals.
+
+## Passos següents
+
+- [Referència del protocol](/ca/docs/reference/protocol/)
+- [Model de seguretat](/ca/docs/concepts/security-model/)
+- [Contribuir](/ca/docs/contributing/)

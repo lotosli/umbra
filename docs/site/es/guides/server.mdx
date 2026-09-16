@@ -1,0 +1,41 @@
+---
+id: "guides/server"
+title: "Configurar un servidor"
+description: "Configura un destino real y arranca el servidor."
+section: "guides"
+order: 4
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Descripción general
+
+El servidor acepta conexiones Umbra autenticadas y reenvía las demás a un destino real fijo. El sitio elegido debe admitir TLS 1.3 y ser accesible desde el servidor. Su identidad debe ser coherente con server_names y con el SNI del cliente. Los dominios de ejemplo son marcadores, no recomendaciones concretas de despliegue.
+
+## Detalles
+
+Genera una identidad nueva, completa server.toml y protege el archivo porque contiene una clave privada y una semilla de firma. listen es una dirección TCP numérica. Añade udp_listen solo si deseas QUIC nativo; TCP y UDP pueden utilizar el mismo número de puerto. El respaldo QUIC exige un servicio real QUIC/HTTP3 en dest: un sitio HTTPS que solo usa TCP no basta.
+
+### Plantilla del servidor
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+## Verificación y límites
+
+Arranca primero en primer plano. La comprobación inicial siempre se ejecuta; prebuild=false desactiva únicamente el refresco periódico. Si falla la comprobación, el servidor no arranca. Revisa las direcciones y las reglas de red antes de conectar un cliente compatible. Una prueba TLS no autenticada que recibe el certificado real del destino observa el comportamiento esperado. Configura la supervisión del servicio después de validar esta ruta básica.
+
+## Siguientes pasos
+
+- [Configuración del servidor](/es/docs/configuration/server/)
+- [Despliegue y operación](/es/docs/guides/deployment/)
+- [Modelo de seguridad](/es/docs/concepts/security-model/)

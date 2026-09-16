@@ -1,0 +1,93 @@
+---
+id: "guides/client"
+title: "接入應用程式與 Clash 類用戶端"
+description: "用本地 SOCKS5 接入既有應用程式和規則用戶端，並為 TCP 與 UDP 分別選擇傳輸。"
+section: "guides"
+order: 5
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## 概覽
+
+Umbra 用戶端在本機提供 SOCKS5 入口。應用程式或現有代理用戶端把請求交給它，再由 Umbra 連線遠端的 Umbra 伺服器端。規則分流、介面和系統代理可以繼續由你熟悉的用戶端負責；Umbra 本身不是 TUN 介面，安裝二進位檔不會自動代理其他應用程式。
+
+## 1. 設定並啟動 Umbra
+
+先按[伺服器端指南](/zh-hant/docs/guides/server/)準備好伺服器端。把相符的身分資料填寫到 `client.toml`；下面的預留位置必須替換，不是真實認證資料：
+
+```toml
+server = "198.51.100.10:443"
+transport = "tcp"
+public_key = "<X25519_PUBLIC_BASE64>"
+short_id = "<SHORT_ID_HEX>"
+server_name = "cover.example"
+fingerprint = "chrome-latest"
+mldsa_verify = "<MLDSA_VERIFY_BASE64>"
+socks_listen = "127.0.0.1:1080"
+```
+
+`server` 是你的 Umbra 伺服器位址；`server_name` 是與伺服器端一致的真實站點 SNI，不是任意填寫的偽裝網域。確認後執行：
+
+```sh
+umbra client -c client.toml
+```
+
+保留迴環綁定。本地 SOCKS5 不提供密碼認證，不能直接暴露到公網或不可信區域網路。
+
+## 2. 直接連線支援 SOCKS5 的應用程式
+
+在應用程式的代理設定中選擇 SOCKS5，位址填 `127.0.0.1`，連接埠填 `1080`，不填寫使用者名稱和密碼。應用程式必須與 Umbra 執行在同一裝置或同一可存取該迴環入口的網路命名空間。
+
+驗證一次 HTTPS 請求時，可把下面位址替換為你要測試的站點：
+
+```sh
+curl --proxy socks5h://127.0.0.1:1080 https://example.com/
+```
+
+`socks5h` 讓 curl 把目標網域交給代理處理，而不是先在本地解析。其他應用程式的 DNS 行為由其自身設定決定；僅設定 SOCKS5 不代表裝置上的所有 DNS 查詢都會經過代理。
+
+## 3. 使用 Clash 類用戶端保留規則
+
+將以下節點合併進現有用戶端設定的 `proxies` 清單，並在你使用的代理群組中選擇它。不要直接覆寫完整設定：
+
+```yaml
+proxies:
+  - name: Umbra Local
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+    udp: true
+```
+
+規則仍由現有用戶端執行，遠端連線由本地 Umbra 完成。確保遠端 Umbra 伺服器位址不再次被規則送回 `Umbra Local`，否則可能形成代理迴圈。具體規則、DNS 和 TUN 設定以你使用的用戶端為準。
+
+這裡使用的是標準 SOCKS5 節點，不是原生 Umbra 協議支援。VLESS / VMess / Trojan 節點和訂閱不能直接改一個名稱就變成 Umbra 節點；連線兩端都需要相符的 Umbra 程式與身分資料。
+
+## 4. 可選：TCP 使用 Vision，UDP 使用 QUIC
+
+向既有的 `client.toml` 合併：
+
+```toml
+transport = "tcp"
+udp_transport = "quic"
+mux = false
+```
+
+伺服器端同時開啟 `listen` 和 `udp_listen`，防火牆允許相應 TCP 與 UDP 連接埠。`udp: true` 允許 Clash 類用戶端傳送 UDP 請求，不會改變 TCP 請求的傳輸。UDP 中繼端點由 SOCKS 協商，不要求固定監聽 UDP 1080。
+
+如果 UDP 不可達，先用 TCP 驗證一般應用程式請求。這裡沒有自動 QUIC 到 TCP 的故障切換，具體選擇見[傳輸模式](/zh-hant/docs/concepts/transports/)。
+
+## 驗證與疑難排解
+
+1. 先直接用 SOCKS5 測試一個應用程式，再接入規則用戶端，避免把規則問題誤認為傳輸失敗。
+2. 對照兩端的公鑰、驗證金鑰、short ID、SNI 與伺服器位址，檢查系統時間和防火牆。
+3. 分別驗證 TCP 與 UDP；網頁開啟成功不代表 UDP 已經可用。
+4. 一次只調整一個傳輸或效能選項；升級自適應 mux 時同步升級兩端。
+
+## 下一步
+
+- [用戶端設定欄位](/zh-hant/docs/configuration/client/)
+- [完整設定範例](/zh-hant/docs/configuration/examples/)
+- [連線疑難排解](/zh-hant/docs/troubleshooting/)

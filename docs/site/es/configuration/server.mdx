@@ -1,0 +1,55 @@
+---
+id: "configuration/server"
+title: "Configuración del servidor"
+description: "Campos obligatorios, valores predeterminados y validación del servidor."
+section: "configuration"
+order: 8
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Descripción general
+
+El servidor se configura con TOML. Todos los valores obligatorios deben existir después de aplicar las opciones CLI. Se rechazan campos desconocidos y tipos inválidos. Las escuchas usan IP:puerto numérica, con corchetes para IPv6; dest usa host:puerto. La tabla cubre los campos principales, mientras que performance se explica por separado.
+
+## Detalles
+
+private_key y mldsa_seed deben decodificar exactamente 32 bytes cada uno desde base64. No utilices literalmente los marcadores en una instalación. short_ids debe tener al menos una entrada; cada cadena hexadecimal de longitud par codifica entre cero y ocho bytes. Se permite una cadena vacía. max_time_diff admite ms, s, m, h o segundos sin sufijo y debe representar al menos un segundo.
+
+### Plantilla del servidor
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+| Campo | Valor predeterminado / requisito | Significado |
+|---|---|---|
+| `listen` | Obligatorio | Dirección numérica de escucha TCP |
+| `udp_listen` | `—` | Escucha QUIC UDP opcional; omitir para desactivar |
+| `private_key` | Obligatorio | Clave privada X25519, base64, exactamente 32 bytes |
+| `short_ids` | Obligatorio | Lista no vacía de ID hexadecimales de 0–8 bytes |
+| `dest` | Obligatorio | Destino real de respaldo, host:puerto |
+| `server_names` | Obligatorio | Lista no vacía de SNI admitidos |
+| `max_time_diff` | Obligatorio | Desfase permitido, al menos un segundo |
+| `mldsa_seed` | Obligatorio | Semilla ML-DSA, base64, exactamente 32 bytes |
+| `prebuild` | `true` | Actualización periódica; comprobación inicial obligatoria |
+| `padding_scheme` | `"default"` | Política de relleno interno |
+| `tcp_evasion` | `"segment"` | Escrituras ordenadas de ClientHello |
+
+## Verificación y límites
+
+server_names no puede estar vacío. Cada nombre pasa controles de longitud, ASCII y ausencia de espacios; esto no demuestra que el destino exista o tenga el SNI adecuado. La comprobación inicial siempre es necesaria. Las opciones CLI usan guiones, por ejemplo --udp-listen, y solo reemplazan lo que se indica. Conserva los secretos en un archivo protegido, no en el historial del shell ni en argumentos visibles a otros procesos.
+
+## Siguientes pasos
+
+- [Configurar un servidor](/es/docs/guides/server/)
+- [Rendimiento y políticas](/es/docs/reference/configuration/)
+- [Referencia de CLI](/es/docs/reference/cli/)

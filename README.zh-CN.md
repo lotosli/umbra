@@ -60,6 +60,19 @@ socks_listen = "127.0.0.1:1080"
 | `xtask` | 开发、CI、覆盖率、指纹检查和 dist 任务 |
 | `openspec` | SDD 变更和已接受规范 |
 | `.github/workflows` | CI 与 tag 触发的发布构建 |
+| `apps/web` | React / TanStack Start 官网与 Fumadocs，独立部署到 Cloudflare Workers |
+| `docs/site` | 七种语言的公开用户文档 |
+
+## 官网开发
+
+仓库同时包含 Cargo workspace 和私有 pnpm workspace。官网使用 Node 24.18.1、pnpm 9.11.0；单独开发 Rust 不需要 Node。
+
+```bash
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+本地地址为 `http://127.0.0.1:3000`。发布前运行 `pnpm build`、`pnpm check`、`pnpm test` 和 `pnpm test:e2e`。官网与文档使用规划主域名 `https://umbra.cat` 下的七种语言目录；网站发布由手动工作流触发，Rust 二进制仍独立发布。详见[官网开发与部署](docs/website-development.md)。
 
 ## 快速开始
 

@@ -1,0 +1,76 @@
+---
+id: "reference/cli"
+title: "Referència de la CLI"
+description: "Ordres server, client i keygen i les seves opcions."
+section: "reference"
+order: 14
+version: "1.0.0-alpha"
+source: ["crates/umbra/src/main.rs", "README.md"]
+translation: "complete"
+---
+
+## Visió general
+
+La CLI té tres subordres: server inicia les escoltes, client obre SOCKS local i keygen escriu una identitat a stdout. Consulta umbra --help i l’ajuda de cada subordre per conèixer el binari instal·lat. La documentació d’una altra versió no substitueix les opcions realment disponibles a la teva instal·lació.
+
+## Detalls
+
+Fes servir -c o --config per carregar TOML. Els valors CLI substitueixen els camps corresponents i els omesos conserven el fitxer. short IDs i server names admeten llistes separades per comes. Els booleans --mux i --prebuild demanen un valor explícit. Els ajustos performance pertanyen a la seva taula TOML; no tots els camps imbricats disposen d’una opció de línia d’ordres.
+
+### Ajuda i generació d’identitat
+
+```sh
+umbra --help
+umbra server --help
+umbra client --help
+umbra keygen
+```
+
+
+### umbra server
+
+| Ordre / opció | Funció |
+|---|---|
+| `-c, --config` | `server.toml` |
+| `--listen` | Adreça numèrica d’escolta TCP |
+| `--udp-listen` | Substituir l’adreça d’escolta QUIC UDP |
+| `--private-key` | Clau privada X25519, base64, exactament 32 bytes |
+| `--short-ids` | Llista no buida d’ID hexadecimals de 0–8 bytes |
+| `--dest` | Destinació real de retorn, host:port |
+| `--server-names` | Llista no buida de SNI admesos |
+| `--max-time-diff` | Desfasament permès, almenys un segon |
+| `--mldsa-seed` | Llavor ML-DSA, base64, exactament 32 bytes |
+| `--prebuild` | Actualització periòdica; comprovació inicial obligatòria |
+| `--padding-scheme` | Política de farciment intern |
+| `--tcp-evasion` | Escriptures ordenades de ClientHello |
+
+
+### umbra client
+
+| Ordre / opció | Funció |
+|---|---|
+| `-c, --config` | `client.toml` |
+| `--server` | Servidor Umbra, host:port |
+| `--transport` | Transport principal: tcp o quic |
+| `--udp-transport` | Substituir el transport UDP: tcp o quic |
+| `--public-key` | Identitat pública X25519, 32 bytes descodificats |
+| `--short-id` | Un short ID admès pel servidor |
+| `--server-name` | SNI admès pel servidor |
+| `--fingerprint` | Nom del perfil d’empremta integrat |
+| `--mldsa-verify` | Clau de verificació ML-DSA, base64 no buit |
+| `--socks-listen` | Escolta SOCKS5 local, sense autenticació |
+| `--spider-path` | Camí del lloc real; comença per /, sense CR/LF |
+| `--mux` | Mux xifrat; false tria TCP/Vision dedicat |
+| `--padding-scheme` | Política de farciment intern |
+| `--tcp-evasion` | Escriptures ordenades de ClientHello |
+
+
+## Verificació i límits
+
+keygen no té opcions addicionals i emet x25519_private, x25519_public, mldsa_seed i mldsa_verify en base64. La sortida conté secrets: utilitza un terminal privat i fitxers protegits. Evita arguments visibles a l’historial o a la llista de processos. La taula descriu opcions de configuració; no hi ha ordres de compte al núvol, migració de base de dades ni instal·lació automàtica del servei. Verifica una petició després d’engegar-lo.
+
+## Passos següents
+
+- [Configuració del servidor](/ca/docs/configuration/server/)
+- [Configuració del client](/ca/docs/configuration/client/)
+- [Rendiment i polítiques](/ca/docs/reference/configuration/)

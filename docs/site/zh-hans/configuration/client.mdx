@@ -1,0 +1,58 @@
+---
+id: "configuration/client"
+title: "客户端配置"
+description: "选择传输、身份材料和本地代理地址。"
+section: "configuration"
+order: 9
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## 概览
+
+客户端 TOML 同时描述远端身份和本地 SOCKS 入口。命令行覆盖完成后才校验必填字段。transport 是必填值，只支持 tcp 或 quic。省略 udp_transport 时，UDP 继承最终合并后的 transport；显式设置它不会改变 TCP CONNECT 的外层路径。
+
+## 详细说明
+
+public_key 必须解码为 32 字节。mldsa_verify 是非空 base64 值，应来自对应服务端身份的 keygen 输出。short_id 与 server_name 分别需要匹配服务端允许项。fingerprint 必填，内置名称包括 chrome-latest 和 chrome-150-macos；在当前版本，chrome-latest 仍然使用历史 Chrome 150 档案。
+
+### 客户端模板
+
+```toml
+server = "198.51.100.10:443"
+transport = "tcp"
+public_key = "<X25519_PUBLIC_BASE64>"
+short_id = "<SHORT_ID_HEX>"
+server_name = "cover.example"
+fingerprint = "chrome-latest"
+mldsa_verify = "<MLDSA_VERIFY_BASE64>"
+socks_listen = "127.0.0.1:1080"
+```
+
+
+| 字段 | 默认值 / 要求 | 含义 |
+|---|---|---|
+| `server` | 必填 | Umbra 服务端，host:port |
+| `transport` | 必填 | 主要外层传输：tcp 或 quic |
+| `udp_transport` | `transport` | UDP 外层传输；省略则继承 transport |
+| `public_key` | 必填 | 服务端 X25519 公钥，base64 解码为32字节 |
+| `short_id` | 必填 | 服务端允许的一个 short ID |
+| `server_name` | 必填 | 服务端允许的 SNI |
+| `fingerprint` | 必填 | 内置指纹档案名称 |
+| `mldsa_verify` | 必填 | 服务端 ML-DSA 验证密钥，非空 base64 |
+| `socks_listen` | 必填 | 本地 SOCKS5 地址，免认证 |
+| `spider_path` | `"/"` | 真实站点路径；以 / 开头，无 CR/LF |
+| `mux` | `true` | 加密多路复用；false 选择独立 TCP/Vision |
+| `padding_scheme` | `"default"` | 内层填充策略 |
+| `tcp_evasion` | `"segment"` | ClientHello 有序分块写入策略 |
+
+## 验证与边界
+
+socks_listen 应使用回环地址，因为 SOCKS 没有用户名密码认证。mux 默认 true；对于 TCP，false 选择独立 Vision 模式。spider_path 默认 /，必须以 / 开头，且不能包含回车或换行；它用于认证未建立 Umbra 会话时的真实站点行为。性能参数属于独立表。配置能通过语法检查，不代表两端密钥匹配、目标可达或所选指纹与所有浏览器版本完全一致。
+
+## 下一步
+
+- [连接客户端](/zh-hans/docs/guides/client/)
+- [性能与策略参考](/zh-hans/docs/reference/configuration/)
+- [CLI 命令参考](/zh-hans/docs/reference/cli/)

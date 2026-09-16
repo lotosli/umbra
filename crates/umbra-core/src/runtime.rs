@@ -54,8 +54,7 @@ use umbra_transport::{
     quic::{
         build_quic_initial_crypto_packet, decrypt_quic_initial_crypto_frames,
         parse_quic_initial_header, read_target_stream, write_target_stream,
-        write_udp_association_marker, write_udp_envelope_stream, QuicCryptoFrame,
-        QUIC_UDP_ASSOCIATE_MARKER,
+        write_udp_association_marker, QuicCryptoFrame, QUIC_UDP_ASSOCIATE_MARKER,
     },
     tcp::{build_tcp_client_hello, tcp_connect_and_send, TcpClientHelloConfig},
 };
@@ -80,6 +79,11 @@ use crate::{
     CoreError,
 };
 
+#[cfg(test)]
+use umbra_transport::quic::write_udp_envelope_stream;
+
+mod udp_targets;
+
 const DEFAULT_REPLAY_CAPACITY: usize = 65_536;
 const DEFAULT_OUTER_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_MUX_POOL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -94,7 +98,7 @@ const DEFAULT_QUIC_FALLBACK_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const QUIC_PREFETCH_MAX_DATAGRAMS: usize = 16;
 const QUIC_PREFETCH_MAX_CRYPTO_BYTES: usize = 64 * 1024;
 const QUIC_MAX_FLOWS: usize = 64;
-const QUIC_FLOW_QUEUE_CAPACITY: usize = 16;
+const QUIC_FLOW_QUEUE_CAPACITY: usize = 64;
 const QUIC_FLOW_MAX_CIDS: usize = 64;
 const QUIC_MAX_STREAMS: usize = 128;
 const TLS_HANDSHAKE_CLIENT_HELLO: u8 = 0x01;
@@ -106,6 +110,7 @@ const UDP_RELAY_CHANNEL_CAPACITY: usize = 256;
 
 /// Bound server runtime with listeners, replay cache, and active destination profile.
 pub struct ServerRuntime {
+    resources: crate::resources::Resources,
     tcp_listener: TcpListener,
     udp_socket: Option<QuicServerSocket>,
     dispatch_cfg: Arc<crate::dispatch::ServerCfg>,
@@ -171,6 +176,7 @@ impl ServerRuntime {
     {
         probe_policy.validate()?;
         let RuntimeServerCfg {
+            performance,
             listen,
             udp_listen,
             private_key,
@@ -225,6 +231,7 @@ impl ServerRuntime {
         }
 
         Ok(Self {
+            resources: crate::resources::Resources::new(performance)?,
             tcp_listener,
             udp_socket,
             dispatch_cfg: Arc::new(dispatch_cfg),
@@ -236,6 +243,27 @@ impl ServerRuntime {
             tcp_evasion,
             prebuild,
         })
+    }
+
+    /// Application storage commitments, including granted receive credit.
+    /// This is a logical budget counter, not process RSS or kernel socket memory.
+    #[must_use]
+    pub fn committed_memory(&self) -> usize {
+        self.resources.pool.committed()
+    }
+
+    /// Anonymous per-credential ready-work counts and scheduling wait time.
+    pub fn scheduling_snapshot(&self) -> Vec<crate::resources::WorkGroupSnapshot> {
+        self.resources.scheduler.snapshot()
+    }
+
+    /// Anonymous pipeline and resource observations; never contains addresses or credentials.
+    pub fn performance_snapshot(&self) -> crate::diagnostics::PerformanceSnapshot {
+        crate::diagnostics::PerformanceSnapshot {
+            flows: self.resources.diagnostics.snapshot(),
+            budget: self.resources.pool.snapshot(),
+            scheduling: self.scheduling_snapshot(),
+        }
     }
 
     /// Return the bound TCP listener address.
@@ -307,7 +335,7 @@ impl ServerRuntime {
     {
         let (stream, peer) = self.tcp_listener.accept().await?;
         let profile = self.profile_snapshot();
-        let outcome = dispatch_runtime_with_connector(
+        let outcome = dispatch_runtime_with_resources(
             stream,
             self.dispatch_cfg.as_ref(),
             profile.as_ref(),
@@ -315,7 +343,7 @@ impl ServerRuntime {
             current_unix_time()?,
             connect_dest,
             self.probe_policy.timing,
-            &self.padding_scheme,
+            (&self.padding_scheme, &self.resources),
         )
         .await?;
         Ok(AcceptedServerSession { peer, outcome })
@@ -355,7 +383,9 @@ impl ServerRuntime {
         let mut flows: JoinSet<Result<AcceptedQuicSession, CoreError>> = JoinSet::new();
         let (stop_flows, stopping) = tokio::sync::watch::channel(false);
         let mut routes = HashMap::new();
-        let mut buf = vec![0_u8; UDP_RELAY_BUF_LEN];
+        let buffer_len = UDP_RELAY_BUF_LEN.max(socket.send.max_receive_segments().min(64) * 1472);
+        let mut buffers: [Vec<u8>; 4] = std::array::from_fn(|_| vec![0; buffer_len]);
+        let mut metadata = [quinn::udp::RecvMeta::default(); 4];
         let result = loop {
             tokio::select! {
                 () = &mut shutdown => break Ok(None),
@@ -375,32 +405,48 @@ impl ServerRuntime {
                         None => {}
                     }
                 }
-                received = receive_quic_datagrams(socket.send.as_ref(), &mut buf) => {
-                    let (meta, read) = match received {
-                        Ok(received) => received,
+                received = receive_quic_datagrams(socket.send.as_ref(), &mut buffers, &mut metadata) => {
+                    let count = match received {
+                        Ok(count) => count,
                         Err(err) => break Err(err.into()),
                     };
-                    let peer = meta.addr;
-                    let datagrams = buf[..read].chunks(meta.stride.max(1))
-                        .chain((read == 0).then_some(&buf[..0]));
-                    for datagram in datagrams {
-                        match route_quic_datagram(&routes, peer, datagram) {
-                            QuicRouteMatch::Existing(sender) => {
-                                // Never block unrelated peers on a saturated UDP queue.
-                                let _ = sender.try_send(datagram.to_vec());
+                    for index in 0..count {
+                        let meta = metadata[index];
+                        let bytes = &buffers[index][..meta.len];
+                        let peer = meta.addr;
+                        let datagrams = bytes.chunks(meta.stride.max(1))
+                            .chain(bytes.is_empty().then_some(bytes));
+                        // Common case: one GRO allocation and one mailbox entry for
+                        // all packets of the same flow. Mixed CIDs retain isolation.
+                        if let Some(first) = datagrams.clone().next() {
+                            if let QuicRouteMatch::Existing(sender) = route_quic_datagram(&routes, peer, first) {
+                                if datagrams.clone().all(|packet| matches!(route_quic_datagram(&routes, peer, packet), QuicRouteMatch::Existing(other) if sender.same_channel(other))) {
+                                    let _ = sender.try_send_batch(bytes.to_vec(), Some(meta));
+                                    continue;
+                                }
                             }
-                            QuicRouteMatch::New if routes.len() < QUIC_MAX_FLOWS => {
-                                let (route, inbox) = QuicFlowRoute::new(peer, datagram);
-                                let task = flows.spawn(self.quic_flow(
-                                    socket,
-                                    datagram.to_vec(),
-                                    inbox,
-                                    idle_timeout,
-                                    stopping.clone(),
-                                ));
-                                routes.insert(task.id(), route);
+                        }
+                        for datagram in datagrams {
+                            match route_quic_datagram(&routes, peer, datagram) {
+                                QuicRouteMatch::Existing(sender) => {
+                                    let mut single = meta;
+                                    single.len = datagram.len();
+                                    single.stride = single.len;
+                                    let _ = sender.try_send_batch(datagram.to_vec(), Some(single));
+                                }
+                                QuicRouteMatch::New if routes.len() < QUIC_MAX_FLOWS => {
+                                    let (route, inbox) = QuicFlowRoute::new(peer, datagram);
+                                    let task = flows.spawn(self.quic_flow(
+                                        socket,
+                                        crate::quic_ingress::Datagram::received(datagram.to_vec(), meta),
+                                        inbox,
+                                        idle_timeout,
+                                        stopping.clone(),
+                                    ));
+                                    routes.insert(task.id(), route);
+                                }
+                                QuicRouteMatch::New | QuicRouteMatch::Ambiguous => {}
                             }
-                            QuicRouteMatch::New | QuicRouteMatch::Ambiguous => {}
                         }
                     }
                 }
@@ -415,17 +461,19 @@ impl ServerRuntime {
     fn quic_flow(
         &self,
         socket: &QuicServerSocket,
-        datagram: Vec<u8>,
+        datagram: impl Into<crate::quic_ingress::Datagram>,
         inbox: QuicFlowInbox,
         idle_timeout: Duration,
         mut stopping: tokio::sync::watch::Receiver<bool>,
     ) -> impl Future<Output = Result<AcceptedQuicSession, CoreError>> + Send + 'static {
+        let datagram = datagram.into();
         let cfg = Arc::clone(&self.dispatch_cfg);
         let profile = self.profile_snapshot();
         let replay = Arc::clone(&self.replay);
         let client_socket = Arc::clone(&socket.dispatch);
         let endpoint_socket = Arc::clone(&socket.send);
         let timing = self.probe_policy.timing;
+        let resources = self.resources.clone();
         async move {
             let peer = inbox.peer;
             let mut streams = JoinSet::new();
@@ -435,6 +483,7 @@ impl ServerRuntime {
                     datagram,
                     inbox,
                     QuicRuntimeDispatch {
+                        resources: &resources,
                         client_socket: &client_socket,
                         endpoint_socket,
                         cfg: cfg.as_ref(),
@@ -457,9 +506,27 @@ impl ServerRuntime {
     where
         S: Future<Output = ()>,
     {
-        let result = self.run_accept_loops(shutdown).await;
+        let result = tokio::select! {
+            result = self.run_accept_loops(shutdown) => result,
+            () = self.report_diagnostics() => Ok(()),
+        };
         self.stop_profile_refresh().await;
         result
+    }
+
+    async fn report_diagnostics(&self) {
+        let seconds = self.resources.config.diagnostics_interval_secs;
+        if seconds == 0 {
+            std::future::pending::<()>().await;
+            return;
+        }
+        let mut interval = tokio::time::interval(Duration::from_secs(seconds));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let report = format!("umbra diagnostics {:?}\n", self.performance_snapshot());
+            let _ = tokio::io::stderr().write_all(report.as_bytes()).await;
+        }
     }
 
     async fn run_accept_loops<S>(&self, shutdown: S) -> Result<(), CoreError>
@@ -504,8 +571,9 @@ impl ServerRuntime {
                     let replay = Arc::clone(&self.replay);
                     let timing = self.probe_policy.timing;
                     let padding_scheme = self.padding_scheme.clone();
+                    let resources = self.resources.clone();
                     tcp_sessions.spawn(async move {
-                        let outcome = Box::pin(dispatch_runtime_with_connector(
+                        let outcome = Box::pin(dispatch_runtime_with_resources(
                             stream,
                             cfg.as_ref(),
                             profile.as_ref(),
@@ -513,7 +581,7 @@ impl ServerRuntime {
                             current_unix_time()?,
                             crate::target_connect::connect_tcp_target,
                             timing,
-                            &padding_scheme,
+                            (&padding_scheme, &resources),
                         ))
                         .await?;
                         Ok::<_, CoreError>(AcceptedServerSession { peer, outcome })
@@ -575,37 +643,83 @@ pub struct ClientRuntime {
 }
 
 struct ClientConnections {
+    resources: std::sync::OnceLock<crate::resources::Resources>,
     quic: tokio::sync::Mutex<Option<QuicClientConnection>>,
+    quic_endpoints: tokio::sync::Mutex<HashMap<bool, quinn::Endpoint>>,
     mux: tokio::sync::Mutex<Vec<(crate::mux_io::MuxDriver, crate::mux_io::ClientMux)>>,
     mux_changed: Arc<tokio::sync::Notify>,
     stopped: tokio::sync::Notify,
     closed: AtomicBool,
     mux_waiters: tokio::sync::Semaphore,
+    mux_setup: Arc<tokio::sync::Semaphore>,
+}
+
+struct MuxSetup {
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    changed: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for MuxSetup {
+    fn drop(&mut self) {
+        drop(self.permit.take());
+        self.changed.notify_waiters();
+    }
 }
 
 impl Default for ClientConnections {
     fn default() -> Self {
         Self {
+            resources: std::sync::OnceLock::new(),
             quic: tokio::sync::Mutex::new(None),
+            quic_endpoints: tokio::sync::Mutex::new(HashMap::new()),
             mux: tokio::sync::Mutex::new(Vec::new()),
             mux_changed: Arc::new(tokio::sync::Notify::new()),
             stopped: tokio::sync::Notify::new(),
             closed: AtomicBool::new(false),
             mux_waiters: tokio::sync::Semaphore::new(MAX_MUX_QUEUED_OPENS),
+            mux_setup: Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 }
 
 impl ClientConnections {
+    fn resources(&self, cfg: &ClientCfg) -> Result<&crate::resources::Resources, CoreError> {
+        if self.resources.get().is_none() {
+            let _ = self
+                .resources
+                .set(crate::resources::Resources::new(cfg.performance)?);
+        }
+        self.resources.get().ok_or(CoreError::InvalidConfig(
+            "client resource initialization failed",
+        ))
+    }
+
     async fn open_mux(
         &self,
         cfg: &ClientCfg,
         target: TargetAddr,
     ) -> Result<crate::mux_io::MuxIo, CoreError> {
+        let resources = self.resources(cfg)?;
         let reservation = self
             .reserve_mux(|| async {
-                let outer = open_tcp_outer(cfg).await?;
-                MuxSession::client(outer, &cfg.padding_scheme).map_err(CoreError::from)
+                let outer = open_tcp_outer_with_resources(cfg, resources).await?;
+                let lease = outer.lease.clone();
+                let mut mux = if cfg.performance.adaptive_mux {
+                    MuxSession::adaptive(
+                        outer,
+                        umbra_inner::mux::MuxRole::Client,
+                        &cfg.padding_scheme,
+                        cfg.performance.flow(),
+                        resources.receive(0)?,
+                    )
+                    .map_err(CoreError::from)
+                } else {
+                    MuxSession::client(outer, &cfg.padding_scheme).map_err(CoreError::from)
+                }?;
+                if let Some(lease) = lease {
+                    mux.retain_lease(lease);
+                }
+                Ok(mux)
             })
             .await?;
         reservation
@@ -662,10 +776,10 @@ impl ClientConnections {
         Opening: Future<Output = Result<MuxSession<IO>, CoreError>>,
     {
         loop {
-            // Register before inspecting slots so their last release cannot be lost.
             let changed = self.mux_changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
+            let mut retiring = Vec::new();
             let mut active = self.mux.lock().await;
             if self.closed.load(Ordering::Acquire) {
                 return Err(CoreError::InvalidConfig("client runtime is shutting down"));
@@ -674,68 +788,122 @@ impl ClientConnections {
             while index < active.len() {
                 let handle = &active[index].1;
                 if !handle.is_healthy() || (!handle.is_accepting() && handle.live_streams() == 0) {
-                    let (driver, _) = active.remove(index);
-                    driver.shutdown().await;
+                    retiring.push(active.remove(index).0);
                 } else {
                     index += 1;
                 }
             }
-            for (_, handle) in active.iter() {
-                if let Some(reserved) = handle.try_reserve() {
-                    return Ok(reserved);
-                }
-            }
-            let can_create = active
-                .iter()
-                .filter(|(_, handle)| handle.is_accepting())
-                .count()
-                < MAX_MUX_OUTERS;
-            if can_create && active.len() == MAX_MUX_TOTAL_OUTERS {
-                // Preserve old streams while spare slots exist. At the hard
-                // total bound, retire only the oldest draining outer: its old
-                // operations fail terminally and are never replayed elsewhere.
-                if let Some(index) = oldest_draining_outer(&active) {
-                    let (driver, _) = active.remove(index);
-                    driver.shutdown().await;
-                }
-            }
-            if can_create && active.len() < MAX_MUX_TOTAL_OUTERS {
-                let stopped = self.stopped.notified();
-                tokio::pin!(stopped);
-                stopped.as_mut().enable();
-                if self.closed.load(Ordering::Acquire) {
-                    return Err(CoreError::InvalidConfig("client runtime is shutting down"));
-                }
-                // The pool lock coordinates establishment. It never guards stream I/O.
-                let session = tokio::select! {
-                    () = &mut stopped => return Err(CoreError::InvalidConfig("client runtime is shutting down")),
-                    result = open() => result?,
-                };
-                let (driver, handle) =
-                    crate::mux_io::start_client_with_notifier(session, self.mux_changed.clone())?;
-                let reservation = handle.try_reserve();
-                active.push((driver, handle));
-                if let Some(reservation) = reservation {
-                    return Ok(reservation);
+            let reserved = active.iter().find_map(|(_, handle)| handle.try_reserve());
+            let can_create = reserved.is_none()
+                && active
+                    .iter()
+                    .filter(|(_, handle)| handle.is_accepting())
+                    .count()
+                    < MAX_MUX_OUTERS;
+            let setup = if can_create {
+                if let Ok(permit) = self.mux_setup.clone().try_acquire_owned() {
+                    if active.len() == MAX_MUX_TOTAL_OUTERS {
+                        if let Some(index) = oldest_draining_outer(&active) {
+                            retiring.push(active.remove(index).0);
+                        }
+                    }
+                    (active.len() < MAX_MUX_TOTAL_OUTERS).then(|| MuxSetup {
+                        permit: Some(permit),
+                        changed: self.mux_changed.clone(),
+                    })
+                } else {
+                    None
                 }
             } else {
-                drop(active);
+                None
+            };
+            drop(active);
+            for driver in retiring {
+                driver.shutdown().await;
+            }
+            if let Some(reserved) = reserved {
+                return Ok(reserved);
+            }
+            let Some(setup) = setup else {
                 changed.await;
+                continue;
+            };
+            let stopped = self.stopped.notified();
+            tokio::pin!(stopped);
+            stopped.as_mut().enable();
+            if self.closed.load(Ordering::Acquire) {
+                return Err(CoreError::InvalidConfig("client runtime is shutting down"));
+            }
+            // One explicit in-flight reservation deduplicates establishment.
+            // Other callers can reuse newly freed slots while this I/O waits.
+            let session = tokio::select! {
+                () = &mut stopped => return Err(CoreError::InvalidConfig("client runtime is shutting down")),
+                result = open() => result?,
+            };
+            let mut active = self.mux.lock().await;
+            if self.closed.load(Ordering::Acquire) {
+                return Err(CoreError::InvalidConfig("client runtime is shutting down"));
+            }
+            let (driver, handle) =
+                crate::mux_io::start_client_with_notifier(session, self.mux_changed.clone())?;
+            let reserved = handle.try_reserve();
+            active.push((driver, handle));
+            // Release pending capacity before publishing the unlocked pool.
+            drop(setup);
+            if let Some(reserved) = reserved {
+                return Ok(reserved);
             }
         }
     }
 
-    async fn quic(&self, cfg: &ClientCfg) -> Result<quinn::Connection, CoreError> {
+    async fn quic(&self, cfg: &ClientCfg) -> Result<QuicClientHandle, CoreError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(CoreError::InvalidConfig("client runtime is shutting down"));
+        }
         let mut active = self.quic.lock().await;
         if let Some(outer) = active.as_ref() {
             if outer.connection.close_reason().is_none() {
-                return Ok(outer.connection.clone());
+                return Ok(outer.handle());
             }
         }
         active.take();
-        let outer = QuicClientConnection::connect(cfg).await?;
-        let connection = outer.connection.clone();
+        let outer = self.connect_quic(cfg).await?;
+        let connection = outer.handle();
         *active = Some(outer);
+        Ok(connection)
+    }
+
+    async fn connect_quic(&self, cfg: &ClientCfg) -> Result<QuicClientConnection, CoreError> {
+        let stopped = self.stopped.notified();
+        tokio::pin!(stopped);
+        stopped.as_mut().enable();
+        if self.closed.load(Ordering::Acquire) {
+            return Err(CoreError::InvalidConfig("client runtime is shutting down"));
+        }
+        let opening = async {
+            let server_addr = resolve_server_addr(&cfg.server).await?;
+            let endpoint = {
+                let mut endpoints = self.quic_endpoints.lock().await;
+                if self.closed.load(Ordering::Acquire) {
+                    return Err(CoreError::InvalidConfig("client runtime is shutting down"));
+                }
+                if let Some(endpoint) = endpoints.get(&server_addr.is_ipv6()) {
+                    endpoint.clone()
+                } else {
+                    let endpoint = QuicClientConnection::endpoint(cfg, server_addr)?;
+                    endpoints.insert(server_addr.is_ipv6(), endpoint.clone());
+                    endpoint
+                }
+            };
+            QuicClientConnection::connect_on(cfg, endpoint, server_addr, self.resources(cfg)?).await
+        };
+        let connection = tokio::select! {
+            () = &mut stopped => return Err(CoreError::InvalidConfig("client runtime is shutting down")),
+            result = tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, opening) => result.map_err(|_| CoreError::IdleTimeout("outer QUIC connection setup"))??,
+        };
+        if self.closed.load(Ordering::Acquire) {
+            return Err(CoreError::InvalidConfig("client runtime is shutting down"));
+        }
         Ok(connection)
     }
 
@@ -743,14 +911,22 @@ impl ClientConnections {
         self.closed.store(true, Ordering::Release);
         self.stopped.notify_waiters();
         self.mux_changed.notify_waiters();
+        let _finished_setup = self.mux_setup.acquire().await;
         let active = std::mem::take(&mut *self.mux.lock().await);
         for (driver, _) in active {
             driver.shutdown().await;
         }
-        if let Some(outer) = self.quic.lock().await.take() {
-            outer.endpoint.close(0_u32.into(), b"");
-            let _ = tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, outer.endpoint.wait_idle())
-                .await;
+        if let Some(mut outer) = self.quic.lock().await.take() {
+            outer.connection.close(0_u32.into(), b"");
+            if let Some(growth) = outer.growth.take() {
+                growth.abort();
+                let _ = growth.await;
+            }
+        }
+        let endpoints = std::mem::take(&mut *self.quic_endpoints.lock().await);
+        for endpoint in endpoints.into_values() {
+            endpoint.close(0_u32.into(), b"");
+            let _ = tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, endpoint.wait_idle()).await;
         }
     }
 }
@@ -770,17 +946,49 @@ fn oldest_draining_outer(
 struct QuicClientConnection {
     endpoint: quinn::Endpoint,
     connection: quinn::Connection,
+    read: crate::quic_resources::QuicReadOwner,
+    growth: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+struct QuicClientHandle {
+    _endpoint: quinn::Endpoint,
+    connection: quinn::Connection,
+    read: crate::quic_resources::QuicReadOwner,
+}
+
+impl std::ops::Deref for QuicClientHandle {
+    type Target = quinn::Connection;
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
+}
+
+impl QuicClientHandle {
+    async fn open_bi(
+        &self,
+    ) -> Result<
+        (
+            quinn::SendStream,
+            crate::quic_resources::QuicRead<quinn::RecvStream>,
+        ),
+        quinn::ConnectionError,
+    > {
+        let (send, recv) = self.connection.open_bi().await?;
+        Ok((send, self.read.reader(recv)))
+    }
 }
 
 impl QuicClientConnection {
-    async fn connect(cfg: &ClientCfg) -> Result<Self, CoreError> {
-        tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, Self::connect_inner(cfg))
-            .await
-            .map_err(|_| CoreError::IdleTimeout("outer QUIC connection setup"))?
+    fn handle(&self) -> QuicClientHandle {
+        QuicClientHandle {
+            _endpoint: self.endpoint.clone(),
+            connection: self.connection.clone(),
+            read: self.read.clone(),
+        }
     }
 
-    async fn connect_inner(cfg: &ClientCfg) -> Result<Self, CoreError> {
-        let server_addr = resolve_server_addr(&cfg.server).await?;
+    fn endpoint(cfg: &ClientCfg, server_addr: SocketAddr) -> Result<quinn::Endpoint, CoreError> {
         let bind_ip = if server_addr.is_ipv6() {
             IpAddr::V6(Ipv6Addr::UNSPECIFIED)
         } else {
@@ -789,21 +997,54 @@ impl QuicClientConnection {
         let mut endpoint =
             quinn::Endpoint::client(SocketAddr::new(bind_ip, 0)).map_err(quic_error)?;
         endpoint.set_default_client_config(quic_crypto::client_config(cfg)?);
+        Ok(endpoint)
+    }
+
+    async fn connect_on(
+        cfg: &ClientCfg,
+        endpoint: quinn::Endpoint,
+        server_addr: SocketAddr,
+        resources: &crate::resources::Resources,
+    ) -> Result<Self, CoreError> {
+        let group = resources.group(0, crate::diagnostics::Mode::Quic);
+        let budget = crate::quic_resources::QuicBudget::new(&group)?;
         let connection = endpoint
             .connect(server_addr, &cfg.server_name)
             .map_err(quic_error)?
             .await
             .map_err(quic_error)?;
+        let read = budget.read_owner();
+        let growth = tokio::spawn(crate::quic_resources::control_receive_window(
+            budget,
+            connection.clone(),
+        ));
         Ok(Self {
             endpoint,
             connection,
+            read,
+            growth: Some(growth),
         })
+    }
+
+    #[cfg(test)]
+    async fn connect(cfg: &ClientCfg) -> Result<Self, CoreError> {
+        tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, async {
+            let server_addr = resolve_server_addr(&cfg.server).await?;
+            let endpoint = Self::endpoint(cfg, server_addr)?;
+            let resources = crate::resources::Resources::new(cfg.performance)?;
+            Self::connect_on(cfg, endpoint, server_addr, &resources).await
+        })
+        .await
+        .map_err(|_| CoreError::IdleTimeout("outer QUIC connection setup"))?
     }
 }
 
 impl Drop for QuicClientConnection {
     fn drop(&mut self) {
-        self.endpoint.close(0_u32.into(), b"");
+        self.connection.close(0_u32.into(), b"");
+        if let Some(growth) = self.growth.take() {
+            growth.abort();
+        }
     }
 }
 
@@ -1065,11 +1306,11 @@ where
         };
         match transport {
             TransportKind::Tcp => {
-                let outer = open_tcp_outer(cfg).await?;
+                let outer = open_tcp_outer_with_resources(cfg, connections.resources(cfg)?).await?;
                 client_udp_association_over_tcp_outer(cfg, socks, outer).await?;
             }
             TransportKind::Quic => {
-                client_quic_udp_association(cfg, socks).await?;
+                client_quic_udp_association(cfg, socks, connections).await?;
             }
         }
         return Ok(ClientSessionOutcome {
@@ -1100,6 +1341,10 @@ where
             let opening = async {
                 let (stream, mut endpoint) = open_authenticated_tcp(cfg, AUTH_VERSION_V2).await?;
                 let pending = endpoint.take_pending_input();
+                let stream = crate::resources::ResourceIo::new(
+                    stream,
+                    connections.resources(cfg)?.reserve(0, 1024 * 1024)?,
+                );
                 let owned = crate::owned_tls::EstablishedTcp::new(
                     stream,
                     TlsAppEndpoint::Client(Box::new(endpoint)),
@@ -1178,67 +1423,66 @@ where
 async fn client_udp_association_over_tcp_outer<S, Outer>(
     cfg: &ClientCfg,
     control: &mut S,
-    outer: Outer,
+    mut outer: Outer,
 ) -> Result<(), CoreError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
     Outer: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let udp = bind_socks_udp_relay(cfg).await?;
-    let bound = udp.local_addr()?;
-    write_bound_success_reply(control, bound).await?;
-    let mut mux = MuxSession::client(outer, &cfg.padding_scheme)?;
+    write_bound_success_reply(control, udp.local_addr()?).await?;
+    let clock = crate::relay::ProgressClock::new();
+    let mut control = clock.track(control);
+    let mut mux = MuxSession::client(clock.track(&mut outer), &cfg.padding_scheme)?;
     let mut reassembler = SocksUdpReassembler::default();
     let mut client_peer = None;
-    let mut control_buf = [0_u8; 1];
-    let mut udp_buf = vec![0_u8; UDP_RELAY_BUF_LEN];
-
+    let mut control_buf = [0; 1];
+    let mut udp_buf = vec![0; UDP_RELAY_BUF_LEN];
+    let mut outgoing: Option<(TargetAddr, Vec<u8>)> = None;
+    let mut fragments = VecDeque::<Vec<u8>>::new();
+    let mut need_flush = false;
+    let idle = clock.expired(DEFAULT_SESSION_IDLE_TIMEOUT);
+    tokio::pin!(idle);
     loop {
-        let idle = tokio::time::sleep(DEFAULT_SESSION_IDLE_TIMEOUT);
-        tokio::pin!(idle);
+        if !need_flush {
+            if let Some((target, payload)) = &outgoing {
+                mux.queue_udp_datagram(target, payload)?;
+                outgoing = None;
+                need_flush = true;
+            }
+        }
         tokio::select! {
             () = &mut idle => return Err(CoreError::IdleTimeout("client UDP association")),
-            read = control.read(&mut control_buf) => {
-                if read? == 0 {
-                    return Ok(());
-                }
-            }
-            received = udp.recv_from(&mut udp_buf) => {
+            read = control.read(&mut control_buf) => if read? == 0 { return Ok(()); },
+            received = udp.recv_from(&mut udp_buf), if outgoing.is_none() => {
                 let (read, peer) = received?;
-                if let Some(expected) = client_peer {
-                    if expected != peer {
-                        continue;
-                    }
-                }
-                let Ok(packet) = decode_udp_packet(&udp_buf[..read]) else {
-                    continue;
-                };
-                if client_peer.is_none() {
-                    client_peer = Some(peer);
-                }
+                if client_peer.is_some_and(|expected| expected != peer) { continue; }
+                let Ok(packet) = decode_udp_packet(&udp_buf[..read]) else { continue; };
+                client_peer.get_or_insert(peer);
+                clock.advance();
                 if let Some(payload) = reassembler.process(packet, Instant::now())? {
-                    mux.send_udp_datagram(&payload.target, &payload.payload).await?;
+                    outgoing = Some((payload.target, payload.payload));
                 }
             }
-            event = mux.receive_next() => {
-                let event = match event {
-                    Ok(event) => event,
-                    Err(umbra_inner::InnerError::Io(err))
-                        if is_association_closed_io(&err) => return Ok(()),
-                    Err(err) => return Err(err.into()),
+            progress = std::future::poll_fn(|cx| crate::mux_io::poll_session_with_input(&mut mux, need_flush, fragments.is_empty(), cx)) => {
+                let progress = match progress {
+                    Ok(progress) => progress,
+                    Err(umbra_inner::InnerError::Io(error)) if is_association_closed_io(&error) => return Ok(()),
+                    Err(error) => return Err(error.into()),
                 };
-                if let MuxEvent::UdpDatagram { target, payload } = event {
-                    let Some(peer) = client_peer else {
-                        continue;
-                    };
-                    for packet in encode_udp_response_packets(
-                        &target,
-                        &payload,
-                        DEFAULT_RESPONSE_FRAGMENT_PAYLOAD,
-                    )? {
-                        udp.send_to(&packet, peer).await?;
+                if progress.flushed { need_flush = false; }
+                match progress.event {
+                    Some(MuxEvent::UdpDatagram { target, payload }) if client_peer.is_some() => {
+                        fragments = encode_udp_response_packets(&target, &payload, DEFAULT_RESPONSE_FRAGMENT_PAYLOAD)?.into();
                     }
+                    Some(MuxEvent::Fin { .. } | MuxEvent::Rst { .. }) => return Ok(()),
+                    _ => {}
                 }
+            }
+            delivered = send_pending_socks_udp(&udp, client_peer, &fragments), if !fragments.is_empty() => {
+                delivered?;
+                fragments.pop_front();
+                clock.advance();
             }
         }
     }
@@ -1248,7 +1492,7 @@ where
 pub async fn open_outer_from_config(
     cfg: &ClientCfg,
     plan: &ClientConnectPlan,
-) -> Result<tokio::io::DuplexStream, CoreError> {
+) -> Result<crate::tls_io::TlsAppIo, CoreError> {
     match plan.transport {
         TransportKind::Tcp if plan.mode == ClientInnerMode::Mux => open_tcp_outer(cfg).await,
         TransportKind::Tcp => Err(CoreError::InvalidConfig(
@@ -1271,7 +1515,7 @@ fn selected_client_inner_mode(cfg: &ClientCfg) -> ClientInnerMode {
 }
 
 async fn client_quic_stream_session<S>(
-    connection: &quinn::Connection,
+    connection: &QuicClientHandle,
     socks: &mut S,
     target: &TargetAddr,
 ) -> Result<(), CoreError>
@@ -1306,91 +1550,77 @@ where
     Ok(())
 }
 
-async fn client_quic_udp_association<S>(cfg: &ClientCfg, control: &mut S) -> Result<(), CoreError>
+async fn client_quic_udp_association<S>(
+    cfg: &ClientCfg,
+    control: &mut S,
+    connections: &ClientConnections,
+) -> Result<(), CoreError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let udp = bind_socks_udp_relay(cfg).await?;
     let bound = udp.local_addr()?;
-    let server_addr = resolve_server_addr(&cfg.server).await?;
-    let bind_addr: SocketAddr = if server_addr.is_ipv6() {
-        "[::]:0"
-            .parse()
-            .map_err(|_| CoreError::InvalidConfig("invalid QUIC IPv6 bind address"))?
-    } else {
-        "0.0.0.0:0"
-            .parse()
-            .map_err(|_| CoreError::InvalidConfig("invalid QUIC IPv4 bind address"))?
-    };
-    let mut endpoint = quinn::Endpoint::client(bind_addr).map_err(quic_error)?;
-    endpoint.set_default_client_config(quic_crypto::client_config(cfg)?);
-    let connection = endpoint
-        .connect(server_addr, &cfg.server_name)
-        .map_err(quic_error)?
-        .await
-        .map_err(quic_error)?;
+    let outer = connections.connect_quic(cfg).await?;
+    let connection = outer.handle();
     let (mut send, mut recv) = connection.open_bi().await.map_err(quic_error)?;
     write_udp_association_marker(&mut send).await?;
     write_bound_success_reply(control, bound).await?;
-    let mut envelope_reader = umbra_transport::quic::UdpEnvelopeReader::default();
-
+    let clock = crate::relay::ProgressClock::new();
+    let mut send = clock.track(&mut send);
+    let mut recv = clock.track(&mut recv);
+    let mut control = clock.track(control);
+    let mut envelopes = umbra_transport::quic::UdpEnvelopeReader::default();
+    let mut outgoing = umbra_transport::quic::UdpEnvelopeWriter::default();
     let mut reassembler = SocksUdpReassembler::default();
     let mut client_peer = None;
-    let mut control_buf = [0_u8; 1];
-    let mut udp_buf = vec![0_u8; UDP_RELAY_BUF_LEN];
-
+    let mut fragments = VecDeque::<Vec<u8>>::new();
+    let mut control_buf = [0; 1];
+    let mut udp_buf = vec![0; UDP_RELAY_BUF_LEN];
+    let idle = clock.expired(DEFAULT_SESSION_IDLE_TIMEOUT);
+    tokio::pin!(idle);
     loop {
-        let idle = tokio::time::sleep(DEFAULT_SESSION_IDLE_TIMEOUT);
-        tokio::pin!(idle);
+        let writing = !outgoing.is_idle();
         tokio::select! {
-            () = &mut idle => {
-                connection.close(0_u32.into(), b"");
-                endpoint.close(0_u32.into(), b"");
-                return Err(CoreError::IdleTimeout("client QUIC UDP association"));
-            }
-            read = control.read(&mut control_buf) => {
-                if read? == 0 {
-                    connection.close(0_u32.into(), b"");
-                    endpoint.close(0_u32.into(), b"");
-                    return Ok(());
-                }
-            }
-            received = udp.recv_from(&mut udp_buf) => {
+            () = &mut idle => return Err(CoreError::IdleTimeout("client QUIC UDP association")),
+            read = control.read(&mut control_buf) => if read? == 0 { return Ok(()); },
+            received = udp.recv_from(&mut udp_buf), if !writing => {
                 let (read, peer) = received?;
-                if let Some(expected) = client_peer {
-                    if expected != peer {
-                        continue;
-                    }
-                }
-                let Ok(packet) = decode_udp_packet(&udp_buf[..read]) else {
-                    continue;
-                };
-                if client_peer.is_none() {
-                    client_peer = Some(peer);
-                }
+                if client_peer.is_some_and(|expected| expected != peer) { continue; }
+                let Ok(packet) = decode_udp_packet(&udp_buf[..read]) else { continue; };
+                client_peer.get_or_insert(peer);
+                clock.advance();
                 if let Some(payload) = reassembler.process(packet, Instant::now())? {
-                    write_udp_envelope_stream(&mut send, &payload.target, &payload.payload).await?;
+                    outgoing.queue(&payload.target, &payload.payload)?;
                 }
             }
-            envelope = envelope_reader.read_next(&mut recv) => {
+            written = outgoing.flush_pending(&mut send), if writing => { written?; }
+            envelope = envelopes.read_next(&mut recv), if fragments.is_empty() => {
                 let envelope = match envelope {
                     Ok(envelope) => envelope,
-                    Err(umbra_transport::TransportError::Io(err))
-                        if is_association_closed_io(&err) => return Ok(()),
-                    Err(err) => return Err(err.into()),
+                    Err(umbra_transport::TransportError::Io(error)) if is_association_closed_io(&error) => return Ok(()),
+                    Err(error) => return Err(error.into()),
                 };
-                let Some(peer) = client_peer else {
-                    continue;
-                };
-                for packet in encode_udp_response_packets(
-                    &envelope.target,
-                    &envelope.payload,
-                    DEFAULT_RESPONSE_FRAGMENT_PAYLOAD,
-                )? {
-                    udp.send_to(&packet, peer).await?;
+                if client_peer.is_some() {
+                    fragments = encode_udp_response_packets(&envelope.target, &envelope.payload, DEFAULT_RESPONSE_FRAGMENT_PAYLOAD)?.into();
                 }
             }
+            delivered = send_pending_socks_udp(&udp, client_peer, &fragments), if !fragments.is_empty() => {
+                delivered?;
+                fragments.pop_front();
+                clock.advance();
+            }
         }
+    }
+}
+
+async fn send_pending_socks_udp(
+    socket: &UdpSocket,
+    peer: Option<SocketAddr>,
+    fragments: &VecDeque<Vec<u8>>,
+) -> io::Result<usize> {
+    match (peer, fragments.front()) {
+        (Some(peer), Some(bytes)) => socket.send_to(bytes, peer).await,
+        _ => std::future::pending().await,
     }
 }
 
@@ -1528,13 +1758,27 @@ fn require_http1_spider(alpn: Option<&[u8]>) -> Result<(), CoreError> {
     }
 }
 
-async fn open_tcp_outer(cfg: &ClientCfg) -> Result<tokio::io::DuplexStream, CoreError> {
+async fn open_tcp_outer(cfg: &ClientCfg) -> Result<crate::tls_io::TlsAppIo, CoreError> {
+    let resources = crate::resources::Resources::new(cfg.performance)?;
+    open_tcp_outer_with_resources(cfg, &resources).await
+}
+
+async fn open_tcp_outer_with_resources(
+    cfg: &ClientCfg,
+    resources: &crate::resources::Resources,
+) -> Result<crate::tls_io::TlsAppIo, CoreError> {
+    let lease = resources.reserve(0, 12 * 1024 * 1024)?;
     let (stream, mut endpoint) = open_authenticated_tcp(cfg, AUTH_VERSION_V1).await?;
     let pending = endpoint.take_pending_input();
-    Ok(spawn_tls_app_io(
-        PrefixedStream::new(pending, stream),
+    let mut io = spawn_tls_app_io(
+        PrefixedStream::new(
+            pending,
+            crate::resources::ResourceIo::new(stream, lease.clone()),
+        ),
         TlsAppEndpoint::Client(Box::new(endpoint)),
-    ))
+    );
+    io.lease = Some(lease);
+    Ok(io)
 }
 
 async fn open_authenticated_tcp(
@@ -1838,7 +2082,7 @@ impl CertVerify for RealityCertVerifier {
     }
 }
 
-async fn dispatch_runtime_with_connector<C, D, Connect, ConnectFuture>(
+async fn dispatch_runtime_with_resources<C, D, Connect, ConnectFuture>(
     mut conn: C,
     cfg: &crate::dispatch::ServerCfg,
     profile: &DestProfile,
@@ -1846,7 +2090,7 @@ async fn dispatch_runtime_with_connector<C, D, Connect, ConnectFuture>(
     now_unix: u64,
     mut connect_dest_or_target: Connect,
     timing: crate::probe::TimingAlignment,
-    padding_scheme: &PadScheme,
+    inner: (&PadScheme, &crate::resources::Resources),
 ) -> Result<DispatchOutcome, CoreError>
 where
     C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -1854,6 +2098,7 @@ where
     Connect: FnMut(String) -> ConnectFuture + Send,
     ConnectFuture: Future<Output = Result<D, std::io::Error>> + Send + 'static,
 {
+    let (padding_scheme, resources) = inner;
     let chello_raw = read_client_hello_raw(&mut conn, cfg.hello_limits).await?;
     let started_at = tokio::time::Instant::now();
     match classify_client_hello(
@@ -1872,26 +2117,60 @@ where
             let client_finished = read_required_non_ccs_tls_record(&mut conn).await?;
             authenticated.tls_server.drive(&client_finished)?;
             let server_flight_len = authenticated.server_flight.len();
-            let endpoint = TlsAppEndpoint::Server(Box::new(authenticated.tls_server));
-            if authenticated.version == AUTH_VERSION_V2 {
-                let owned = crate::owned_tls::EstablishedTcp::new(conn, endpoint, Vec::new())?;
-                let (session, mut target) = crate::vision_io::server_open(owned, |target| {
-                    connect_dest_or_target(target_to_host_port(&target))
-                })
-                .await?;
-                session
-                    .relay(&mut target, DEFAULT_SESSION_IDLE_TIMEOUT)
-                    .await?;
+            let group = authenticated.credential_group;
+            let storage = if authenticated.version == AUTH_VERSION_V2 {
+                1024 * 1024
             } else {
-                let tls_io = spawn_tls_app_io(conn, endpoint);
-                relay_one_server_inner_stream(
-                    tls_io,
-                    connect_dest_or_target,
-                    padding_scheme,
-                    DEFAULT_SESSION_IDLE_TIMEOUT,
-                )
-                .await?;
-            }
+                12 * 1024 * 1024
+            };
+            let lease = resources.reserve(group, storage)?;
+            let scope = resources.group(
+                group,
+                if authenticated.version == AUTH_VERSION_V2 {
+                    crate::diagnostics::Mode::TcpVision
+                } else {
+                    crate::diagnostics::Mode::TcpMux
+                },
+            );
+            let observation = scope.observation.clone();
+            let conn = crate::diagnostics::ObservedIo::new(
+                crate::resources::ResourceIo::new(conn, lease.clone()),
+                observation.clone(),
+                false,
+            );
+            let endpoint = TlsAppEndpoint::Server(Box::new(authenticated.tls_server));
+            let version = authenticated.version;
+            let work = resources.scheduler.group(group);
+            let workers = work.clone();
+            work.wrap(async move {
+                if version == AUTH_VERSION_V2 {
+                    let owned = crate::owned_tls::EstablishedTcp::new(conn, endpoint, Vec::new())?;
+                    let (session, target) = crate::vision_io::server_open(owned, |target| {
+                        crate::diagnostics::connecting(
+                            observation.clone(),
+                            connect_dest_or_target(target_to_host_port(&target)),
+                        )
+                    })
+                    .await?;
+                    let mut target = crate::diagnostics::ObservedIo::new(target, observation, true);
+                    session
+                        .relay(&mut target, DEFAULT_SESSION_IDLE_TIMEOUT)
+                        .await?;
+                } else {
+                    let tls_io =
+                        crate::tls_io::spawn_tls_app_io_scheduled(conn, endpoint, Some(&workers));
+                    relay_one_server_inner_stream(
+                        tls_io,
+                        connect_dest_or_target,
+                        padding_scheme,
+                        DEFAULT_SESSION_IDLE_TIMEOUT,
+                        Some((scope, lease)),
+                    )
+                    .await?;
+                }
+                Ok::<(), CoreError>(())
+            })
+            .await?;
             Ok(DispatchOutcome::Authenticated {
                 sni: authenticated.sni,
                 server_flight_len,
@@ -1915,14 +2194,29 @@ where
     }
 }
 
-/// Receive one kernel batch while retaining the datagram stride (UDP GRO).
+/// Receive bounded physical messages while retaining each GRO stride and metadata.
 async fn receive_quic_datagrams(
     socket: &dyn quinn::AsyncUdpSocket,
-    buf: &mut [u8],
-) -> io::Result<(quinn::udp::RecvMeta, usize)> {
-    let mut meta = [quinn::udp::RecvMeta::default()];
-    std::future::poll_fn(|cx| socket.poll_recv(cx, &mut [IoSliceMut::new(buf)], &mut meta)).await?;
-    Ok((meta[0], meta[0].len))
+    buffers: &mut [Vec<u8>; 4],
+    metadata: &mut [quinn::udp::RecvMeta; 4],
+) -> io::Result<usize> {
+    let count = std::future::poll_fn(|cx| {
+        let mut slices = buffers.each_mut().map(|buffer| IoSliceMut::new(buffer));
+        socket.poll_recv(cx, &mut slices, metadata)
+    })
+    .await?;
+    if count > buffers.len()
+        || metadata[..count]
+            .iter()
+            .zip(buffers.iter())
+            .any(|(meta, buffer)| meta.len > buffer.len())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid QUIC receive batch",
+        ));
+    }
+    Ok(count)
 }
 
 /// CID aliases have a fixed lifetime (the flow) and a fixed storage budget.
@@ -1953,18 +2247,18 @@ struct QuicFlowRoute {
     peer: SocketAddr,
     original: Option<Vec<u8>>,
     cids: Arc<QuicFlowCids>,
-    sender: mpsc::Sender<Vec<u8>>,
+    sender: crate::quic_ingress::Sender,
 }
 
 struct QuicFlowInbox {
     peer: SocketAddr,
-    receiver: mpsc::Receiver<Vec<u8>>,
+    receiver: crate::quic_ingress::Receiver,
     cids: Arc<QuicFlowCids>,
 }
 
 impl QuicFlowRoute {
     fn new(peer: SocketAddr, datagram: &[u8]) -> (Self, QuicFlowInbox) {
-        let (sender, receiver) = mpsc::channel(QUIC_FLOW_QUEUE_CAPACITY);
+        let (sender, receiver) = crate::quic_ingress::channel(QUIC_FLOW_QUEUE_CAPACITY);
         let cids = Arc::new(QuicFlowCids::default());
         let original = quic_long_header_cids(datagram).map(|(dcid, _)| dcid.to_vec());
         if let Some(cid) = &original {
@@ -1987,7 +2281,7 @@ impl QuicFlowRoute {
 }
 
 enum QuicRouteMatch<'a> {
-    Existing(&'a mpsc::Sender<Vec<u8>>),
+    Existing(&'a crate::quic_ingress::Sender),
     New,
     Ambiguous,
 }
@@ -2092,6 +2386,7 @@ impl quinn_proto::ConnectionIdGenerator for RoutedCidGenerator {
 
 /// Context kept together while dispatching one server-side QUIC flow.
 struct QuicRuntimeDispatch<'a> {
+    resources: &'a crate::resources::Resources,
     client_socket: &'a UdpSocket,
     endpoint_socket: Arc<dyn quinn::AsyncUdpSocket>,
     cfg: &'a crate::dispatch::ServerCfg,
@@ -2104,7 +2399,7 @@ struct QuicRuntimeDispatch<'a> {
 
 /// Buffered QUIC datagrams plus the contiguous ClientHello recovered from CRYPTO frames.
 struct QuicPrefetchedClientHello {
-    datagrams: Vec<Vec<u8>>,
+    datagrams: Vec<crate::quic_ingress::Datagram>,
     client_hello: Vec<u8>,
     scid: Vec<u8>,
     dcid_len: usize,
@@ -2115,12 +2410,12 @@ enum QuicPrefetchOutcome {
     Complete(QuicPrefetchedClientHello),
     Fallback {
         reason: FallbackReason,
-        datagrams: Vec<Vec<u8>>,
+        datagrams: Vec<crate::quic_ingress::Datagram>,
     },
 }
 
 async fn dispatch_quic_runtime(
-    datagram: Vec<u8>,
+    datagram: crate::quic_ingress::Datagram,
     mut inbox: QuicFlowInbox,
     ctx: QuicRuntimeDispatch<'_>,
     streams: &mut JoinSet<Result<(), CoreError>>,
@@ -2154,7 +2449,7 @@ async fn dispatch_quic_runtime(
             "QUIC prefetch did not retain initial datagram",
         ))?;
     match classify_quic_client_hello(
-        first_datagram,
+        first_datagram.to_vec(),
         prefetched.client_hello,
         &prefetched.scid,
         DispatchContext {
@@ -2168,13 +2463,21 @@ async fn dispatch_quic_runtime(
             ctx.timing.wait_started_at(started_at, ctx.profile).await;
             let client_hello_len = authenticated.client_hello.len();
             let sni = authenticated.sni.clone();
-            Box::pin(run_authenticated_quic_stream(
+            let group = ctx.resources.group(
+                authenticated.credential_group,
+                crate::diagnostics::Mode::Quic,
+            );
+            let budget = crate::quic_resources::QuicBudget::new(&group)?;
+            let work = group.work();
+            work.wrap(run_authenticated_quic_stream(
                 ctx.endpoint_socket,
                 inbox,
                 prefetched.datagrams,
                 prefetched.dcid_len,
                 ctx.idle_timeout,
                 AuthenticatedQuicRuntime {
+                    group,
+                    budget,
                     sni: authenticated.sni,
                     session_id: authenticated.session_id,
                     shared_secret: authenticated.shared_secret,
@@ -2192,7 +2495,7 @@ async fn dispatch_quic_runtime(
         }
         QuicDispatchDecision::Fallback { reason, datagram } => {
             let datagrams = if prefetched.datagrams.is_empty() {
-                vec![datagram]
+                vec![datagram.into()]
             } else {
                 prefetched.datagrams
             };
@@ -2214,10 +2517,11 @@ async fn dispatch_quic_runtime(
 }
 
 async fn prefetch_quic_client_hello(
-    first_datagram: Vec<u8>,
-    receiver: &mut mpsc::Receiver<Vec<u8>>,
+    first_datagram: impl Into<crate::quic_ingress::Datagram>,
+    receiver: &mut crate::quic_ingress::Receiver,
     idle_timeout: Duration,
 ) -> QuicPrefetchOutcome {
+    let first_datagram: crate::quic_ingress::Datagram = first_datagram.into();
     let header = parse_quic_initial_header(&first_datagram);
     let mut datagrams = vec![first_datagram];
     let mut frames = BTreeMap::new();
@@ -2354,6 +2658,8 @@ fn read_quic_u24(input: &[u8]) -> Result<usize, CoreError> {
 
 /// Authenticated QUIC values passed from dispatch into the quinn server runtime.
 struct AuthenticatedQuicRuntime {
+    group: crate::resources::ResourceGroup,
+    budget: crate::quic_resources::QuicBudget,
     sni: String,
     session_id: [u8; 32],
     shared_secret: Secret<32>,
@@ -2365,7 +2671,7 @@ struct AuthenticatedQuicRuntime {
 async fn run_authenticated_quic_stream(
     endpoint_socket: Arc<dyn quinn::AsyncUdpSocket>,
     inbox: QuicFlowInbox,
-    initial_datagrams: Vec<Vec<u8>>,
+    initial_datagrams: Vec<crate::quic_ingress::Datagram>,
     local_cid_len: usize,
     drain_timeout: Duration,
     authenticated: AuthenticatedQuicRuntime,
@@ -2373,8 +2679,17 @@ async fn run_authenticated_quic_stream(
 ) -> Result<(), CoreError> {
     let runtime = quinn::default_runtime()
         .ok_or_else(|| CoreError::Quic("no async runtime available for QUIC".to_owned()))?;
+    let runtime = Arc::new(crate::work::GroupRuntime {
+        inner: runtime,
+        group: authenticated.group.work(),
+    });
     let cids = Arc::clone(&inbox.cids);
+    let mut budget = authenticated.budget;
+    let ingress = inbox.receiver.stats();
+    inbox.receiver.retain_lease(budget.lease());
     let socket = Arc::new(PrefetchedUdpSocket {
+        _lease: Some(Arc::new(budget.lease())),
+        observation: authenticated.group.observation.clone(),
         inner: endpoint_socket,
         peer: inbox.peer,
         pending: Mutex::new(QuicSocketQueue {
@@ -2382,14 +2697,18 @@ async fn run_authenticated_quic_stream(
             receiver: inbox.receiver,
         }),
     });
-    let mut server_config = quic_crypto::server_config(quic_crypto::AuthenticatedServerCrypto {
-        sni: authenticated.sni,
-        session_id: authenticated.session_id,
-        shared_secret: authenticated.shared_secret,
-        client_hello: authenticated.client_hello,
-        profile: authenticated.profile,
-        mldsa_seed: authenticated.mldsa_seed,
-    });
+    let mut server_config = quic_crypto::server_config(
+        quic_crypto::AuthenticatedServerCrypto {
+            sni: authenticated.sni,
+            session_id: authenticated.session_id,
+            shared_secret: authenticated.shared_secret,
+            client_hello: authenticated.client_hello,
+            profile: authenticated.profile,
+            mldsa_seed: authenticated.mldsa_seed,
+        },
+        authenticated.group.resources.config.quic_congestion,
+        &budget,
+    );
     server_config.migration(false);
     let mut endpoint_config = quinn::EndpointConfig::default();
     let issued_cids = Arc::clone(&cids);
@@ -2418,21 +2737,41 @@ async fn run_authenticated_quic_stream(
     })
     .await
     .map_err(|_| CoreError::IdleTimeout("server QUIC handshake"))??;
+    budget.start_sampling();
+    let mut growth = tokio::time::interval(Duration::from_millis(50));
+    growth.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             () = cids.exhausted.notified() => {
                 return Err(CoreError::Quic("QUIC CID budget exhausted".to_owned()));
             }
             _ = connection.closed() => break,
+            _ = growth.tick() => {
+                if let Some(window) = budget.grow(connection.rtt(), Instant::now()) {
+                    connection.set_receive_window(window.into());
+                }
+                if let Some(observation) = &authenticated.group.observation {
+                    let mut sample = budget.observation(&connection);
+                    sample.quic_ingress = Some(ingress.snapshot());
+                    observation.credit(sample);
+                }
+            }
             joined = streams.join_next(), if !streams.is_empty() => {
                 // One failed target must not terminate other streams or associations.
                 report_session_result("server QUIC stream", joined);
             }
             accepted = connection.accept_bi(), if streams.len() < QUIC_MAX_STREAMS => {
-                let Ok((send, recv)) = accepted else { break };
-                streams.spawn(async move {
-                    Box::pin(run_quic_accepted_bi_stream(send, recv, drain_timeout)).await
-                });
+                let Ok((mut send, mut recv)) = accepted else { break };
+                let group = authenticated.group.clone();
+                let Ok(storage) = group.reserve(crate::quic_resources::STREAM_STORAGE_BYTES) else {
+                    let _ = send.reset(0_u32.into());
+                    let _ = recv.stop(0_u32.into());
+                    continue;
+                };
+                let recv = crate::resources::ResourceIo::new(budget.reader(recv), storage);
+                streams.spawn(group.work().wrap(async move {
+                    Box::pin(run_quic_accepted_bi_stream(send, recv, drain_timeout, group)).await
+                }));
             }
         }
     }
@@ -2450,8 +2789,9 @@ impl Drop for QuicEndpointGuard {
 
 async fn run_quic_accepted_bi_stream(
     send: quinn::SendStream,
-    mut recv: quinn::RecvStream,
+    mut recv: impl AsyncRead + Unpin,
     drain_timeout: Duration,
+    group: crate::resources::ResourceGroup,
 ) -> Result<(), CoreError> {
     let mut first = [0_u8; 1];
     tokio::time::timeout(
@@ -2461,7 +2801,13 @@ async fn run_quic_accepted_bi_stream(
     .await
     .map_err(|_| CoreError::IdleTimeout("server QUIC stream opening"))??;
     if first[0] == QUIC_UDP_ASSOCIATE_MARKER {
-        Box::pin(relay_quic_server_udp_association(send, recv, drain_timeout)).await?;
+        Box::pin(relay_quic_server_udp_association(
+            send,
+            recv,
+            drain_timeout,
+            Some(group),
+        ))
+        .await?;
     } else {
         let mut recv = PrefixedStream::new(vec![first[0]], recv);
         let target = tokio::time::timeout(drain_timeout, read_target_stream(&mut recv))
@@ -2469,17 +2815,21 @@ async fn run_quic_accepted_bi_stream(
             .map_err(|_| CoreError::IdleTimeout("server QUIC target header"))??;
         let target_io = tokio::time::timeout(
             DEFAULT_OUTER_CONNECT_TIMEOUT,
-            crate::target_connect::connect_tcp_target(target_to_host_port(&target)),
+            crate::diagnostics::connecting(
+                group.observation.clone(),
+                crate::target_connect::connect_tcp_target(target_to_host_port(&target)),
+            ),
         )
         .await
         .map_err(|_| CoreError::IdleTimeout("server QUIC target connect"))??;
+        let target_io = crate::diagnostics::ObservedIo::new(target_io, group.observation, true);
         Box::pin(relay_quic_server_stream(target_io, send, recv)).await?;
     }
     Ok(())
 }
 
 async fn relay_quic_server_stream(
-    target: TcpStream,
+    target: impl AsyncRead + AsyncWrite + Unpin,
     mut send: quinn::SendStream,
     mut recv: impl AsyncRead + Unpin,
 ) -> Result<(), CoreError> {
@@ -2510,43 +2860,52 @@ async fn relay_quic_server_stream(
 
 async fn relay_quic_server_udp_association(
     mut send: quinn::SendStream,
-    mut recv: quinn::RecvStream,
+    mut recv: impl AsyncRead + Unpin,
     idle_timeout: Duration,
+    group: Option<crate::resources::ResourceGroup>,
 ) -> Result<(), CoreError> {
+    let _association = group
+        .as_ref()
+        .map(|group| group.reserve(512 * 1024))
+        .transpose()?;
+    let clock = Arc::new(crate::relay::ProgressClock::new());
+    let mut send = clock.track(&mut send);
+    let mut recv = clock.track(&mut recv);
     let (tx, mut rx) = mpsc::channel(UDP_RELAY_CHANNEL_CAPACITY);
-    let mut targets = HashMap::new();
+    let mut targets = udp_targets::UdpTargets::new(tx, group, clock.clone());
     let mut envelopes = umbra_transport::quic::UdpEnvelopeReader::default();
-
-    loop {
-        let idle = tokio::time::sleep(idle_timeout);
-        tokio::pin!(idle);
-        tokio::select! {
-            () = &mut idle => return Err(CoreError::IdleTimeout("server QUIC UDP association")),
-            envelope = envelopes.read_next(&mut recv) => {
-                let envelope = match envelope {
-                    Ok(envelope) => envelope,
-                    Err(umbra_transport::TransportError::Io(err))
-                        if is_association_closed_io(&err) => return Ok(()),
-                    Err(err) => return Err(err.into()),
-                };
-                send_udp_to_target(
-                    &mut targets,
-                    &tx,
-                    UdpRelayDatagram {
-                        target: envelope.target,
-                        payload: envelope.payload,
-                    },
-                )
-                .await?;
-            }
-            reply = rx.recv() => {
-                let Some(reply) = reply else {
-                    return Ok(());
-                };
-                write_udp_envelope_stream(&mut send, &reply.target, &reply.payload).await?;
+    let mut outgoing = umbra_transport::quic::UdpEnvelopeWriter::default();
+    let mut retained_reply = None;
+    let idle = clock.expired(idle_timeout);
+    tokio::pin!(idle);
+    let result = async {
+        loop {
+            let writing = !outgoing.is_idle();
+            tokio::select! {
+                () = &mut idle => return Err(CoreError::IdleTimeout("server QUIC UDP association")),
+                envelope = envelopes.read_next(&mut recv) => {
+                    let envelope = match envelope {
+                        Ok(envelope) => envelope,
+                        Err(umbra_transport::TransportError::Io(error)) if is_association_closed_io(&error) => return Ok(()),
+                        Err(error) => return Err(error.into()),
+                    };
+                    targets.queue(UdpRelayDatagram { target: envelope.target, payload: envelope.payload, lease: None });
+                }
+                progress = targets.progress() => { progress?; }
+                reply = rx.recv(), if !writing => {
+                    let Some(reply) = reply else { return Ok(()); };
+                    outgoing.queue(&reply.target, &reply.payload)?;
+                    retained_reply = Some(reply);
+                }
+                written = outgoing.flush_pending(&mut send), if writing => {
+                    written?;
+                    retained_reply.take();
+                }
             }
         }
-    }
+    }.await;
+    targets.shutdown().await;
+    result
 }
 
 async fn relay_bidirectional_until_idle<A, B>(
@@ -2558,42 +2917,7 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut left_open = true;
-    let mut right_open = true;
-    let mut left_to_right = 0_u64;
-    let mut right_to_left = 0_u64;
-    let mut left_buf = vec![0_u8; 16 * 1024];
-    let mut right_buf = vec![0_u8; 16 * 1024];
-
-    while left_open || right_open {
-        let idle = tokio::time::sleep(idle_timeout);
-        tokio::pin!(idle);
-        tokio::select! {
-            () = &mut idle => return Err(CoreError::IdleTimeout("bidirectional relay")),
-            read = left.read(&mut left_buf), if left_open => {
-                let read = read?;
-                if read == 0 {
-                    left_open = false;
-                    timeout_write_shutdown(right, idle_timeout).await?;
-                } else {
-                    timeout_write_all(right, &left_buf[..read], idle_timeout).await?;
-                    left_to_right = add_io_byte_count(left_to_right, read)?;
-                }
-            }
-            read = right.read(&mut right_buf), if right_open => {
-                let read = read?;
-                if read == 0 {
-                    right_open = false;
-                    timeout_write_shutdown(left, idle_timeout).await?;
-                } else {
-                    timeout_write_all(left, &right_buf[..read], idle_timeout).await?;
-                    right_to_left = add_io_byte_count(right_to_left, read)?;
-                }
-            }
-        }
-    }
-
-    Ok((left_to_right, right_to_left))
+    crate::relay::relay_until_idle(left, right, idle_timeout).await
 }
 
 async fn copy_until_idle<R, W>(
@@ -2633,16 +2957,6 @@ where
     Ok(())
 }
 
-async fn timeout_write_shutdown<W>(writer: &mut W, idle_timeout: Duration) -> Result<(), CoreError>
-where
-    W: AsyncWrite + Unpin,
-{
-    tokio::time::timeout(idle_timeout, writer.shutdown())
-        .await
-        .map_err(|_| CoreError::IdleTimeout("relay shutdown"))??;
-    Ok(())
-}
-
 fn add_io_byte_count(total: u64, increment: usize) -> Result<u64, CoreError> {
     total
         .checked_add(
@@ -2653,13 +2967,15 @@ fn add_io_byte_count(total: u64, increment: usize) -> Result<u64, CoreError> {
 }
 
 struct QuicSocketQueue {
-    prefetched: VecDeque<Vec<u8>>,
-    receiver: mpsc::Receiver<Vec<u8>>,
+    prefetched: VecDeque<crate::quic_ingress::Datagram>,
+    receiver: crate::quic_ingress::Receiver,
 }
 
 /// Quinn receives only replayed datagrams and its bounded per-flow queue.
 /// The physical socket wrapper delegates sends, never receives.
 struct PrefetchedUdpSocket {
+    _lease: Option<Arc<umbra_inner::budget::BudgetLease>>,
+    observation: Option<crate::diagnostics::Observation>,
     inner: Arc<dyn quinn::AsyncUdpSocket>,
     peer: SocketAddr,
     pending: Mutex<QuicSocketQueue>,
@@ -2678,7 +2994,21 @@ impl quinn::AsyncUdpSocket for PrefetchedUdpSocket {
     }
 
     fn try_send(&self, transmit: &quinn::udp::Transmit<'_>) -> io::Result<()> {
-        self.inner.try_send(transmit)
+        let result = self.inner.try_send(transmit);
+        if let Some(observation) = &self.observation {
+            observation.record(
+                crate::diagnostics::Point::TransportWrite,
+                if result.is_ok() {
+                    transmit.contents.len()
+                } else {
+                    0
+                },
+                result
+                    .as_ref()
+                    .is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock),
+            );
+        }
+        result
     }
 
     fn poll_recv(
@@ -2687,40 +3017,59 @@ impl quinn::AsyncUdpSocket for PrefetchedUdpSocket {
         bufs: &mut [IoSliceMut<'_>],
         meta: &mut [quinn::udp::RecvMeta],
     ) -> Poll<io::Result<usize>> {
-        let Some(buf) = bufs.first_mut() else {
-            return Poll::Ready(Err(io::Error::other("QUIC receive buffer missing")));
+        let capacity = bufs.len().min(meta.len());
+        if capacity == 0 {
+            return Poll::Ready(Err(io::Error::other("QUIC receive buffers missing")));
+        }
+        let Ok(mut queue) = self.pending.lock() else {
+            return Poll::Ready(Err(io::Error::other("QUIC queue lock poisoned")));
         };
-        let Some(meta) = meta.first_mut() else {
-            return Poll::Ready(Err(io::Error::other("QUIC receive metadata missing")));
-        };
-        let datagram = match self.pending.lock() {
-            Ok(mut queue) => match queue.prefetched.pop_front() {
+        let mut count = 0;
+        for index in 0..capacity {
+            let datagram = match queue.prefetched.pop_front() {
                 Some(datagram) => datagram,
                 None => match queue.receiver.poll_recv(cx) {
                     Poll::Ready(Some(datagram)) => datagram,
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(None) => {
+                    Poll::Pending if count == 0 => {
+                        if let Some(observation) = &self.observation {
+                            observation.record(crate::diagnostics::Point::TransportRead, 0, true);
+                        }
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(None) if count == 0 => {
                         return Poll::Ready(Err(io::Error::new(
                             io::ErrorKind::ConnectionAborted,
                             "QUIC flow queue closed",
-                        )));
+                        )))
                     }
+                    Poll::Pending | Poll::Ready(None) => break,
                 },
-            },
-            Err(_) => return Poll::Ready(Err(io::Error::other("QUIC queue lock poisoned"))),
-        };
-        if buf.len() < datagram.len() {
-            return Poll::Ready(Err(io::Error::other("QUIC datagram buffer too small")));
+            };
+            if bufs[index].len() < datagram.len() {
+                queue.prefetched.push_front(datagram);
+                if count == 0 {
+                    return Poll::Ready(Err(io::Error::other("QUIC datagram buffer too small")));
+                }
+                break;
+            }
+            bufs[index][..datagram.len()].copy_from_slice(&datagram);
+            if let Some(observation) = &self.observation {
+                observation.record(
+                    crate::diagnostics::Point::TransportRead,
+                    datagram.len(),
+                    false,
+                );
+            }
+            meta[index] = datagram.meta.unwrap_or(quinn::udp::RecvMeta {
+                addr: self.peer,
+                len: datagram.len(),
+                stride: datagram.len(),
+                ecn: None,
+                dst_ip: None,
+            });
+            count += 1;
         }
-        buf[..datagram.len()].copy_from_slice(&datagram);
-        *meta = quinn::udp::RecvMeta {
-            addr: self.peer,
-            len: datagram.len(),
-            stride: datagram.len(),
-            ecn: None,
-            dst_ip: None,
-        };
-        Poll::Ready(Ok(1))
+        Poll::Ready(Ok(count))
     }
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -2743,7 +3092,7 @@ impl quinn::AsyncUdpSocket for PrefetchedUdpSocket {
 async fn relay_quic_fallback_until_idle(
     client_socket: &UdpSocket,
     inbox: &mut QuicFlowInbox,
-    initial_datagrams: Vec<Vec<u8>>,
+    initial_datagrams: Vec<crate::quic_ingress::Datagram>,
     dest: &str,
     idle_timeout: Duration,
 ) -> Result<(u64, u64), CoreError> {
@@ -2812,33 +3161,68 @@ fn add_quic_byte_count(total: u64, increment: usize) -> Result<u64, CoreError> {
         .ok_or(CoreError::InvalidConfig("QUIC byte count overflows"))
 }
 
-async fn relay_one_server_inner_stream<D, Connect, ConnectFuture>(
-    mut tls_io: tokio::io::DuplexStream,
+async fn relay_one_server_inner_stream<IO, D, Connect, ConnectFuture>(
+    mut tls_io: IO,
     connect_target: Connect,
     padding_scheme: &PadScheme,
     idle_timeout: Duration,
+    resources: Option<(
+        crate::resources::ResourceGroup,
+        umbra_inner::budget::BudgetLease,
+    )>,
 ) -> Result<(), CoreError>
 where
+    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     D: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     Connect: FnMut(String) -> ConnectFuture + Send,
     ConnectFuture: Future<Output = Result<D, std::io::Error>> + Send + 'static,
 {
     let (mode, prefix) = read_inner_opening_mode(&mut tls_io).await?;
+    let adaptive = prefix.get(1) == Some(&u8::from(MuxCommand::Settings));
     let tls_io = PrefixedStream::new(prefix, tls_io);
     match mode {
         ServerInnerMode::Mux => {
-            let mut mux = MuxSession::server(tls_io, padding_scheme)?;
+            let group = resources.as_ref().map(|(group, _)| group.clone());
+            let lease = resources.as_ref().map(|(_, lease)| lease.clone());
+            let mut mux = if adaptive {
+                let (scope, _) = resources.ok_or(CoreError::InvalidConfig(
+                    "adaptive mux requires a resource owner",
+                ))?;
+                MuxSession::adaptive(
+                    tls_io,
+                    umbra_inner::mux::MuxRole::Server,
+                    padding_scheme,
+                    scope.resources.config.flow(),
+                    scope.resources.receive(scope.id)?,
+                )?
+            } else {
+                MuxSession::server(tls_io, padding_scheme)?
+            };
+            if let Some(lease) = lease {
+                mux.retain_lease(lease);
+            }
             match mux.receive_next().await? {
                 MuxEvent::Syn { stream_id, target } => {
-                    let (driver, incoming) =
-                        crate::mux_io::start_server_after_syn(mux, stream_id, target)?;
-                    relay_mux_targets(driver, incoming, connect_target, idle_timeout).await
+                    let work = group.as_ref().map(crate::resources::ResourceGroup::work);
+                    let (driver, incoming) = crate::mux_io::start_server_after_syn(
+                        mux,
+                        stream_id,
+                        target,
+                        work.as_ref(),
+                        group.as_ref().and_then(|scope| scope.observation.clone()),
+                    )?;
+                    relay_mux_targets(driver, incoming, connect_target, idle_timeout, group).await
                 }
                 MuxEvent::UdpDatagram { target, payload } => {
                     Box::pin(relay_mux_server_udp_association(
                         mux,
-                        Some(UdpRelayDatagram { target, payload }),
+                        Some(UdpRelayDatagram {
+                            target,
+                            payload,
+                            lease: None,
+                        }),
                         idle_timeout,
+                        group,
                     ))
                     .await
                 }
@@ -2856,12 +3240,14 @@ async fn relay_mux_targets<D, Connect, ConnectFuture>(
     mut incoming: crate::mux_io::ServerMux,
     mut connect_target: Connect,
     idle_timeout: Duration,
+    group: Option<crate::resources::ResourceGroup>,
 ) -> Result<(), CoreError>
 where
     D: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     Connect: FnMut(String) -> ConnectFuture + Send,
     ConnectFuture: Future<Output = Result<D, io::Error>> + Send + 'static,
 {
+    let work = group.as_ref().map(crate::resources::ResourceGroup::work);
     let mut streams = JoinSet::new();
     let result = loop {
         tokio::select! {
@@ -2876,8 +3262,9 @@ where
                     break Ok(());
                 };
                 let connect = connect_target(target_to_host_port(&pending.target));
-                streams.spawn(async move {
-                    let mut target = match tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, connect).await {
+                let observation = group.as_ref().and_then(|scope| scope.observation.clone());
+                let transfer = async move {
+                    let target = match tokio::time::timeout(DEFAULT_OUTER_CONNECT_TIMEOUT, crate::diagnostics::connecting(observation.clone(), connect)).await {
                         Ok(Ok(target)) => target,
                         Ok(Err(error)) => {
                             pending.reject();
@@ -2888,10 +3275,13 @@ where
                             return Err(CoreError::IdleTimeout("mux target setup"));
                         }
                     };
+                    let mut target = crate::diagnostics::ObservedIo::new(target, observation, true);
                     let mut stream = pending.accept().await?;
                     relay_bidirectional_until_idle(&mut target, &mut stream, idle_timeout).await?;
                     Ok(())
-                });
+                };
+                if let Some(work) = &work { streams.spawn(work.wrap(transfer)); }
+                else { streams.spawn(transfer); }
             }
         }
     };
@@ -2935,26 +3325,38 @@ fn looks_like_mux_opening_prefix(prefix: &[u8]) -> bool {
     let stream_id = u32::from_be_bytes([prefix[2], prefix[3], prefix[4], prefix[5]]);
     match MuxCommand::try_from(prefix[1]) {
         Ok(MuxCommand::Syn) => stream_id == 1 && prefix[6] <= 1,
-        Ok(MuxCommand::Padding | MuxCommand::UdpDatagram) => stream_id == 0,
+        Ok(MuxCommand::Padding | MuxCommand::UdpDatagram | MuxCommand::Settings) => stream_id == 0,
         Ok(_) | Err(_) => false,
     }
 }
 
-#[derive(Debug, Clone)]
 struct UdpRelayDatagram {
     target: TargetAddr,
     payload: Vec<u8>,
+    lease: Option<umbra_inner::budget::BudgetLease>,
 }
 
 /// Per-target UDP socket task that is aborted when the association drops.
 struct UdpTargetState {
     socket: Arc<UdpSocket>,
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
+    observation: Option<crate::diagnostics::Observation>,
 }
 
 impl Drop for UdpTargetState {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+impl UdpTargetState {
+    async fn shutdown(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
     }
 }
 
@@ -2962,73 +3364,131 @@ async fn relay_mux_server_udp_association<IO>(
     mut mux: MuxSession<IO>,
     first: Option<UdpRelayDatagram>,
     idle_timeout: Duration,
+    group: Option<crate::resources::ResourceGroup>,
 ) -> Result<(), CoreError>
 where
     IO: AsyncRead + AsyncWrite + Unpin,
 {
+    let _association = group
+        .as_ref()
+        .map(|group| group.reserve(512 * 1024))
+        .transpose()?;
+    let clock = Arc::new(crate::relay::ProgressClock::new());
     let (tx, mut rx) = mpsc::channel(UDP_RELAY_CHANNEL_CAPACITY);
-    let mut targets = HashMap::new();
-    if let Some(datagram) = first {
-        send_udp_to_target(&mut targets, &tx, datagram).await?;
+    let mut targets = udp_targets::UdpTargets::new(tx, group, clock.clone());
+    if let Some(first) = first {
+        targets.queue(first);
     }
-
-    loop {
-        let idle = tokio::time::sleep(idle_timeout);
-        tokio::pin!(idle);
-        tokio::select! {
-            () = &mut idle => return Err(CoreError::IdleTimeout("server mux UDP association")),
-            event = mux.receive_next() => {
-                let event = match event {
-                    Ok(event) => event,
-                    Err(umbra_inner::InnerError::Io(err))
-                        if is_association_closed_io(&err) => return Ok(()),
-                    Err(err) => return Err(err.into()),
-                };
-                match event {
-                    MuxEvent::UdpDatagram { target, payload } => {
-                        send_udp_to_target(
-                            &mut targets,
-                            &tx,
-                            UdpRelayDatagram { target, payload },
-                        )
-                        .await?;
-                    }
-                    MuxEvent::Fin { .. } | MuxEvent::Rst { .. } => return Ok(()),
-                    _ => {}
+    let mut retained_reply: Option<UdpRelayDatagram> = None;
+    let mut need_flush = false;
+    let idle = clock.expired(idle_timeout);
+    tokio::pin!(idle);
+    let result = async {
+        loop {
+            if !need_flush {
+                if let Some(reply) = &retained_reply {
+                    mux.queue_udp_datagram(&reply.target, &reply.payload)?;
+                    need_flush = true;
                 }
             }
-            reply = rx.recv() => {
-                let Some(reply) = reply else {
-                    return Ok(());
-                };
-                mux.send_udp_datagram(&reply.target, &reply.payload).await?;
+            tokio::select! {
+                () = &mut idle => return Err(CoreError::IdleTimeout("server mux UDP association")),
+                progress = std::future::poll_fn(|cx| crate::mux_io::poll_session_with_input(&mut mux, need_flush, true, cx)) => {
+                    let progress = match progress {
+                        Ok(progress) => progress,
+                        Err(umbra_inner::InnerError::Io(error)) if is_association_closed_io(&error) => return Ok(()),
+                        Err(error) => return Err(error.into()),
+                    };
+                    clock.advance();
+                    if progress.flushed { need_flush = false; retained_reply.take(); }
+                    match progress.event {
+                        Some(MuxEvent::UdpDatagram { target, payload }) => { targets.queue(UdpRelayDatagram { target, payload, lease: None }); }
+                        Some(MuxEvent::Fin { .. } | MuxEvent::Rst { .. }) => return Ok(()),
+                        _ => {}
+                    }
+                }
+                progress = targets.progress() => { progress?; }
+                reply = rx.recv(), if retained_reply.is_none() => {
+                    let Some(reply) = reply else { return Ok(()); };
+                    retained_reply = Some(reply);
+                }
             }
         }
-    }
+    }.await;
+    targets.shutdown().await;
+    result
 }
 
+#[cfg(test)]
 async fn send_udp_to_target(
     targets: &mut HashMap<TargetAddr, UdpTargetState>,
     tx: &mpsc::Sender<UdpRelayDatagram>,
     datagram: UdpRelayDatagram,
 ) -> Result<(), CoreError> {
+    send_udp_to_target_budgeted(targets, tx, datagram, None).await
+}
+
+#[cfg(test)]
+async fn send_udp_to_target_budgeted(
+    targets: &mut HashMap<TargetAddr, UdpTargetState>,
+    tx: &mpsc::Sender<UdpRelayDatagram>,
+    datagram: UdpRelayDatagram,
+    group: Option<crate::resources::ResourceGroup>,
+) -> Result<(), CoreError> {
     if !targets.contains_key(&datagram.target) {
         if targets.len() >= MAX_UDP_TARGETS_PER_ASSOCIATION {
             return Ok(());
         }
-        let state = connect_udp_target(datagram.target.clone(), tx.clone()).await?;
+        let state = match connect_udp_target(datagram.target.clone(), tx.clone(), group).await {
+            Ok(state) => state,
+            Err(CoreError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+            Err(error) => return Err(error),
+        };
         targets.insert(datagram.target.clone(), state);
     }
     if let Some(state) = targets.get(&datagram.target) {
-        state.socket.send(&datagram.payload).await?;
+        let mut observed = crate::diagnostics::Waiter::new(
+            state.observation.clone(),
+            crate::diagnostics::Point::TargetWrite,
+        );
+        std::future::poll_fn(|cx| {
+            let result = state.socket.poll_send(cx, &datagram.payload);
+            observed.record(
+                if let Poll::Ready(Ok(n)) = &result {
+                    *n
+                } else {
+                    0
+                },
+                result.is_pending(),
+            );
+            result
+        })
+        .await?;
     }
     Ok(())
 }
 
+#[cfg(test)]
 async fn connect_udp_target(
     target: TargetAddr,
     tx: mpsc::Sender<UdpRelayDatagram>,
+    group: Option<crate::resources::ResourceGroup>,
 ) -> Result<UdpTargetState, CoreError> {
+    connect_udp_target_with_activity(target, tx, group, None).await
+}
+
+async fn connect_udp_target_with_activity(
+    target: TargetAddr,
+    tx: mpsc::Sender<UdpRelayDatagram>,
+    group: Option<crate::resources::ResourceGroup>,
+    clock: Option<Arc<crate::relay::ProgressClock>>,
+) -> Result<UdpTargetState, CoreError> {
+    let storage = group
+        .as_ref()
+        .map(|group| group.reserve(128 * 1024))
+        .transpose()?;
+    let observation = group.as_ref().and_then(|scope| scope.observation.clone());
+    let setup = crate::diagnostics::SetupWait::new(observation.clone());
     let resolved = resolve_target_socket_addr(&target).await?;
     let bind_addr = if resolved.is_ipv6() {
         SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
@@ -3037,20 +3497,52 @@ async fn connect_udp_target(
     };
     let socket = Arc::new(UdpSocket::bind(bind_addr).await?);
     socket.connect(resolved).await?;
+    drop(setup);
     let reader = Arc::clone(&socket);
-    let task = tokio::spawn(async move {
+    let work = group.as_ref().map(crate::resources::ResourceGroup::work);
+    let receiving = observation.clone();
+    let task = crate::work::spawn(work.as_ref(), async move {
+        let _storage = storage;
         let mut buf = vec![0_u8; UDP_RELAY_BUF_LEN];
-        while let Ok(read) = reader.recv(&mut buf).await {
+        loop {
+            let mut observed = crate::diagnostics::Waiter::new(
+                receiving.clone(),
+                crate::diagnostics::Point::TargetRead,
+            );
+            let result = std::future::poll_fn(|cx| {
+                let mut buffer = tokio::io::ReadBuf::new(&mut buf);
+                let result = reader.poll_recv(cx, &mut buffer);
+                let n = buffer.filled().len();
+                observed.record(n, result.is_pending());
+                result.map(|result| result.map(|()| n))
+            })
+            .await;
+            let Ok(read) = result else { break };
+            if let Some(clock) = &clock {
+                clock.advance();
+            }
+            let Ok(lease) = group
+                .as_ref()
+                .map(|group| group.reserve(read + 512))
+                .transpose()
+            else {
+                continue;
+            };
             let datagram = UdpRelayDatagram {
                 target: target.clone(),
                 payload: buf[..read].to_vec(),
+                lease,
             };
             if tx.send(datagram).await.is_err() {
                 break;
             }
         }
     });
-    Ok(UdpTargetState { socket, task })
+    Ok(UdpTargetState {
+        socket,
+        task: Some(task),
+        observation,
+    })
 }
 
 async fn resolve_target_socket_addr(target: &TargetAddr) -> Result<SocketAddr, CoreError> {
@@ -3166,6 +3658,7 @@ mod tests {
 
         fn config(prebuild: bool) -> RuntimeServerCfg {
             RuntimeServerCfg {
+                performance: crate::resources::PerformanceCfg::default(),
                 listen: "127.0.0.1:0".parse().expect("loopback TCP"),
                 udp_listen: Some("127.0.0.1:0".parse().expect("loopback UDP")),
                 private_key: x25519::generate_keypair().private,
@@ -3866,6 +4359,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mux_setup_releases_pool_lock_and_reuses_freed_slots() {
+        let pool = Arc::new(ClientConnections::default());
+        let fixture = Arc::new(MuxPoolFixture::new(false));
+        let mut held = Vec::new();
+        for _ in 0..32 {
+            held.push(pool.reserve_mux(|| fixture.session()).await.unwrap());
+        }
+        assert_eq!(fixture.created.load(Ordering::SeqCst), 1);
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let opening_pool = pool.clone();
+        let opening =
+            tokio::spawn(async move {
+                let mut started = Some(started);
+                opening_pool.reserve_mux(|| {
+                started.take().unwrap().send(()).unwrap();
+                std::future::pending::<Result<MuxSession<tokio::io::DuplexStream>, CoreError>>()
+            }).await
+            });
+        ready.await.unwrap();
+        assert!(pool.mux.try_lock().is_ok(), "handshake holds no pool mutex");
+        assert_eq!(pool.mux_setup.available_permits(), 0);
+        drop(held.pop());
+        let reused = timeout(
+            Duration::from_secs(1),
+            pool.reserve_mux(|| fixture.session()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            fixture.created.load(Ordering::SeqCst),
+            1,
+            "existing capacity is reused during another setup"
+        );
+        drop((held, reused));
+        pool.shutdown().await;
+        assert!(opening.await.unwrap().is_err());
+        assert_eq!(pool.mux_setup.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancelled_mux_establishment_releases_pending_capacity() {
+        let pool = Arc::new(ClientConnections::default());
+        let fixture = MuxPoolFixture::new(false);
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let opening_pool = pool.clone();
+        let opening =
+            tokio::spawn(async move {
+                let mut started = Some(started);
+                opening_pool.reserve_mux(|| {
+                started.take().unwrap().send(()).unwrap();
+                std::future::pending::<Result<MuxSession<tokio::io::DuplexStream>, CoreError>>()
+            }).await
+            });
+        ready.await.unwrap();
+        opening.abort();
+        assert!(matches!(opening.await, Err(error) if error.is_cancelled()));
+        assert_eq!(pool.mux_setup.available_permits(), 1);
+        let reserved = timeout(
+            Duration::from_secs(1),
+            pool.reserve_mux(|| fixture.session()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(pool.mux.lock().await.len(), 1);
+        drop(reserved);
+        pool.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn scenario_tcp_mux_pool_target_failure_preserves_sibling_and_reuse() {
         timeout(Duration::from_secs(5), async {
             let pool = ClientConnections::default();
@@ -4075,11 +4639,136 @@ mod tests {
         .unwrap();
     }
 
+    #[tokio::test]
+    async fn configured_quic_controller_is_constructed() {
+        use crate::resources::QuicCongestion;
+        for algorithm in [
+            QuicCongestion::Bbr,
+            QuicCongestion::Cubic,
+            QuicCongestion::NewReno,
+        ] {
+            let (mut cfg, mut server) = pooled_client_fixture().await;
+            cfg.transport = TransportKind::Quic;
+            cfg.server = server.udp_local_addr().unwrap().unwrap().to_string();
+            cfg.performance.quic_congestion = algorithm;
+            server.resources.config.quic_congestion = algorithm;
+            let (stop, stopped) = tokio::sync::oneshot::channel();
+            let running = tokio::spawn(async move {
+                server
+                    .run_until_shutdown(async {
+                        let _ = stopped.await;
+                    })
+                    .await
+            });
+            let client = QuicClientConnection::connect(&cfg).await.unwrap();
+            let state = client.connection.congestion_state().into_any();
+            let matches = match algorithm {
+                QuicCongestion::Bbr => state.is::<quinn::congestion::Bbr>(),
+                QuicCongestion::Cubic => state.is::<quinn::congestion::Cubic>(),
+                QuicCongestion::NewReno => state.is::<quinn::congestion::NewReno>(),
+            };
+            assert!(
+                matches,
+                "configured controller must be used by the actual connection"
+            );
+            drop(state);
+            drop(client);
+            stop.send(()).unwrap();
+            running.await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn native_quic_admits_and_transfers_with_minimum_memory() {
+        let (cfg, mut server) = pooled_client_fixture().await;
+        server.resources = crate::resources::Resources::new(crate::resources::PerformanceCfg {
+            memory_mib: 16,
+            group_memory_mib: 16,
+            diagnostics_interval_secs: 3600,
+            ..crate::resources::PerformanceCfg::default()
+        })
+        .unwrap();
+        let pool = server.resources.pool.clone();
+        let server = Arc::new(server);
+        let observer = server.clone();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let running = tokio::spawn(async move {
+            server
+                .run_until_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+        });
+        let outcome = timeout(Duration::from_secs(5), async {
+            let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let destination = TargetAddr::Ipv4(
+                std::net::Ipv4Addr::LOCALHOST,
+                target.local_addr().unwrap().port(),
+            );
+            let echo = tokio::spawn(async move {
+                let (mut stream, _) = target.accept().await.unwrap();
+                let mut bytes = vec![0; 512 * 1024];
+                stream.read_exact(&mut bytes).await.unwrap();
+                assert!(bytes.iter().all(|byte| *byte == 0x63));
+                stream.write_all(&bytes).await.unwrap();
+                stream.shutdown().await.unwrap();
+            });
+            let client = QuicClientConnection::connect(&cfg).await.unwrap();
+            assert!(observer
+                .scheduling_snapshot()
+                .iter()
+                .any(|group| group.polls > 0));
+            assert!(pool.committed() > 0 && pool.committed() <= 16 * 1024 * 1024);
+            let (mut send, mut recv) = client.connection.open_bi().await.unwrap();
+            write_target_stream(&mut send, &destination, &[])
+                .await
+                .unwrap();
+            let payload = vec![0x63; 512 * 1024];
+            send.write_all(&payload).await.unwrap();
+            send.finish().unwrap();
+            let received = recv.read_to_end(payload.len()).await.unwrap();
+            assert_eq!(received, payload);
+            echo.await.unwrap();
+            drop(client);
+        })
+        .await;
+        let _ = stop.send(());
+        running.await.unwrap().unwrap();
+        outcome.expect("minimum memory must allow authenticated QUIC progress");
+        timeout(Duration::from_secs(2), async {
+            while pool.committed() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("last connection owner releases commitment");
+        timeout(Duration::from_secs(2), async {
+            while observer
+                .scheduling_snapshot()
+                .iter()
+                .any(|group| group.tasks != 0)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("native driver gates close with their tasks");
+        let metrics = observer.performance_snapshot();
+        assert_eq!(metrics.flows.len(), 1);
+        let flow = &metrics.flows[0];
+        assert!(flow.closed && flow.mode == crate::diagnostics::Mode::Quic);
+        assert_eq!(flow.target_read.bytes, 512 * 1024);
+        assert_eq!(flow.target_write.bytes, 512 * 1024);
+        assert!(flow.transport_read.bytes > 0 && flow.transport_write.bytes > 0);
+        assert!(flow.credit.as_ref().unwrap().quic_blocked_tx.is_some());
+    }
+
     async fn pooled_client_fixture() -> (ClientCfg, ServerRuntime) {
         let key = x25519::generate_keypair();
         let seed = [0x4c; 32];
         let signing = umbra_crypto::mldsa::mldsa_keygen_from_seed(&seed);
         let mut cfg = ClientCfg {
+            performance: crate::resources::PerformanceCfg::default(),
             server: String::new(),
             transport: TransportKind::Quic,
             udp_transport: None,
@@ -4095,6 +4784,7 @@ mod tests {
             tcp_evasion: TcpEvasionPolicy::Off,
         };
         let server_cfg = RuntimeServerCfg {
+            performance: crate::resources::PerformanceCfg::default(),
             listen: cfg.socks_listen,
             udp_listen: Some(cfg.socks_listen),
             private_key: key.private,
@@ -4187,6 +4877,113 @@ mod tests {
         assert!(pool.quic(&cfg).await.is_err());
         assert!(pool.quic.lock().await.is_none());
         pool.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shared_quic_endpoint_survives_association_owner_closure() {
+        let (cfg, server) = pooled_client_fixture().await;
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            server
+                .run_until_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+        });
+        let target = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = target.local_addr().unwrap();
+        let echo = tokio::spawn(async move {
+            let mut bytes = [0; 128];
+            let (length, peer) = target.recv_from(&mut bytes).await.unwrap();
+            assert_eq!(&bytes[..length], &[0x42; 128]);
+            target.send_to(&bytes[..length], peer).await.unwrap();
+        });
+        let pool = ClientConnections::default();
+        let first = pool.connect_quic(&cfg).await.unwrap();
+        let second = pool.connect_quic(&cfg).await.unwrap();
+        assert_eq!(
+            first.endpoint.local_addr().unwrap(),
+            second.endpoint.local_addr().unwrap()
+        );
+        assert_ne!(first.connection.stable_id(), second.connection.stable_id());
+        let closed = first.connection.clone();
+        drop(first);
+        assert!(closed.close_reason().is_some());
+        assert!(second.connection.close_reason().is_none());
+        let (mut send, mut recv) = second.handle().open_bi().await.unwrap();
+        write_udp_association_marker(&mut send).await.unwrap();
+        let target = match address {
+            SocketAddr::V4(address) => TargetAddr::Ipv4(*address.ip(), address.port()),
+            SocketAddr::V6(address) => TargetAddr::Ipv6(*address.ip(), address.port()),
+        };
+        write_udp_envelope_stream(&mut send, &target, &[0x42; 128])
+            .await
+            .unwrap();
+        let received = timeout(
+            Duration::from_secs(5),
+            umbra_transport::quic::UdpEnvelopeReader::default().read_next(&mut recv),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(received.payload, [0x42; 128]);
+        assert_eq!(received.target, target);
+        echo.await.unwrap();
+        drop((send, recv, second, closed));
+        pool.shutdown().await;
+        timeout(Duration::from_secs(5), async {
+            while pool.resources(&cfg).unwrap().pool.committed() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(pool.quic_endpoints.lock().await.is_empty());
+        stop.send(()).unwrap();
+        timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn runtime_shutdown_cancels_a_pending_quic_handshake() {
+        let (cfg, _unpolled_server) = pooled_client_fixture().await;
+        let pool = Arc::new(ClientConnections::default());
+        let connecting = pool.clone();
+        let opening = tokio::spawn(async move { connecting.quic(&cfg).await });
+        timeout(Duration::from_secs(2), async {
+            while pool
+                .resources
+                .get()
+                .is_none_or(|resources| resources.pool.committed() == 0)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let stopping = pool.clone();
+        let shutdown = tokio::spawn(async move {
+            stopping.shutdown().await;
+        });
+        // Cancellation must precede the handshake deadline; QUIC protocol
+        // draining is a separate, already bounded endpoint cleanup operation.
+        assert!(timeout(Duration::from_secs(2), opening)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
+        assert_eq!(pool.resources.get().unwrap().pool.committed(), 0);
+        timeout(
+            DEFAULT_OUTER_CONNECT_TIMEOUT + Duration::from_secs(1),
+            shutdown,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(pool.quic_endpoints.lock().await.is_empty());
     }
 
     #[test]
@@ -4316,11 +5113,12 @@ mod tests {
             .await
             .expect("write");
         client.shutdown().await.expect("shutdown");
-        let error = relay_one_server_inner_stream::<tokio::io::DuplexStream, _, _>(
+        let error = relay_one_server_inner_stream::<_, tokio::io::DuplexStream, _, _>(
             server,
             |_| async { panic!("legacy solo must never connect a target") },
             &PadScheme::none(),
             DEFAULT_SESSION_IDLE_TIMEOUT,
+            None,
         )
         .await
         .expect_err("removed mode rejected");
@@ -4347,6 +5145,7 @@ mod tests {
             &mut targets,
             &tx,
             UdpRelayDatagram {
+                lease: None,
                 target: target_one.clone(),
                 payload: b"one".to_vec(),
             },
@@ -4374,6 +5173,7 @@ mod tests {
             &mut targets,
             &tx,
             UdpRelayDatagram {
+                lease: None,
                 target: target_two.clone(),
                 payload: b"two".to_vec(),
             },
@@ -4414,7 +5214,8 @@ mod tests {
                 TargetAddr::Ipv4(Ipv4Addr::LOCALHOST, port),
                 UdpTargetState {
                     socket: Arc::clone(&shared_socket),
-                    task,
+                    task: Some(task),
+                    observation: None,
                 },
             );
         }
@@ -4424,6 +5225,7 @@ mod tests {
             &mut targets,
             &tx,
             UdpRelayDatagram {
+                lease: None,
                 target: overflow_target.clone(),
                 payload: b"drop".to_vec(),
             },
@@ -4528,6 +5330,7 @@ mod tests {
             let public_key = key.public;
             let signing = mldsa_keygen_from_seed(&[3; 32]);
             let cfg = RuntimeServerCfg {
+                performance: crate::resources::PerformanceCfg::default(),
                 listen: "127.0.0.1:0".parse().expect("TCP bind"),
                 udp_listen: Some("127.0.0.1:0".parse().expect("UDP bind")),
                 private_key: key.private,
@@ -4566,6 +5369,7 @@ mod tests {
                     .expect("bind runtime"),
             );
             let cfg = ClientCfg {
+                performance: crate::resources::PerformanceCfg::default(),
                 server: runtime
                     .udp_local_addr()
                     .expect("address")
@@ -5028,7 +5832,7 @@ mod tests {
         async fn prefetch_retains_conflicts_deadlines_and_datagram_budget() {
             let first = initial(0, b"\x01\x00\x00\x05he", [1; 8]);
             let conflict = initial(4, b"Xello", [1; 8]);
-            let (sender, mut receiver) = mpsc::channel(QUIC_FLOW_QUEUE_CAPACITY);
+            let (sender, mut receiver) = crate::quic_ingress::channel(QUIC_FLOW_QUEUE_CAPACITY);
             sender
                 .send(conflict.clone())
                 .await
@@ -5162,12 +5966,14 @@ mod tests {
 
         #[tokio::test]
         async fn queue_socket_never_competes_for_physical_receives() {
-            let (sender, receiver) = mpsc::channel(1);
+            let (sender, receiver) = crate::quic_ingress::channel(1);
             let socket = PrefetchedUdpSocket {
+                _lease: None,
+                observation: None,
                 inner: Arc::new(NeverReceiveSocket),
                 peer: "127.0.0.1:10001".parse().expect("peer"),
                 pending: Mutex::new(QuicSocketQueue {
-                    prefetched: VecDeque::from([b"first".to_vec()]),
+                    prefetched: VecDeque::from([b"first".to_vec().into()]),
                     receiver,
                 }),
             };
@@ -5213,5 +6019,286 @@ mod tests {
             panic!("test binds IPv4 UDP sockets");
         };
         TargetAddr::Ipv4(*addr.ip(), addr.port())
+    }
+}
+
+#[cfg(test)]
+mod throughput_regressions {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use tokio::time::timeout;
+
+    #[tokio::test]
+    async fn quic_receive_batch_preserves_ready_datagrams() {
+        use quinn::AsyncUdpSocket;
+        let raw = StdUdpSocket::bind("127.0.0.1:0").unwrap();
+        raw.set_nonblocking(true).unwrap();
+        let inner = quinn::default_runtime()
+            .unwrap()
+            .wrap_udp_socket(raw)
+            .unwrap();
+        let (_sender, receiver) = crate::quic_ingress::channel(4);
+        let diagnostics = crate::diagnostics::Diagnostics::new(true);
+        let socket = PrefetchedUdpSocket {
+            _lease: None,
+            observation: diagnostics.register(0, crate::diagnostics::Mode::Quic),
+            inner,
+            peer: "127.0.0.1:1234".parse().unwrap(),
+            pending: Mutex::new(QuicSocketQueue {
+                prefetched: VecDeque::from([
+                    b"one".to_vec().into(),
+                    b"two".to_vec().into(),
+                    b"three".to_vec().into(),
+                ]),
+                receiver,
+            }),
+        };
+        let (mut a, mut b, mut c) = ([0; 8], [0; 8], [0; 8]);
+        let mut buffers = [
+            IoSliceMut::new(&mut a),
+            IoSliceMut::new(&mut b),
+            IoSliceMut::new(&mut c),
+        ];
+        let mut metadata = [quinn::udp::RecvMeta::default(); 3];
+        let count = std::future::poll_fn(|cx| socket.poll_recv(cx, &mut buffers, &mut metadata))
+            .await
+            .unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(
+            (&a[..3], &b[..3], &c[..5]),
+            (&b"one"[..], &b"two"[..], &b"three"[..])
+        );
+        assert_eq!(
+            metadata.map(|m| (m.len, m.stride)),
+            [(3, 3), (3, 3), (5, 5)]
+        );
+        assert_eq!(diagnostics.snapshot()[0].transport_read.bytes, 11);
+        assert!(diagnostics.snapshot()[0]
+            .transport_read
+            .observed_wait
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn physical_receive_supplies_multiple_buffers_and_checks_metadata_bounds() {
+        #[derive(Debug)]
+        struct BatchSocket(bool);
+        impl quinn::AsyncUdpSocket for BatchSocket {
+            fn create_io_poller(self: Arc<Self>) -> Pin<Box<dyn quinn::UdpPoller>> {
+                panic!("receive-only fixture")
+            }
+            fn try_send(&self, _: &quinn::udp::Transmit<'_>) -> io::Result<()> {
+                Ok(())
+            }
+            fn local_addr(&self) -> io::Result<SocketAddr> {
+                Ok(SocketAddr::from(([127, 0, 0, 1], 443)))
+            }
+            fn poll_recv(
+                &self,
+                _: &mut Context<'_>,
+                buffers: &mut [IoSliceMut<'_>],
+                metadata: &mut [quinn::udp::RecvMeta],
+            ) -> Poll<io::Result<usize>> {
+                assert_eq!(buffers.len(), 4);
+                buffers[0][..12].copy_from_slice(b"abcdefghijkl");
+                buffers[1][..5].copy_from_slice(b"other");
+                metadata[0] = quinn::udp::RecvMeta {
+                    addr: SocketAddr::from(([127, 0, 0, 1], 443)),
+                    len: if self.0 { 65 } else { 12 },
+                    stride: 3,
+                    ecn: Some(quinn::udp::EcnCodepoint::Ce),
+                    dst_ip: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+                };
+                metadata[1] = quinn::udp::RecvMeta {
+                    addr: SocketAddr::from(([127, 0, 0, 2], 443)),
+                    len: 5,
+                    stride: 5,
+                    ..metadata[0]
+                };
+                Poll::Ready(Ok(2))
+            }
+        }
+        let mut buffers = std::array::from_fn(|_| vec![0; 64]);
+        let mut metadata = [quinn::udp::RecvMeta::default(); 4];
+        assert_eq!(
+            receive_quic_datagrams(&BatchSocket(false), &mut buffers, &mut metadata)
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(&buffers[0][..12], b"abcdefghijkl");
+        assert_eq!(&buffers[1][..5], b"other");
+        assert_eq!(metadata[0].stride, 3);
+        assert_eq!(metadata[0].ecn, Some(quinn::udp::EcnCodepoint::Ce));
+        assert_ne!(metadata[0].addr, metadata[1].addr);
+        assert!(
+            receive_quic_datagrams(&BatchSocket(true), &mut buffers, &mut metadata)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn reverse_direction_progresses_while_forward_write_is_blocked() {
+        let (mut left_peer, mut left) = tokio::io::duplex(64);
+        let (mut right, mut right_peer) = tokio::io::duplex(64);
+        let relay = tokio::spawn(async move {
+            relay_bidirectional_until_idle(&mut left, &mut right, Duration::from_secs(5)).await
+        });
+        left_peer
+            .write_all(&[7; 128])
+            .await
+            .expect("source feeds relay");
+        // The destination deliberately does not read. Its 64-byte inbound
+        // buffer fills, so forward write_all cannot finish all 128 bytes.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        right_peer
+            .write_all(b"reply")
+            .await
+            .expect("independent reverse write");
+        let mut reply = [0; 5];
+        let delivered =
+            tokio::time::timeout(Duration::from_millis(250), left_peer.read_exact(&mut reply))
+                .await;
+        relay.abort();
+        let _ = relay.await;
+        delivered
+            .expect("reverse direction must remain independently readable")
+            .expect("read reply");
+        assert_eq!(&reply, b"reply");
+    }
+
+    struct CountWrites<IO> {
+        inner: IO,
+        bytes: Arc<AtomicUsize>,
+    }
+
+    impl<IO: AsyncRead + Unpin> AsyncRead for CountWrites<IO> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+
+    impl<IO: AsyncWrite + Unpin> AsyncWrite for CountWrites<IO> {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let result = Pin::new(&mut self.inner).poll_write(cx, buf);
+            if let Poll::Ready(Ok(n)) = result {
+                self.bytes.fetch_add(n, Ordering::Relaxed);
+            }
+            result
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    async fn wait_for_full_duplex_output(bytes: &AtomicUsize) {
+        timeout(Duration::from_secs(2), async {
+            while bytes.load(Ordering::Relaxed) < 64 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn udp_mux_reverse_input_progresses_while_reply_write_is_blocked() {
+        let target = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = TargetAddr::Ipv4(Ipv4Addr::LOCALHOST, target.local_addr().unwrap().port());
+        let (arrived, received) = tokio::sync::oneshot::channel();
+        let echo = tokio::spawn(async move {
+            let mut bytes = [0; 32];
+            let (n, peer) = target.recv_from(&mut bytes).await.unwrap();
+            assert_eq!(&bytes[..n], b"first");
+            target.send_to(&[0x42; 8192], peer).await.unwrap();
+            let (n, _) = target.recv_from(&mut bytes).await.unwrap();
+            arrived.send(bytes[..n].to_vec()).unwrap();
+        });
+        let (client, server) = tokio::io::duplex(64);
+        let bytes = Arc::new(AtomicUsize::new(0));
+        let mux = MuxSession::server(
+            CountWrites {
+                inner: server,
+                bytes: bytes.clone(),
+            },
+            &PadScheme::none(),
+        )
+        .unwrap();
+        let relay = tokio::spawn(relay_mux_server_udp_association(
+            mux,
+            None,
+            Duration::from_secs(5),
+            None,
+        ));
+        let mut client = MuxSession::client(client, &PadScheme::none()).unwrap();
+        client.send_udp_datagram(&address, b"first").await.unwrap();
+        wait_for_full_duplex_output(&bytes).await;
+        client.send_udp_datagram(&address, b"second").await.unwrap();
+        assert_eq!(
+            timeout(Duration::from_secs(2), received)
+                .await
+                .unwrap()
+                .unwrap(),
+            b"second"
+        );
+        drop(client);
+        let result = timeout(Duration::from_secs(2), relay)
+            .await
+            .unwrap()
+            .unwrap();
+        // The test deliberately abandons a partially written response.
+        assert!(
+            matches!(result, Err(CoreError::Inner(umbra_inner::InnerError::Io(error))) if error.kind() == io::ErrorKind::BrokenPipe)
+        );
+        echo.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn udp_control_close_cancels_a_blocked_tcp_carrier_write() {
+        use base64::Engine as _;
+        let cfg = ClientCfg::from_toml_str(&format!(
+            "server='127.0.0.1:1'\ntransport='tcp'\npublic_key='{}'\nshort_id='01'\nserver_name='server.example'\nfingerprint='chrome-latest'\nmldsa_verify='AQ=='\nsocks_listen='127.0.0.1:0'\npadding_scheme='none'",
+            base64::engine::general_purpose::STANDARD.encode([0x42; 32]),
+        )).unwrap();
+        let (mut control, mut peer) = tokio::io::duplex(128);
+        let (outer, _unread_peer) = tokio::io::duplex(64);
+        let bytes = Arc::new(AtomicUsize::new(0));
+        let output = CountWrites {
+            inner: outer,
+            bytes: bytes.clone(),
+        };
+        let relay = tokio::spawn(async move {
+            client_udp_association_over_tcp_outer(&cfg, &mut control, output).await
+        });
+        let mut reply = [0; 10];
+        peer.read_exact(&mut reply).await.unwrap();
+        assert_eq!(&reply[..3], &[5, 0, 0]);
+        let port = u16::from_be_bytes([reply[8], reply[9]]);
+        let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut packet = vec![0, 0, 0];
+        packet.extend_from_slice(&TargetAddr::Ipv4(Ipv4Addr::LOCALHOST, 53).encode().unwrap());
+        packet.extend_from_slice(&[0x42; 8192]);
+        udp.send_to(&packet, SocketAddr::from(([127, 0, 0, 1], port)))
+            .await
+            .unwrap();
+        wait_for_full_duplex_output(&bytes).await;
+        drop(peer);
+        timeout(Duration::from_secs(2), relay)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 }

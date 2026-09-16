@@ -1,0 +1,41 @@
+---
+id: "guides/server"
+title: "Configurer un serveur"
+description: "Configurer une destination réelle et démarrer le serveur."
+section: "guides"
+order: 4
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Vue d’ensemble
+
+Le serveur accepte les connexions Umbra authentifiées et transmet les autres à une destination réelle fixe. Choisissez un site TLS 1.3 accessible depuis l’hôte du serveur. L’identité du site, les server_names acceptés et le SNI du client doivent être cohérents. Les domaines de remplacement de cette documentation ne constituent pas des recommandations de déploiement.
+
+## Détails
+
+Générez une identité neuve, remplissez server.toml et protégez ce fichier qui contient une clé privée et une graine de signature. listen désigne une adresse TCP numérique. Ajoutez udp_listen uniquement pour QUIC natif ; TCP et UDP peuvent partager le numéro de port. Le repli QUIC exige aussi un véritable service QUIC/HTTP3 utilisable sur dest : HTTPS limité à TCP ne suffit pas.
+
+### Modèle serveur
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+## Vérification et limites
+
+Démarrez d’abord au premier plan. La sonde initiale s’exécute toujours ; prebuild=false désactive seulement le rafraîchissement périodique. Un échec de sonde arrête le démarrage. Vérifiez les adresses et les règles réseau avant de connecter le client. Une sonde TLS non authentifiée voyant le certificat réel du site observe le comportement prévu. Passez à la supervision par service après cette validation élémentaire.
+
+## Pour continuer
+
+- [Configuration du serveur](/fr/docs/configuration/server/)
+- [Déploiement et exploitation](/fr/docs/guides/deployment/)
+- [Modèle de sécurité](/fr/docs/concepts/security-model/)

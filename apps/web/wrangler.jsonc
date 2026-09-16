@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "umbra-web",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-09-16",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": true,
+  "routes": [
+    { "pattern": "umbra.cat", "custom_domain": true },
+    { "pattern": "www.umbra.cat", "custom_domain": true }
+  ],
+  "observability": { "enabled": false }
+}

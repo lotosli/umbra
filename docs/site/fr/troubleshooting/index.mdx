@@ -1,0 +1,36 @@
+---
+id: "troubleshooting"
+title: "Dépannage"
+description: "Diagnostiquer les problèmes de configuration et de connexion."
+section: "troubleshooting"
+order: 17
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md"]
+translation: "complete"
+---
+
+## Vue d’ensemble
+
+Commencez par la version installée, l’étape qui échoue et une description minimale sans secret. Reproduisez une seule requête avant de modifier plusieurs réglages. Distinguez une application qui contourne SOCKS, une panne client/serveur et une panne entre serveur et site de repli ou cible applicative : les vérifications ne sont pas les mêmes.
+
+## Détails
+
+Si le serveur s’arrête immédiatement, vérifiez TOML, les champs requis, les conflits de port et la sonde initiale. Les erreurs de parsing gardent catégorie et position sans reproduire les secrets. En cas d’échec d’authentification, comparez par un canal fiable identité publique, short ID et server_name. Synchronisez les horloges avant d’augmenter max_time_diff. Contrôlez le port TCP public et UDP si QUIC est actif.
+
+### Vérifier la connexion
+
+```sh
+umbra --help
+curl --socks5-hostname 127.0.0.1:1080 https://example.com/
+```
+
+
+## Vérification et limites
+
+Voir le vrai certificat du site est normal pour une sonde non authentifiée. Si seul UDP échoue, vérifiez udp_transport, udp_listen, pare-feu et service QUIC réel de la destination. Pour le débit, utilisez une charge reproductible et les diagnostics facultatifs. Un rapport utile fournit version, plateforme, commande expurgée et catégorie d’erreur ; pas de configuration réelle, clé privée, capture contenant du trafic utilisateur ou détail d’infrastructure en production.
+
+## Pour continuer
+
+- [Configuration du serveur](/fr/docs/configuration/server/)
+- [Configuration du client](/fr/docs/configuration/client/)
+- [Performances et politiques](/fr/docs/reference/configuration/)

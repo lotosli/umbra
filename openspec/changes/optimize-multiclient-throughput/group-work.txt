@@ -1,0 +1,9 @@
+Ready-work fixture: one Tokio worker, 90,000 equivalent polls, eight tasks in group 0 and one in group 1.
+baseline_ready_polls group_with_eight_tasks=80000 group_with_one_task=10000
+scheduled_ready_polls group_with_eight_tasks=45001 group_with_one_task=44999
+
+Final-source release-mode record-cost diagnostic (one fixed-order sample):
+record_work gated=false records=4096 payload_bytes=67108864 elapsed_s=0.409635 payload_mbps=1310.607
+record_work gated=true records=4096 payload_bytes=67108864 elapsed_s=0.379497 payload_mbps=1414.691
+
+The difference is not attributed to a speedup. This is local record processing, not WAN goodput.

@@ -1,0 +1,55 @@
+---
+id: "configuration/server"
+title: "Configuration du serveur"
+description: "Champs obligatoires, valeurs par défaut et validation du serveur."
+section: "configuration"
+order: 8
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Vue d’ensemble
+
+La configuration du serveur est au format TOML. Tous les champs obligatoires doivent exister après application des options CLI. Les champs inconnus et les types invalides sont rejetés. Les écouteurs utilisent IP:port numérique, avec crochets pour IPv6 ; dest utilise hôte:port. Le tableau décrit les champs principaux, tandis que performance fait l’objet d’une référence séparée.
+
+## Détails
+
+private_key et mldsa_seed doivent chacun décoder exactement 32 octets base64. Les valeurs de remplacement ne sont pas utilisables en production. short_ids contient au moins une entrée ; chacune encode zéro à huit octets sous forme hexadécimale de longueur paire. Une chaîne vide est autorisée. max_time_diff accepte ms, s, m, h ou un nombre de secondes sans suffixe, avec une durée minimale d’une seconde.
+
+### Modèle serveur
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+| Champ | Valeur par défaut / exigence | Signification |
+|---|---|---|
+| `listen` | Obligatoire | Adresse numérique d’écoute TCP |
+| `udp_listen` | `—` | Écoute QUIC UDP facultative ; omettre pour désactiver |
+| `private_key` | Obligatoire | Clé privée X25519, base64, exactement 32 octets |
+| `short_ids` | Obligatoire | Liste non vide d’ID hexadécimaux de 0–8 octets |
+| `dest` | Obligatoire | Destination réelle de repli, hôte:port |
+| `server_names` | Obligatoire | Liste non vide de SNI acceptés |
+| `max_time_diff` | Obligatoire | Écart d’horloge autorisé, au moins une seconde |
+| `mldsa_seed` | Obligatoire | Graine ML-DSA, base64, exactement 32 octets |
+| `prebuild` | `true` | Rafraîchissement périodique ; sonde initiale obligatoire |
+| `padding_scheme` | `"default"` | Politique de remplissage interne |
+| `tcp_evasion` | `"segment"` | Écritures ordonnées du ClientHello |
+
+## Vérification et limites
+
+server_names doit être non vide. Chaque nom passe des contrôles de longueur, ASCII et absence d’espaces ; cette validation ne prouve pas qu’un site est joignable ni que son SNI est approprié. La sonde initiale reste obligatoire. Les options CLI emploient des tirets, par exemple --udp-listen, et remplacent seulement les valeurs fournies. Gardez les secrets dans un fichier protégé plutôt que dans l’historique du shell.
+
+## Pour continuer
+
+- [Configurer un serveur](/fr/docs/guides/server/)
+- [Performances et politiques](/fr/docs/reference/configuration/)
+- [Référence CLI](/fr/docs/reference/cli/)

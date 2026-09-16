@@ -1,0 +1,66 @@
+---
+id: "reference/configuration"
+title: "Performance and policy reference"
+description: "Memory ceilings, adaptive mux, padding and congestion settings."
+section: "reference"
+order: 15
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/resources.rs", "README.md", "docs/performance.md", "crates/umbra-transport/src/evasion.rs", "crates/umbra-inner/src/padding.rs", "docs/usage.md"]
+translation: "complete"
+---
+
+## Overview
+
+Both client and server accept an optional performance table. Defaults are bounded logical resource commitments rather than memory allocated in full at startup. Keep headroom for the operating system, kernel buffers, allocator overhead and handshakes. Shared credential groups share a group budget; they do not create separate user accounts or guarantee equal bandwidth per person.
+
+## Details
+
+memory_mib accepts 16–16384 MiB. group_memory_mib must be at least 16 MiB and no larger than the process limit. Window fields accept 1–64 MiB; effective QUIC windows and send storage are additionally clipped to configured budgets. adaptive_mux controls the client opt-in for new TCP CONNECT mux sessions, while mux=false keeps the dedicated Vision selection.
+
+### Optional performance table
+
+```toml
+[performance]
+memory_mib = 512
+group_memory_mib = 256
+max_window_mib = 64
+quic_stream_window_mib = 6
+quic_send_window_mib = 32
+adaptive_mux = true
+diagnostics_interval_secs = 0
+quic_congestion = "bbr"
+```
+
+| Field | Default / requirement | Meaning |
+|---|---|---|
+| `memory_mib` | `512` | Process logical memory commitment, 16–16384 MiB |
+| `group_memory_mib` | `256` | Credential-group ceiling, 16 MiB through process limit |
+| `max_window_mib` | `64` | Adaptive aggregate window maximum, 1–64 MiB |
+| `quic_stream_window_mib` | `6` | QUIC stream receive window, 1–64 MiB |
+| `quic_send_window_mib` | `32` | QUIC retained send storage, 1–64 MiB |
+| `adaptive_mux` | `true` | Client opt-in for new adaptive TCP mux sessions |
+| `diagnostics_interval_secs` | `0` | Server diagnostic interval: 0 disabled, 1–3600 seconds |
+| `quic_congestion` | `"bbr"` | Outgoing QUIC: bbr, cubic, new-reno |
+
+
+### Padding and TCP writes
+
+default: the first 16 business writes in each direction receive 100–1400 byte random PADDING frames before and after the data; later, every 32nd business write receives one padding frame. none disables injected padding. Custom form: early=N,min=N,max=N,later=N; early counts initial writes, min/max bound padding bytes and later sets the periodic interval (0 disables that phase). min must not exceed max, max must not exceed 65535, and enabled early padding requires a nonzero max.
+
+segment: ordered writes, default threshold 64 bytes and first chunk 32 bytes. off: ordinary write. Custom form: segment:threshold=N,first=M. Geneva strategies are rejected.
+
+```toml
+padding_scheme = "default"
+tcp_evasion = "segment"
+```
+
+
+## Verify
+
+diagnostics_interval_secs=0 disables pipeline collection and reporting; 1–3600 enables a server interval in seconds. Numeric observations distinguish transport and target bytes and omit addresses, credentials, SNI and payloads. Logical commitments are not RSS; write acceptance is not proof of remote application delivery; scheduler poll time is not CPU utilization. quic_congestion changes this endpoint's outgoing QUIC traffic only. Start with defaults and tune against a repeatable workload instead of assuming a larger window always improves performance.
+
+## Next steps
+
+- [Transports and traffic modes](/en/docs/concepts/transports/)
+- [Deploy and operate](/en/docs/guides/deployment/)
+- [Troubleshooting](/en/docs/troubleshooting/)

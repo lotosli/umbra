@@ -84,3 +84,13 @@ flowchart TD
 - 覆盖率：**cargo-llvm-cov**，硬性 **≥90% 行覆盖率**（CI + `cargo xtask coverage`）。
 - 层次：单元（模块内）· 集成（`crates/*/tests/`，每 spec `#### Scenario` ≥1 用例）· 性质（proptest，解析/编解码）· 模糊（`fuzz/`，所有字节解析器）· 端到端（`umbra-testkit` 回环）· 向量（RFC 8448/8439/5869、FIPS 203/204）。
 - 骨架示例：`crates/umbra-crypto/tests/crypto_primitives.rs`、`crates/umbra-core/tests/e2e_loopback.rs`（当前 `#[ignore]`）。
+
+## 官网与文档 workspace
+
+`apps/web` 是独立的 pnpm 应用，使用 React 19.2、TypeScript strict、Vite 8、TanStack Start/Router、Tailwind CSS 4.3 与 Fumadocs。根 `pnpm-workspace.yaml` 集中管理前端依赖版本，`pnpm-lock.yaml` 与 Cargo.lock 分别锁定两个生态。
+
+官网展示页和文档共用一个应用，分别使用营销与阅读布局。公开内容来自 `docs/site/{locale}`，仅通过受检的内容清单发布。七种 URL 语言为 `zh-hans`、`zh-hant`、`en`、`fr`、`es`、`ja`、`ca`；规范地址为 `https://umbra.cat/{locale}/`，文档位于其 `docs/` 子目录。
+
+Cloudflare Workers 执行 SSR，Static Assets 提供脚本、样式、图片与每语搜索索引。官网不运行 Rust 协议服务，不依赖数据库、不存储用户搜索。版本与平台信息在构建时从 Cargo 和发行工作流提取。前端与 Rust 独立验证行覆盖率 >=90%，网站的手动部署工作流不改变 Rust dist 工作流。
+
+开发、内容来源、翻译、域名别名、发布与回滚见 [website-development.md](website-development.md)。对应 OpenSpec 变更为 `add-multilingual-website`。

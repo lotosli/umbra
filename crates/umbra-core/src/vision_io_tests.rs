@@ -803,7 +803,7 @@ async fn raw_guard_rejects_bad_headers_and_every_partial_record_without_forwardi
     for input in bad {
         let mut reader = input.as_slice();
         let mut writer = StepWriter::unlimited();
-        let (progress, _changes) = watch::channel(Instant::now());
+        let progress = crate::relay::ProgressClock::new();
         assert!(forward_records(&mut reader, &mut writer, false, &progress)
             .await
             .is_err());
@@ -813,7 +813,7 @@ async fn raw_guard_rejects_bad_headers_and_every_partial_record_without_forwardi
     let input = [record.clone(), vec![0x16, 3, 3, 0, 17]].concat();
     let mut reader = input.as_slice();
     let mut writer = StepWriter::unlimited();
-    let (progress, _changes) = watch::channel(Instant::now());
+    let progress = crate::relay::ProgressClock::new();
     assert!(forward_records(&mut reader, &mut writer, false, &progress)
         .await
         .is_err());
@@ -876,7 +876,7 @@ async fn raw_idle_and_write_zero_terminate_owned_work() {
     let mut reader = record.as_slice();
     let mut writer = StepWriter::default();
     writer.0.lock().expect("state").zero = true;
-    let (progress, _changes) = watch::channel(Instant::now());
+    let progress = crate::relay::ProgressClock::new();
     assert_eq!(
         forward_records(&mut reader, &mut writer, false, &progress)
             .await
@@ -938,8 +938,141 @@ async fn raw_partial_record_activity_refreshes_idle_deadline() {
     assert_eq!(local_write.output(), record);
 }
 
+#[tokio::test]
+async fn raw_available_records_are_batched_and_partial_suffix_is_never_forwarded() {
+    struct CountReads {
+        input: std::io::Cursor<Vec<u8>>,
+        calls: usize,
+    }
+    impl AsyncRead for CountReads {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            self.calls += 1;
+            Pin::new(&mut self.input).poll_read(cx, buffer)
+        }
+    }
+    let record = protected_record(0x62);
+    let input = record.repeat(10);
+    let mut reader = CountReads {
+        input: std::io::Cursor::new(input.clone()),
+        calls: 0,
+    };
+    let mut writer = StepWriter::unlimited();
+    let progress = crate::relay::ProgressClock::new();
+    assert_eq!(
+        forward_records(&mut reader, &mut writer, false, &progress)
+            .await
+            .unwrap(),
+        u64::try_from(input.len()).unwrap()
+    );
+    assert_eq!(writer.output(), input);
+    assert_eq!(reader.calls, 2, "one available batch plus EOF");
+    for cut in [3, record.len() - 1] {
+        let bytes = [record.as_slice(), &record[..cut]].concat();
+        let mut source = bytes.as_slice();
+        let mut writer = StepWriter::unlimited();
+        assert_eq!(
+            forward_records(&mut source, &mut writer, false, &progress)
+                .await
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        assert_eq!(writer.output(), record);
+    }
+}
+
+#[tokio::test]
+async fn wrapped_receive_buffers_are_bounded_by_records_and_recycled() {
+    let mut pending = PendingBytes::default();
+    for _ in 0..16 {
+        let mut bytes = Vec::with_capacity(crate::owned_tls::MAX_RECORD);
+        bytes.push(1);
+        pending.push(bytes).unwrap();
+    }
+    assert!(!pending.can_receive());
+    assert!(pending.push(vec![2]).is_err());
+    let pointer = pending.chunks.front().unwrap().as_ptr();
+    let mut output = Vec::new();
+    assert!(!pending.flush_or_shutdown(&mut output, false).await.unwrap());
+    assert_eq!(output, [1]);
+    assert_eq!(pending.bytes, 15);
+    let recycled = pending.take_buffer();
+    assert_eq!(recycled.as_ptr(), pointer);
+}
+
 #[test]
 fn byte_counters_check_overflow() {
     assert_eq!(add_bytes(u64::MAX - 2, 2).expect("exact maximum"), u64::MAX);
     assert!(add_bytes(u64::MAX, 1).is_err());
+}
+
+#[tokio::test]
+#[ignore = "explicit release-mode raw-record throughput diagnostic"]
+async fn measure_raw_record_throughput() {
+    let mut record = vec![0x5a; 16_406];
+    record[..5].copy_from_slice(&[0x17, 3, 3, 0x40, 0x11]);
+    let input = record.repeat(8192);
+    for sample in 0..5 {
+        let progress = crate::relay::ProgressClock::new();
+        let mut reader = input.as_slice();
+        let mut sink = tokio::io::sink();
+        let start = Instant::now();
+        let count = forward_records(&mut reader, &mut sink, false, &progress)
+            .await
+            .expect("valid complete records");
+        assert_eq!(count, u64::try_from(input.len()).expect("bounded input"));
+        assert!(reader.is_empty());
+        println!(
+            "mode=raw-records sample={sample} records=8192 bytes={count} elapsed_ns={}",
+            start.elapsed().as_nanos()
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "explicit serial release-mode wrapped Vision data-path diagnostic"]
+async fn measure_wrapped_vision_throughput() {
+    let (client, server) = sessions(false);
+    let (mut source, mut client_io) = tokio::io::duplex(256 * 1024);
+    let (mut server_io, mut destination) = tokio::io::duplex(256 * 1024);
+    let client =
+        tokio::spawn(async move { client.relay(&mut client_io, Duration::from_secs(30)).await });
+    let server =
+        tokio::spawn(async move { server.relay(&mut server_io, Duration::from_secs(30)).await });
+    let receiving = tokio::spawn(async move {
+        destination.shutdown().await.unwrap();
+        let mut received = 0_u64;
+        let mut bytes = vec![0; 64 * 1024];
+        loop {
+            let n = destination.read(&mut bytes).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            assert!(bytes[..n].iter().all(|byte| *byte == 0x5a));
+            received += u64::try_from(n).unwrap();
+        }
+        received
+    });
+    let payload = vec![0x5a; 32 * 1024 * 1024];
+    let started = Instant::now();
+    source.write_all(&payload).await.unwrap();
+    source.shutdown().await.unwrap();
+    assert_eq!(receiving.await.unwrap(), 32 * 1024 * 1024);
+    let seconds = started.elapsed().as_secs_f64();
+    let client = client.await.unwrap().unwrap();
+    let server = server.await.unwrap().unwrap();
+    assert!(!client.spliced && !server.spliced);
+    assert!(client.final_tls.sealed_records > 1);
+    assert_eq!(
+        client.final_tls.sealed_wire_bytes,
+        server.final_tls.opened_wire_bytes
+    );
+    println!(
+        "mode=wrapped-vision bytes=33554432 seconds={seconds:.6} mbps={:.3}",
+        268.435_456 / seconds
+    );
 }

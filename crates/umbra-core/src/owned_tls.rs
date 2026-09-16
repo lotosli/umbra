@@ -24,7 +24,7 @@ use crate::{prefixed::PrefixedStream, tls_io::TlsAppEndpoint};
 const HEADER_LEN: usize = 5;
 const MAX_PLAINTEXT: usize = 16_384;
 const MAX_PAYLOAD: usize = 16_640;
-const MAX_RECORD: usize = HEADER_LEN + MAX_PAYLOAD;
+pub(crate) const MAX_RECORD: usize = HEADER_LEN + MAX_PAYLOAD;
 const MAX_PENDING_INPUT: usize = 32_768;
 const MAX_QUEUED_RECORDS: usize = 2;
 const MAX_QUEUED_BYTES: usize = MAX_QUEUED_RECORDS * MAX_RECORD;
@@ -147,25 +147,33 @@ impl<IO: AsyncRead + AsyncWrite> EstablishedTcp<IO> {
         TlsIoStats,
     ) {
         let (read, write) = split(self.io);
-        let endpoint = Arc::new(Mutex::new(self.endpoint));
+        let (reading, writing) = match self.endpoint.into_records() {
+            Ok(records) => (Ok(records.read), Ok(records.write)),
+            Err(error) => (Err(error.clone()), Err(error)),
+        };
         let stats = TlsIoStats::default();
         (
             OwnedTlsReader {
                 io: read,
-                endpoint: Arc::clone(&endpoint),
+                layer: reading,
                 stats: stats.clone(),
                 pending_input: self.pending_input,
                 pending_offset: 0,
-                record: vec![0; HEADER_LEN],
+                record: {
+                    let mut bytes = Vec::with_capacity(MAX_RECORD);
+                    bytes.resize(HEADER_LEN, 0);
+                    bytes
+                },
                 filled: 0,
                 expected_len: HEADER_LEN,
                 failed: false,
             },
             OwnedTlsWriter {
                 io: write,
-                endpoint,
+                layer: writing,
                 stats: stats.clone(),
                 queue: VecDeque::with_capacity(MAX_QUEUED_RECORDS),
+                spares: Vec::with_capacity(MAX_QUEUED_RECORDS),
                 queued_bytes: 0,
                 dirty: false,
                 failed: false,
@@ -178,7 +186,7 @@ impl<IO: AsyncRead + AsyncWrite> EstablishedTcp<IO> {
 /// Record reader with persistent partial-read state and retained read-ahead.
 pub struct OwnedTlsReader<R> {
     io: R,
-    endpoint: Arc<Mutex<TlsAppEndpoint>>,
+    layer: Result<umbra_tls::records::RecordLayer, umbra_tls::TlsError>,
     stats: TlsIoStats,
     pending_input: Vec<u8>,
     pending_offset: usize,
@@ -225,8 +233,46 @@ impl<R: AsyncRead + Unpin> OwnedTlsReader<R> {
     /// Rejects malformed, oversized, unauthenticated or truncated records and
     /// propagates transport errors. After any error this owner is terminal.
     pub async fn next_record(&mut self) -> io::Result<Option<Vec<u8>>> {
+        if !self.next_record_buffered().await? {
+            return Ok(None);
+        }
+        let output = self.record[HEADER_LEN..].to_vec();
+        self.reset_record();
+        Ok(Some(output))
+    }
+
+    /// Transfer authenticated plaintext into caller-owned reusable storage.
+    /// Cancellation retains partial input; false means clean transport EOF.
+    pub async fn next_record_into(&mut self, output: &mut Vec<u8>) -> io::Result<bool> {
+        output.clear();
+        if output.capacity() < MAX_RECORD {
+            output.reserve_exact(MAX_RECORD);
+        }
+        if !self.next_record_buffered().await? {
+            return Ok(false);
+        }
+        let length = self.record.len() - HEADER_LEN;
+        self.record.copy_within(HEADER_LEN.., 0);
+        self.record.truncate(length);
+        std::mem::swap(&mut self.record, output);
+        self.reset_record();
+        Ok(true)
+    }
+
+    fn reset_record(&mut self) {
+        self.record.clear();
+        self.record.resize(HEADER_LEN, 0);
+        self.filled = 0;
+        self.expected_len = HEADER_LEN;
+    }
+
+    async fn next_record_buffered(&mut self) -> io::Result<bool> {
         if self.failed {
             return Err(invalid("TLS reader is terminal"));
+        }
+        if let Err(error) = &self.layer {
+            self.failed = true;
+            return Err(io::Error::new(io::ErrorKind::InvalidData, error.clone()));
         }
         let result = self.read_and_open().await;
         if result.is_err() {
@@ -235,7 +281,7 @@ impl<R: AsyncRead + Unpin> OwnedTlsReader<R> {
         result
     }
 
-    async fn read_and_open(&mut self) -> io::Result<Option<Vec<u8>>> {
+    async fn read_and_open(&mut self) -> io::Result<bool> {
         loop {
             while self.filled < self.expected_len {
                 let remaining = self.expected_len - self.filled;
@@ -261,7 +307,7 @@ impl<R: AsyncRead + Unpin> OwnedTlsReader<R> {
                 };
                 if count == 0 {
                     return if self.filled == 0 {
-                        Ok(None)
+                        Ok(false)
                     } else {
                         Err(io::Error::new(
                             io::ErrorKind::UnexpectedEof,
@@ -283,22 +329,19 @@ impl<R: AsyncRead + Unpin> OwnedTlsReader<R> {
                 self.record.resize(self.expected_len, 0);
                 continue;
             }
-            let plaintext = self
-                .endpoint
-                .lock()
-                .map_err(|_| invalid("TLS endpoint mutex poisoned"))?
-                .open(&self.record)
+            let wire_length = self.record.len();
+            self.layer
+                .as_mut()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.clone()))?
+                .open_application_in_place(&mut self.record)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-            if plaintext.len() > MAX_PLAINTEXT {
-                return Err(invalid("outer TLS plaintext exceeds its bound"));
-            }
             increment(&self.stats.0.opened_records, 1);
-            increment(&self.stats.0.opened_plaintext_bytes, plaintext.len());
-            increment(&self.stats.0.opened_wire_bytes, self.record.len());
-            self.record.truncate(HEADER_LEN);
-            self.filled = 0;
-            self.expected_len = HEADER_LEN;
-            return Ok(Some(plaintext));
+            increment(
+                &self.stats.0.opened_plaintext_bytes,
+                self.record.len() - HEADER_LEN,
+            );
+            increment(&self.stats.0.opened_wire_bytes, wire_length);
+            return Ok(true);
         }
     }
 }
@@ -311,9 +354,10 @@ struct PendingRecord {
 /// Record writer that seals each accepted plaintext once and resumes ciphertext.
 pub struct OwnedTlsWriter<W> {
     io: W,
-    endpoint: Arc<Mutex<TlsAppEndpoint>>,
+    layer: Result<umbra_tls::records::RecordLayer, umbra_tls::TlsError>,
     stats: TlsIoStats,
     queue: VecDeque<PendingRecord>,
+    spares: Vec<Vec<u8>>,
     queued_bytes: usize,
     dirty: bool,
     failed: bool,
@@ -329,10 +373,20 @@ impl<W> OwnedTlsWriter<W> {
     /// Returns `WouldBlock` at the queue bound, or rejects oversized plaintext,
     /// a terminal writer, or TLS encryption failure.
     pub fn queue_record(&mut self, plaintext: &[u8]) -> io::Result<()> {
+        self.queue_record_parts(&[plaintext])
+    }
+
+    /// Queue borrowed plaintext segments directly into a reusable ciphertext buffer.
+    /// The same admission, terminal-error and cancellation rules as queue_record apply.
+    pub fn queue_record_parts(&mut self, parts: &[&[u8]]) -> io::Result<()> {
         if self.failed {
             return Err(invalid("TLS writer is terminal"));
         }
-        if plaintext.len() > MAX_PLAINTEXT {
+        let length = parts.iter().try_fold(0_usize, |n, part| {
+            n.checked_add(part.len())
+                .ok_or_else(|| invalid("outer TLS plaintext exceeds its bound"))
+        })?;
+        if length > MAX_PLAINTEXT {
             return Err(invalid("outer TLS plaintext exceeds its bound"));
         }
         if self.queue.len() >= MAX_QUEUED_RECORDS
@@ -343,25 +397,29 @@ impl<W> OwnedTlsWriter<W> {
                 "outer TLS ciphertext queue is full",
             ));
         }
-        let sealed = match self.endpoint.lock() {
-            Ok(mut endpoint) => endpoint
-                .seal(plaintext)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
-            Err(_) => Err(invalid("TLS endpoint mutex poisoned")),
-        };
-        let ciphertext = match sealed {
-            Ok(ciphertext) if ciphertext.len() <= MAX_RECORD => ciphertext,
-            Ok(_) => {
-                self.failed = true;
-                return Err(invalid("sealed outer TLS record exceeds its bound"));
-            }
-            Err(error) => {
-                self.failed = true;
-                return Err(error);
-            }
-        };
+        let mut ciphertext = self
+            .spares
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(MAX_RECORD));
+        let result = self
+            .layer
+            .as_mut()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.clone()))
+            .and_then(|layer| {
+                layer
+                    .seal_parts_into(
+                        umbra_tls::records::CONTENT_TYPE_APPLICATION_DATA,
+                        parts,
+                        &mut ciphertext,
+                    )
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+            });
+        if let Err(error) = result {
+            self.failed = true;
+            return Err(error);
+        }
         increment(&self.stats.0.sealed_records, 1);
-        increment(&self.stats.0.sealed_plaintext_bytes, plaintext.len());
+        increment(&self.stats.0.sealed_plaintext_bytes, length);
         increment(&self.stats.0.sealed_wire_bytes, ciphertext.len());
         self.queued_bytes += ciphertext.len();
         self.queue.push_back(PendingRecord {
@@ -439,7 +497,12 @@ impl<W: AsyncWrite + Unpin> OwnedTlsWriter<W> {
                 self.stats.note_io_progress();
             }
             self.queued_bytes -= record.ciphertext.len();
-            self.queue.pop_front();
+            if let Some(mut completed) = self.queue.pop_front() {
+                completed.ciphertext.clear();
+                if self.spares.len() < MAX_QUEUED_RECORDS {
+                    self.spares.push(completed.ciphertext);
+                }
+            }
         }
         if self.dirty {
             loop {
@@ -623,6 +686,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reusable_record_buffers_keep_two_receive_allocations_and_one_send_allocation() {
+        let (client, server) = established_endpoints();
+        let (left, right) = tokio::io::duplex(2 * MAX_RECORD);
+        let (_cr, mut writer, _) =
+            EstablishedTcp::new(left, TlsAppEndpoint::Client(Box::new(client)), Vec::new())
+                .unwrap()
+                .split();
+        let (mut reader, _sw, _) =
+            EstablishedTcp::new(right, TlsAppEndpoint::Server(Box::new(server)), Vec::new())
+                .unwrap()
+                .split();
+        let mut output = Vec::with_capacity(MAX_RECORD);
+        let mut pointers = std::collections::HashSet::new();
+        pointers.insert(output.as_ptr());
+        pointers.insert(reader.record.as_ptr());
+        let mut send_pointer = None;
+        for length in [1, 1024, 16_383, 8, 16_383, 32] {
+            let data = vec![0xa5; length];
+            writer.queue_record_parts(&[b"x", &data]).unwrap();
+            writer.flush_pending().await.unwrap();
+            let pointer = writer.spares[0].as_ptr();
+            if let Some(previous) = send_pointer {
+                assert_eq!(previous, pointer);
+            }
+            send_pointer = Some(pointer);
+            assert!(reader.next_record_into(&mut output).await.unwrap());
+            assert_eq!(output[0], b'x');
+            assert_eq!(&output[1..], data);
+            pointers.insert(output.as_ptr());
+            pointers.insert(reader.record.as_ptr());
+        }
+        assert_eq!(pointers.len(), 2);
+        assert_eq!(reader.layer.as_ref().unwrap().sequence(), 6);
+        assert_eq!(writer.layer.as_ref().unwrap().sequence(), 6);
+    }
+
+    #[tokio::test]
     async fn scenario_cancel_read_at_every_record_byte_preserves_ciphertext() {
         let (mut client, server) = established_endpoints();
         let io = GateIo::default();
@@ -724,7 +824,8 @@ mod tests {
             EstablishedTcp::new(io, TlsAppEndpoint::Server(Box::new(server)), pending)
                 .expect("owner")
                 .split();
-        let endpoint = Arc::downgrade(&reader.endpoint);
+        assert_eq!(reader.layer.as_ref().unwrap().sequence(), 0);
+        assert_eq!(writer.layer.as_ref().unwrap().sequence(), 0);
         assert_eq!(
             reader.next_record().await.expect("final open"),
             Some(b"final control".to_vec())
@@ -732,9 +833,13 @@ mod tests {
         assert_eq!(reader.pending_input_len(), raw.len());
         let before = stats.snapshot();
         let mut raw_read = reader.into_raw().expect("reader handoff");
-        assert!(endpoint.upgrade().is_some());
+        assert_eq!(
+            writer.layer.as_ref().unwrap().sequence(),
+            0,
+            "receive handoff does not advance the send key"
+        );
         let mut raw_write = writer.into_raw().expect("writer handoff");
-        assert!(endpoint.upgrade().is_none());
+
         let mut observed = Vec::new();
         raw_read
             .read_to_end(&mut observed)
@@ -963,9 +1068,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scenario_poisoned_crypto_owner_is_terminal_in_both_directions() {
+    async fn scenario_directional_key_failure_is_terminal_without_poisoning_its_sibling() {
         let (mut client, server) = established_endpoints();
-        let ciphertext = client.app_seal(b"mutex failure").expect("seal");
+        let ciphertext = client.app_seal(b"read failure").expect("seal");
         let (mut reader, mut writer, stats) = EstablishedTcp::new(
             GateIo::default(),
             TlsAppEndpoint::Server(Box::new(server)),
@@ -973,17 +1078,22 @@ mod tests {
         )
         .expect("owner")
         .split();
-        let endpoint = Arc::clone(&reader.endpoint);
-        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = endpoint.lock().expect("lock before poison");
-            panic!("injected panic while owning crypto state");
-        }));
-        assert!(panic_result.is_err());
+        reader.layer = Err(umbra_tls::TlsError::InvalidInput(
+            "injected missing receive key",
+        ));
         assert!(reader.next_record().await.is_err());
+        writer
+            .queue_record(b"independent send")
+            .expect("send key remains usable");
+        assert_eq!(writer.layer.as_ref().unwrap().sequence(), 1);
+        writer.layer = Err(umbra_tls::TlsError::InvalidInput(
+            "injected missing send key",
+        ));
         assert!(writer.queue_record(b"must not seal").is_err());
         assert!(reader.into_raw().is_err());
         assert!(writer.into_raw().is_err());
-        assert_eq!(stats.snapshot(), TlsIoSnapshot::default());
+        assert_eq!(stats.snapshot().opened_records, 0);
+        assert_eq!(stats.snapshot().sealed_records, 1);
     }
 
     #[test]

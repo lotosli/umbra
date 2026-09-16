@@ -27,6 +27,14 @@ pub enum MuxCommand {
     Ping = 0x08,
     /// Carry one UDP datagram envelope. Uses reserved stream id zero.
     UdpDatagram = 0x09,
+    /// Negotiate adaptive receive limits on stream zero.
+    Settings = 0x0a,
+    /// Cumulative stream or connection credit and consumption.
+    Credit = 0x0b,
+    /// Eight-byte RTT probe on stream zero.
+    Probe = 0x0c,
+    /// Echo of one outstanding RTT probe.
+    ProbeAck = 0x0d,
 }
 
 impl TryFrom<u8> for MuxCommand {
@@ -43,6 +51,10 @@ impl TryFrom<u8> for MuxCommand {
             0x07 => Ok(Self::Padding),
             0x08 => Ok(Self::Ping),
             0x09 => Ok(Self::UdpDatagram),
+            0x0a => Ok(Self::Settings),
+            0x0b => Ok(Self::Credit),
+            0x0c => Ok(Self::Probe),
+            0x0d => Ok(Self::ProbeAck),
             other => Err(ProtocolError::UnsupportedCommand(other)),
         }
     }
@@ -84,16 +96,22 @@ impl MuxFrame {
 
     /// Encode a frame to bytes.
     pub fn encode(&self) -> Result<Vec<u8>, ProtocolError> {
-        if self.payload.len() > MAX_FRAME_PAYLOAD_LEN {
-            return Err(ProtocolError::LengthViolation);
-        }
-        let mut out = Vec::with_capacity(8 + self.payload.len());
+        Self::encode_payload(self.command, self.stream_id, &self.payload)
+    }
+
+    /// Encode a borrowed payload directly into its owning wire buffer.
+    pub fn encode_payload(
+        command: MuxCommand,
+        stream_id: u32,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, ProtocolError> {
+        let len = u16::try_from(payload.len()).map_err(|_| ProtocolError::LengthViolation)?;
+        let mut out = Vec::with_capacity(8 + payload.len());
         out.push(MUX_VERSION);
-        out.push(self.command.into());
-        out.extend_from_slice(&self.stream_id.to_be_bytes());
-        let len = u16::try_from(self.payload.len()).map_err(|_| ProtocolError::LengthViolation)?;
+        out.push(command.into());
+        out.extend_from_slice(&stream_id.to_be_bytes());
         out.extend_from_slice(&len.to_be_bytes());
-        out.extend_from_slice(&self.payload);
+        out.extend_from_slice(payload);
         Ok(out)
     }
 

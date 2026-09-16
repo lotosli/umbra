@@ -1,0 +1,85 @@
+---
+id: "getting-started/quick-start"
+title: "クイックスタート"
+description: "識別用の鍵を生成し、最初のクライアントとサーバーを接続します。"
+section: "getting-started"
+order: 3
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## 概要
+
+同じバージョンのサーバーとクライアントを用意します。クライアントからサーバーへ、サーバーから実在するフォールバック先へ到達できる必要があります。例はプレースホルダーです。cover.example を適切で到達可能な TLS 1.3 サイトに置き換え、識別情報は自分の keygen 出力で埋めてください。
+
+## 詳細
+
+第三者に見られないターミナルで umbra keygen を実行します。x25519_private と mldsa_seed はサーバーだけに保持し、x25519_public、mldsa_verify、選んだ short_id を信頼できる経路でクライアントへ渡します。server.toml を作成して先に起動し、接続先の初期検査を成功させます。クライアントの server_name と short_id はサーバーの許可リストに一致させます。
+
+### 識別鍵の生成
+
+```sh
+umbra keygen
+```
+
+`umbra keygen` は `short_id` を生成しません。0〜16文字の偶数桁の16進文字列（0〜8バイト）を選び、両端で同じ値を指定します。文書用アドレス `198.51.100.10` はクライアントから到達可能な実際のサーバーアドレスに置き換え、ポートをサーバーの待ち受けと一致させてください。
+
+
+### サーバーテンプレート
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+### サーバーの起動
+
+```sh
+umbra server -c server.toml
+```
+
+
+### クライアントテンプレート
+
+```toml
+server = "198.51.100.10:443"
+transport = "tcp"
+public_key = "<X25519_PUBLIC_BASE64>"
+short_id = "<SHORT_ID_HEX>"
+server_name = "cover.example"
+fingerprint = "chrome-latest"
+mldsa_verify = "<MLDSA_VERIFY_BASE64>"
+socks_listen = "127.0.0.1:1080"
+```
+
+
+### クライアントの起動
+
+```sh
+umbra client -c client.toml
+```
+
+
+### 接続の確認
+
+```sh
+curl --socks5-hostname 127.0.0.1:1080 https://example.com/
+```
+
+
+## 確認と制約
+
+client.toml を作って起動し、アプリを SOCKS5 の 127.0.0.1:1080 に接続します。SOCKS はパスワード認証を行わないのでローカルのまま使用します。curl の --socks5-hostname はホスト名を SOCKS 経由で渡し、全経路を確認できます。終了は Ctrl-C です。TCP が動作した後で、同じインスタンスへ QUIC UDP を追加できます。
+
+## 次のステップ
+
+- [サーバーの設定](/ja/docs/guides/server/)
+- [クライアントの接続](/ja/docs/guides/client/)
+- [設定例](/ja/docs/configuration/examples/)

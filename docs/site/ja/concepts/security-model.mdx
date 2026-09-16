@@ -1,0 +1,30 @@
+---
+id: "concepts/security-model"
+title: "セキュリティモデル"
+description: "認証、秘密情報の管理、保護範囲を理解します。"
+section: "concepts"
+order: 13
+version: "1.0.0-alpha"
+source: ["README.md", "crates/umbra-core/src/socks.rs"]
+translation: "complete"
+---
+
+## 概要
+
+Umbra は最初のサーバー応答前の認証と、実サイトへのフォールバックを組み合わせます。未認証接続には識別しやすいプロキシ認証エラーを返さず、設定先へ転送します。認証済みクライアントは期待する識別情報を検証します。リプレイキャッシュには容量と時間の上限があり、あらゆるリソース枯渇への無制限な防御ではありません。
+
+## 詳細
+
+コードは定数時間検証と秘密のゼロ化を集約しています。private_key と mldsa_seed はサーバーにだけ置き、クライアント設定は信頼できる方法で配布し、鍵、接続先、内容を公開ログや報告に含めないでください。SOCKS は利用者認証がないためループバックを使います。アプリ自身の HTTPS やエンドツーエンド認証暗号も継続して使用します。
+
+[GitHub Security](https://github.com/lotosli/umbra/security)
+
+## 確認と制約
+
+プライバシー通信は侵害された端末を修復せず、多段匿名ネットワークと同じ匿名性も提供しません。alpha は独立監査や現行 Chrome との完全一致を主張していません。chrome-latest は Chrome 150 で、Chrome 153 の採取だけでは全面的な適合を証明できません。問題報告前に公開セキュリティ情報を確認し、機密性の高い詳細を普通の公開 issue に載せないでください。
+
+## 次のステップ
+
+- [プロトコルリファレンス](/ja/docs/reference/protocol/)
+- [トラブルシューティング](/ja/docs/troubleshooting/)
+- [開発への参加](/ja/docs/contributing/)

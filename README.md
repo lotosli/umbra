@@ -25,7 +25,7 @@ Umbra combines protocol camouflage, pre-response authentication, browser-grade f
 
 ## Status
 
-**0.0.8** corrects standard hybrid TLS/QUIC interoperability and supports one SOCKS client instance with TCP/Vision for TCP and QUIC for UDP. Upgrade client and server together; the older reversed hybrid format is not retained.
+**1.0.0-alpha** adds accelerated reusable TLS ciphers, ready-stream mux scheduling, larger funded startup windows, batched QUIC ingress and independent UDP progress. QUIC continues to default to BBR. Upgrade both endpoints for adaptive mux; the single-instance TCP/Vision plus QUIC UDP setup remains available. See [throughput and configuration](docs/performance.md).
 
 For the combined client, add these settings to the existing configuration:
 
@@ -60,6 +60,19 @@ The protocol target is documented in [`docs/protocol-design.md`](docs/protocol-d
 | `xtask` | Development, CI, coverage, fingerprint, and dist tasks |
 | `openspec` | Specification-driven development changes and accepted specs |
 | `.github/workflows` | CI and tag-based release builds |
+| `apps/web` | React / TanStack Start website and Fumadocs, deployed independently to Cloudflare Workers |
+| `docs/site` | Reviewed public documentation in seven languages |
+
+## Website development
+
+The repository combines a Cargo workspace with a private pnpm workspace. Use Node 24.18.1 and pnpm 9.11.0 for the website; Rust development does not require Node.
+
+```bash
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+The local website is served at `http://127.0.0.1:3000`. Run `pnpm build`, `pnpm check`, `pnpm test` and `pnpm test:e2e` before publishing. Public pages and documentation use seven language directories on the planned canonical origin `https://umbra.cat`. Deployment is manually triggered and does not change the Rust release workflow. See [website development and deployment](docs/website-development.md).
 
 ## Quick Start
 
@@ -106,7 +119,7 @@ Pushing a `v*` tag triggers the `Dist` workflow. It builds macOS, Linux, and Win
 
 Regular branch pushes run `CI` only. This keeps every branch validated without spending release-build minutes on every development commit.
 
-For the explicitly requested manual 0.0.8 release, binaries were built locally and commits include `[skip ci]`. No Actions build is needed to publish those existing artifacts. This release includes Apple Silicon/Intel macOS and x86_64/aarch64 Linux binaries, with SHA-256 checksums. See the [verification record](openspec/changes/archive/2026-09-14-fix-standard-quic-tls/verification.md) for the exact scope of completed checks and the final deployment.
+The `1.0.0-alpha` release is a prerelease. See its [verification record](openspec/changes/optimize-throughput-alpha/verification.md) for macOS/Linux artifacts, SHA-256 checksums, paired deployment, local checks and remote CI status.
 
 ## Development Model
 

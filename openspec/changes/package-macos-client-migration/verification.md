@@ -1,0 +1,9 @@
+# Private Mac migration delivery
+
+The user-authorized desktop directory and ZIP have been assembled for 1.0.0-alpha. The archive includes a universal arm64/x86_64 executable, generic stock-zsh install/start/stop/status/uninstall controls, the complete client configuration and both selected Clash YAML profiles. All three exports were compared byte-for-byte with their source files; credentials were preserved without being printed or added to git.
+
+Assembly checks only: shell syntax for the controller and five wrappers, both Mach-O architectures, valid ad-hoc signature, system-only dynamic library dependencies, UTF-8 ZIP entry names, executable script modes, archive CRC and exact archive/source-file agreement. The initial ditto archive used legacy filename flags; it was replaced with a standard UTF-8 ZIP to preserve Chinese names across extraction tools. The final private ZIP is approximately 5.47MiB and has owner-only permissions.
+
+The scripts use the destination user's home, preserve existing owned files in backups, restore prior service files on installation failure and refuse to terminate an unrelated port-1080 listener. Configurations are installed automatically; Clash YAML import remains manual as requested. The package contains no Clash application itself and has no Python/Homebrew/Rust requirement on the destination.
+
+No installation, service restart, network test or additional throughput test was executed on the current Mac. The destination Mac was not available for an installation run; this limitation is included in the Chinese guide. Existing current services were not modified. The private desktop package and its credential-bearing exports are excluded from public releases and repository contents. Only generic scripts, documentation and this specification are tracked.

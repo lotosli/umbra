@@ -1,0 +1,25 @@
+   Compiling umbra-inner v0.0.9 (/Users/lotosli/Documents/Projects/umbra/crates/umbra-inner)
+    Finished `release` profile [optimized] target(s) in 3.46s
+     Running tests/mixed_throughput.rs (target/release/deps/mixed_throughput-90bbdacda70287ac)
+
+running 1 test
+adaptive=false client=0 group=0 streams=4 rtt_ms=20 path_mbps=100 elapsed_s=0.351124 goodput_mbps=95.563 credit_wait_events=192 credit_wait_ms=272.042 output_flush_ms=4.019 receive_window=8388608 held_bytes=0
+adaptive=false client=1 group=0 streams=1 rtt_ms=20 path_mbps=100 elapsed_s=0.427917 goodput_mbps=78.413 credit_wait_events=240 credit_wait_ms=408.424 output_flush_ms=4.080 receive_window=8388608 held_bytes=0
+adaptive=false client=2 group=1 streams=1 rtt_ms=100 path_mbps=1000 elapsed_s=1.634551 goodput_mbps=20.528 credit_wait_events=240 credit_wait_ms=1573.495 output_flush_ms=4.158 receive_window=8388608 held_bytes=0
+adaptive=false client=3 group=2 streams=1 rtt_ms=200 path_mbps=10 elapsed_s=5.302394 goodput_mbps=6.328 credit_wait_events=225 credit_wait_ms=5164.432 output_flush_ms=5.600 receive_window=8388608 held_bytes=262144
+adaptive=false group=0 outers=2 group_goodput_mbps=156.249
+adaptive=false group=1 outers=1 group_goodput_mbps=20.485
+adaptive=false group=2 outers=1 group_goodput_mbps=6.328
+adaptive=false common_link_mbps=500 payload_bytes=16777216 aggregate_goodput_mbps=25.313 remaining_committed_bytes=0
+adaptive=true client=0 group=0 streams=4 rtt_ms=20 path_mbps=100 elapsed_s=0.349096 goodput_mbps=96.118 credit_wait_events=255 credit_wait_ms=104.334 output_flush_ms=151.304 receive_window=2097152 held_bytes=0
+adaptive=true client=1 group=0 streams=1 rtt_ms=20 path_mbps=100 elapsed_s=0.355484 goodput_mbps=94.391 credit_wait_events=224 credit_wait_ms=114.424 output_flush_ms=148.634 receive_window=2097152 held_bytes=0
+adaptive=true client=2 group=1 streams=1 rtt_ms=100 path_mbps=1000 elapsed_s=0.486901 goodput_mbps=68.914 credit_wait_events=224 credit_wait_ms=334.080 output_flush_ms=99.073 receive_window=8388608 held_bytes=0
+adaptive=true client=3 group=2 streams=1 rtt_ms=200 path_mbps=10 elapsed_s=3.863467 goodput_mbps=8.685 credit_wait_events=193 credit_wait_ms=1469.852 output_flush_ms=1487.715 receive_window=4194304 held_bytes=262144
+adaptive=true group=0 outers=2 group_goodput_mbps=188.512
+adaptive=true group=1 outers=1 group_goodput_mbps=68.791
+adaptive=true group=2 outers=1 group_goodput_mbps=8.685
+adaptive=true common_link_mbps=500 payload_bytes=16777216 aggregate_goodput_mbps=34.740 remaining_committed_bytes=0
+test mixed_clients_share_resources_and_isolate_paused_consumption ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.58s
+

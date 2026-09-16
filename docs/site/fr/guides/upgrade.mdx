@@ -1,0 +1,37 @@
+---
+id: "guides/upgrade"
+title: "Mettre à jour Umbra"
+description: "Préparer une mise à jour compatible des deux extrémités."
+section: "guides"
+order: 7
+version: "1.0.0-alpha"
+source: ["docs/performance.md", "README.md"]
+translation: "complete"
+---
+
+## Vue d’ensemble
+
+La version des sources est 1.0.0-alpha. Consultez les notes de la version choisie avant de remplacer les binaires. Relevez les deux versions, protégez une sauvegarde de configuration et conservez un binaire fonctionnel. Les changements de format nécessitent une mise à jour coordonnée client/serveur ; la publication du site ne prouve pas que votre serveur distant a changé de version.
+
+## Détails
+
+La version 0.0.8 a corrigé l’ordre des parts et du secret partagé X25519MLKEM768. L’ancien ordre inversé n’est pas accepté : mettez les deux extrémités à jour. L’alpha apporte des contextes TLS accélérés réutilisables, une planification mux par flux prêts et une réception QUIC groupée. Les nouveaux clients activent adaptive_mux=true par défaut et nécessitent un serveur compatible. false sélectionne explicitement le mux historique, sans rejouer automatiquement les données applicatives.
+
+### Table de performances facultative
+
+```toml
+[performance]
+adaptive_mux = true
+quic_congestion = "bbr"
+```
+
+
+## Vérification et limites
+
+Les clés d’identité, short IDs et SNI peuvent rester inchangés si la version n’impose pas leur rotation. mux=false conserve Vision, et udp_transport reste indépendant. Vérifiez TCP, UDP si configuré, puis l’arrêt et le redémarrage. Comparez les performances sur des parcours comparables. Le BBR de Quinn concerne QUIC, indépendamment du contrôle de congestion TCP Linux, sans gain de débit garanti.
+
+## Pour continuer
+
+- [Transports et modes de trafic](/fr/docs/concepts/transports/)
+- [Performances et politiques](/fr/docs/reference/configuration/)
+- [Dépannage](/fr/docs/troubleshooting/)

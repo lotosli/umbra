@@ -1,0 +1,5 @@
+mode=raw-records sample=0 records=8192 bytes=134397952 elapsed_ns=10313625
+mode=raw-records sample=1 records=8192 bytes=134397952 elapsed_ns=9875584
+mode=raw-records sample=2 records=8192 bytes=134397952 elapsed_ns=9449625
+mode=raw-records sample=3 records=8192 bytes=134397952 elapsed_ns=10412875
+mode=raw-records sample=4 records=8192 bytes=134397952 elapsed_ns=10134208

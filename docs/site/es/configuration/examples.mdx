@@ -1,0 +1,81 @@
+---
+id: "configuration/examples"
+title: "Ejemplos de configuración"
+description: "Plantillas iniciales para TCP mux, Vision y QUIC UDP."
+section: "configuration"
+order: 10
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Descripción general
+
+Estas plantillas seleccionan modos después de rellenar identidad y direcciones siguiendo el inicio rápido. Sustituye todos los marcadores: no son credenciales completas. No publiques los archivos ya rellenados con secretos reales. Cada rol utiliza el mismo binario y no necesitas otro cliente solo para elegir un transporte UDP distinto del principal.
+
+## Detalles
+
+La multiplexación TCP cifrada utiliza transport=tcp y mux=true; los clientes alpha activan el control adaptativo por defecto. Para TCP/Vision dedicado, elige transport=tcp y mux=false. El tráfico TLS 1.3 elegible puede transferirse tras el intercambio autenticado de frontera; lo demás sigue cifrado. No hay un parámetro vision adicional y el reenvío permanece en espacio de usuario.
+
+### TCP multiplexado
+
+```toml
+transport = "tcp"
+mux = true
+```
+
+
+### TCP / Vision dedicado
+
+```toml
+transport = "tcp"
+mux = false
+```
+
+
+### TCP / Vision + QUIC UDP
+
+```toml
+transport = "tcp"
+udp_transport = "quic"
+mux = false
+socks_listen = "127.0.0.1:1080"
+```
+
+
+### Plantilla del servidor
+
+```toml
+listen = "0.0.0.0:443"
+udp_listen = "0.0.0.0:443"
+```
+
+
+### QUIC nativo
+
+```toml
+transport = "quic"
+```
+
+
+### Nodo SOCKS5 de Clash
+
+```yaml
+proxies:
+  - name: Umbra
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+    udp: true
+```
+
+
+## Verificación y límites
+
+Para TCP/Vision y QUIC UDP en una instancia, añade udp_transport=quic y habilita listen y udp_listen en el servidor. Para QUIC principal, selecciona transport=quic y omite udp_transport para heredar quic. El destino debe ofrecer QUIC/HTTP3 real. udp: true en Clash permite UDP ASSOCIATE mientras TCP sigue su transporte principal. Cambia un ajuste cada vez y mide antes de alterar el relleno o la segmentación predeterminados.
+
+## Siguientes pasos
+
+- [Configuración del servidor](/es/docs/configuration/server/)
+- [Configuración del cliente](/es/docs/configuration/client/)
+- [Transportes y modos de tráfico](/es/docs/concepts/transports/)

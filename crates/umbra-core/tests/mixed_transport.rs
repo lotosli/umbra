@@ -79,6 +79,7 @@ async fn server_fixture() -> (ClientCfg, RunningServer) {
         .expect("reserve an ephemeral server port");
     let address = reservation.local_addr().expect("reserved server address");
     let mut cfg = ClientCfg {
+        performance: umbra_core::resources::PerformanceCfg::default(),
         server: address.to_string(),
         transport: TransportKind::Tcp,
         udp_transport: Some(TransportKind::Quic),
@@ -94,6 +95,7 @@ async fn server_fixture() -> (ClientCfg, RunningServer) {
         tcp_evasion: TcpEvasionPolicy::Off,
     };
     let server_cfg = ServerCfg {
+        performance: umbra_core::resources::PerformanceCfg::default(),
         listen: address,
         udp_listen: Some(address),
         private_key: key.private,

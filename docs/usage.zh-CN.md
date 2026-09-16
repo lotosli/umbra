@@ -315,6 +315,14 @@ tcp_evasion   = "segment"                  # TCP 规避策略
 
 ## 传输模式
 
+### 1.0.0-alpha 吞吐优化
+
+建议同时升级服务端与客户端。`mux=true` 的新连接默认启用自适应流控；`mux=false` 继续使用Vision。QUIC默认选择BBR，可在 `[performance]` 中将 `quic_congestion` 设置为 `cubic` 或 `new-reno`。这不改变Linux TCP的拥塞算法。
+
+可选配置包括 `memory_mib=512`、`group_memory_mib=256`、`max_window_mib=64`、`quic_stream_window_mib=6`、`quic_send_window_mib=32` 和客户端 `adaptive_mux=true`。窗口按消费和RTT自动增长，部署者不需填写带宽；内存上限需要给系统留出余量。详见[吞吐与配置说明](performance.md)。
+
+需要定位服务端瓶颈时，可在 `[performance]` 中设置 `diagnostics_interval_secs=10`；默认0关闭，开启间隔支持1–3600秒。报告按匿名凭据组和模式区分传输/目标字节、I/O等待、信用、队列与预算拒绝，不包含地址、凭据、SNI或载荷。传输字节包含协议开销，目标读取字节可能尚未交付客户端，不能直接当作有效吞吐；具体含义见性能说明。
+
 ### 0.0.8 升级说明
 
 0.0.8 修正 X25519MLKEM768 的标准字段与共享秘密顺序，并移除 QUIC 握手中的 TLS 1.2 版本声明。
@@ -351,13 +359,13 @@ transport = "tcp"
 
 #### TCP Vision solo（0.0.7）
 
-使用 `transport = "tcp"`、`mux = false` 即可选择独占连接的 Vision；当前请将客户端和服务端统一升级到 0.0.8。符合条件的内层 TLS 1.3 流量经过双方确认切换边界后，原始受保护记录不再增加外层 TLS 加密或帧封装。非 TLS 和不符合条件的 TLS 仍加密传输。旧 solo 实现已删除，`mux = true` 继续提供加密多路复用；不需要额外 Vision 开关。原始转发使用用户态 I/O，不宣称内核零拷贝或未经测量的速度提升。
+使用 `transport = "tcp"`、`mux = false` 即可选择独占连接的 Vision；当前请将客户端和服务端统一升级到 1.0.0-alpha。符合条件的内层 TLS 1.3 流量经过双方确认切换边界后，原始受保护记录不再增加外层 TLS 加密或帧封装。非 TLS 和不符合条件的 TLS 仍加密传输。旧 solo 实现已删除，`mux = true` 继续提供加密多路复用；不需要额外 Vision 开关。原始转发使用用户态 I/O，不宣称内核零拷贝或未经测量的速度提升。
 
 成功切换会记录 `umbra vision splice active`；连接完成后记录原始字节数及 `outer_records_unchanged=true`，不包含目标地址或凭据。
 
 #### TCP mux 容量与恢复（当前源码）
 
-`mux = true` 时，客户端保留复用，最多使用4条接收新流的外层连接，并在选择连接前预留实际流容量。默认每流256 KiB窗口、每条outer的8 MiB接收预算，对应每outer 32条流，接收新流的outer合计最多128条；连接池另限制最多128个准入等待者。额外4个退休槽位用于保留draining连接上的旧流，所有outer总数最多8条。总预算已满且需要新建接收连接时，只退役最早进入draining的outer；其剩余旧流终止并报错，不重放业务请求或数据。
+`mux = true` 时，客户端保留复用，最多使用4条接收新流的外层连接，并在选择连接前预留实际流容量。自适应模式每条outer最多128条流，受共享连接信用和内存预算约束。`adaptive_mux=false` 的旧模式使用每流256KiB、每outer 8MiB预算，每outer最多32条流；连接池另限制最多128个准入等待者。额外4个退休槽位用于保留draining连接上的旧流，所有outer总数最多8条。总预算已满且需要新建接收连接时，只退役最早进入draining的outer；其剩余旧流终止并报错，不重放业务请求或数据。
 
 服务端TCP目标连接的DNS等待最多5秒，计入14秒总预算；对解析得到的地址最多4路并发竞速，以250 ms间隔启动，并有界轮换候选。客户端区分连接池准入、SYN发送和目标确认阶段的错误，目标确认等待25秒以覆盖服务端期限及反馈余量；TCP mux建立失败会返回标准SOCKS失败回复。疑似停滞的outer停止接收新流，在退休预算允许时建立替代连接。不可达目标仍会在有界时间内失败。
 

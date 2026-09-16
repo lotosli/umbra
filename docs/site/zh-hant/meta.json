@@ -1,0 +1,12 @@
+{
+  "title": "文件",
+  "pages": [
+    "getting-started",
+    "guides",
+    "configuration",
+    "concepts",
+    "reference",
+    "troubleshooting",
+    "contributing"
+  ]
+}

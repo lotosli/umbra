@@ -13,13 +13,13 @@
 //! mutex is held across an await or transport I/O.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     future::{pending, poll_fn, Future},
     io,
     pin::{pin, Pin},
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-        Arc, Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard, Weak,
     },
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
@@ -31,12 +31,13 @@ use tokio::{
     task::JoinHandle,
 };
 use umbra_inner::{
-    mux::{
-        MuxEvent, MuxRole, MuxSession, MAX_DATA_CHUNK_LEN, MAX_RECEIVE_BUFFER_BYTES, MAX_STREAMS,
-    },
+    mux::{MuxEvent, MuxRole, MuxSession, MAX_DATA_CHUNK_LEN, MAX_STREAMS},
     InnerError,
 };
 use umbra_proto::addr::TargetAddr;
+
+#[cfg(test)]
+mod bench;
 
 /// The owner of a single shared mux task. Dropping the owner cancels that task.
 ///
@@ -68,7 +69,7 @@ impl Drop for MuxDriver {
 #[derive(Clone)]
 pub(crate) struct ClientMux {
     opens: mpsc::Sender<OpenRequest>,
-    notify: Arc<Notify>,
+    ready: Arc<ReadyQueue>,
     healthy: Arc<AtomicBool>,
     accepting: Arc<AtomicBool>,
     progress: Arc<AtomicU64>,
@@ -142,7 +143,7 @@ impl ClientMux {
         if !self.is_accepting() {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
-        let stream = MuxIo::new(0, Phase::Opening, self.notify.clone());
+        let stream = MuxIo::new(0, Phase::Opening, self.ready.clone());
         let request = OpenRequest {
             target,
             shared: stream.shared.clone(),
@@ -200,7 +201,7 @@ impl MuxReservation {
         syn_timeout: Duration,
         target_timeout: Duration,
     ) -> io::Result<MuxIo> {
-        let mut stream = MuxIo::new(0, Phase::Opening, self.client.notify.clone());
+        let mut stream = MuxIo::new(0, Phase::Opening, self.client.ready.clone());
         stream.shared.lock().reservation = Some(self.permit);
         stream.lease = Some(self.lease);
         let request = OpenRequest {
@@ -310,7 +311,7 @@ impl PendingMux {
             let mut state = self.stream.shared.lock();
             state.phase = Phase::AcceptReady;
         }
-        self.stream.shared.notify.notify_one();
+        self.stream.shared.schedule();
         self.stream.ready().await?;
         Ok(self.stream)
     }
@@ -352,14 +353,14 @@ where
     driver.pool_changed = Some(changed);
     let client = ClientMux {
         opens,
-        notify: driver.notify.clone(),
+        ready: driver.ready.clone(),
         healthy: driver.healthy.clone(),
         accepting: driver.accepting.clone(),
         progress: driver.progress.clone(),
         target_timeouts: driver.target_timeouts.clone(),
         capacity,
     };
-    Ok((spawn(driver), client))
+    Ok((spawn(driver, None), client))
 }
 
 /// Start a server driver over a fresh authenticated CONNECT-only session.
@@ -376,13 +377,15 @@ where
         incoming: receiver,
         healthy: driver.healthy.clone(),
     };
-    Ok((spawn(driver), server))
+    Ok((spawn(driver, None), server))
 }
 
 pub(crate) fn start_server_after_syn<IO>(
     session: MuxSession<IO>,
     stream_id: u32,
     target: TargetAddr,
+    work: Option<&crate::work::WorkGroup>,
+    observation: Option<crate::diagnostics::Observation>,
 ) -> io::Result<(MuxDriver, ServerMux)>
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -392,6 +395,7 @@ where
     }
     let (incoming, receiver) = mpsc::channel(MAX_STREAMS);
     let mut driver = Driver::new(session, None, Some(incoming));
+    driver.observation = observation;
     driver
         .dispatch(MuxEvent::Syn { stream_id, target })
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
@@ -399,7 +403,7 @@ where
         incoming: receiver,
         healthy: driver.healthy.clone(),
     };
-    Ok((spawn(driver), server))
+    Ok((spawn(driver, work), server))
 }
 
 fn check_session<IO>(session: &MuxSession<IO>, role: MuxRole) -> io::Result<()>
@@ -415,14 +419,14 @@ where
     Ok(())
 }
 
-fn spawn<IO>(mut driver: Driver<IO>) -> MuxDriver
+fn spawn<IO>(mut driver: Driver<IO>, work: Option<&crate::work::WorkGroup>) -> MuxDriver
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let healthy = driver.healthy.clone();
     // The guard exists before spawn, so aborting even before the first poll
     // drops all queues and publishes failure rather than detaching any work.
-    let task = tokio::spawn(async move {
+    let task = crate::work::spawn(work, async move {
         let _ = driver.run().await;
     });
     MuxDriver { task, healthy }
@@ -456,10 +460,72 @@ struct WriteChunk {
     sequence: u64,
 }
 
+#[derive(Default)]
+struct ReceiveChunks {
+    chunks: VecDeque<Vec<u8>>,
+    offset: usize,
+    bytes: usize,
+    total: Option<Arc<AtomicUsize>>,
+}
+
+impl ReceiveChunks {
+    fn new() -> Self {
+        Self::default()
+    }
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.bytes
+    }
+    fn is_empty(&self) -> bool {
+        self.bytes == 0
+    }
+    fn push(&mut self, payload: Vec<u8>, total: &Arc<AtomicUsize>) {
+        if payload.is_empty() {
+            return;
+        }
+        if self.total.is_none() {
+            self.total = Some(total.clone());
+        }
+        total.fetch_add(payload.len(), Ordering::Relaxed);
+        self.bytes += payload.len();
+        self.chunks.push_back(payload);
+    }
+    fn read_into(&mut self, output: &mut ReadBuf<'_>) -> usize {
+        let before = output.filled().len();
+        while output.remaining() != 0 {
+            let Some(front) = self.chunks.front() else {
+                break;
+            };
+            let amount = (front.len() - self.offset).min(output.remaining());
+            output.put_slice(&front[self.offset..self.offset + amount]);
+            self.offset += amount;
+            if self.offset == front.len() {
+                self.chunks.pop_front();
+                self.offset = 0;
+            }
+        }
+        let amount = output.filled().len() - before;
+        self.bytes -= amount;
+        if let Some(total) = &self.total {
+            total.fetch_sub(amount, Ordering::Relaxed);
+        }
+        amount
+    }
+}
+
+impl Drop for ReceiveChunks {
+    fn drop(&mut self) {
+        if let Some(total) = &self.total {
+            total.fetch_sub(self.bytes, Ordering::Relaxed);
+        }
+    }
+}
+
 struct State {
     id: u32,
     phase: Phase,
-    inbound: VecDeque<u8>,
+    inbound: ReceiveChunks,
+    memory: Vec<umbra_inner::budget::BudgetLease>,
     consumed: usize,
     outbound: Option<WriteChunk>,
     accepted: u64,
@@ -481,7 +547,8 @@ impl State {
         Self {
             id,
             phase,
-            inbound: VecDeque::new(),
+            inbound: ReceiveChunks::new(),
+            memory: Vec::new(),
             consumed: 0,
             outbound: None,
             accepted: 0,
@@ -511,7 +578,8 @@ impl State {
 
     fn fail(&mut self, kind: io::ErrorKind) {
         self.error = Some(kind);
-        self.inbound = VecDeque::new();
+        self.inbound = ReceiveChunks::new();
+        self.memory.clear();
         self.outbound = None;
         self.consumed = 0;
         self.reservation.take();
@@ -534,9 +602,44 @@ impl State {
     }
 }
 
+struct ReadyQueue {
+    notify: Arc<Notify>,
+    entries: Mutex<VecDeque<Weak<Shared>>>,
+}
+
+impl ReadyQueue {
+    fn new(notify: Arc<Notify>) -> Self {
+        Self {
+            notify,
+            entries: Mutex::new(VecDeque::with_capacity(MAX_STREAMS)),
+        }
+    }
+    fn len(&self) -> usize {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+    fn pop(&self) -> Option<Arc<Shared>> {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while let Some(entry) = entries.pop_front() {
+            if let Some(shared) = entry.upgrade() {
+                shared.queued.store(false, Ordering::Release);
+                return Some(shared);
+            }
+        }
+        None
+    }
+}
+
 struct Shared {
     state: Mutex<State>,
-    notify: Arc<Notify>,
+    ready: Arc<ReadyQueue>,
+    active: AtomicBool,
+    queued: AtomicBool,
 }
 
 impl Shared {
@@ -544,6 +647,39 @@ impl Shared {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn schedule(self: &Arc<Self>) {
+        if !self.active.load(Ordering::Acquire) {
+            self.ready.notify.notify_one();
+            return;
+        }
+        if self.queued.load(Ordering::Acquire) {
+            return;
+        }
+        let mut entries = self
+            .ready
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Check activation while holding the queue lock so retirement cannot
+        // leave an unlimited trail of late weak entries behind blocked output.
+        if self.active.load(Ordering::Acquire) && !self.queued.swap(true, Ordering::AcqRel) {
+            entries.push_back(Arc::downgrade(self));
+        }
+        drop(entries);
+        self.ready.notify.notify_one();
+    }
+
+    fn deactivate(self: &Arc<Self>) {
+        self.active.store(false, Ordering::Release);
+        let mut entries = self
+            .ready
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.retain(|entry| !std::ptr::eq(entry.as_ptr(), Arc::as_ptr(self)));
+        self.queued.store(false, Ordering::Release);
     }
 }
 
@@ -575,11 +711,13 @@ pub(crate) struct MuxIo {
 }
 
 impl MuxIo {
-    fn new(id: u32, phase: Phase, notify: Arc<Notify>) -> Self {
+    fn new(id: u32, phase: Phase, ready: Arc<ReadyQueue>) -> Self {
         Self {
             shared: Arc::new(Shared {
                 state: Mutex::new(State::new(id, phase)),
-                notify,
+                ready,
+                active: AtomicBool::new(id != 0),
+                queued: AtomicBool::new(false),
             }),
             lease: None,
         }
@@ -630,16 +768,14 @@ impl AsyncRead for MuxIo {
         if buf.remaining() == 0 {
             return Poll::Ready(Ok(()));
         }
-        let amount = state.inbound.len().min(buf.remaining());
-        if amount != 0 {
-            let (first, second) = state.inbound.as_slices();
-            let first_len = amount.min(first.len());
-            buf.put_slice(&first[..first_len]);
-            buf.put_slice(&second[..amount - first_len]);
-            state.inbound.drain(..amount);
+        if !state.inbound.is_empty() {
+            let amount = state.inbound.read_into(buf);
+            if state.inbound.is_empty() && state.error.is_some() {
+                state.memory.clear();
+            }
             state.consumed += amount;
             // Session-reserved receive credit bounds both this count and storage.
-            self.shared.notify.notify_one();
+            self.shared.schedule();
             return Poll::Ready(Ok(()));
         }
         if state.peer_finished {
@@ -679,7 +815,7 @@ impl AsyncWrite for MuxIo {
             sequence,
         });
         state.accepted = sequence;
-        self.shared.notify.notify_one();
+        self.shared.schedule();
         Poll::Ready(Ok(amount))
     }
 
@@ -701,7 +837,7 @@ impl AsyncWrite for MuxIo {
         }
         if state.send_phase == SendPhase::Open {
             state.send_phase = SendPhase::FinRequested;
-            self.shared.notify.notify_one();
+            self.shared.schedule();
         }
         register(&mut state.writer, cx);
         Poll::Pending
@@ -716,7 +852,7 @@ impl Drop for MuxIo {
         {
             state.reset_requested = true;
         }
-        self.shared.notify.notify_one();
+        self.shared.schedule();
     }
 }
 
@@ -749,12 +885,21 @@ struct Driver<IO> {
     target_timeouts: Arc<AtomicUsize>,
     pool_changed: Option<Arc<Notify>>,
     need_flush: bool,
-    first_stream: usize,
+    ready: Arc<ReadyQueue>,
+    participants: Vec<u32>,
+    blocked: BTreeSet<u32>,
+    #[cfg(test)]
+    visits: usize,
+    buffered: Arc<AtomicUsize>,
+    memory: Vec<umbra_inner::budget::BudgetLease>,
+    observation: Option<crate::diagnostics::Observation>,
+    last_sample: Option<Instant>,
+    credit_waits: u64,
 }
 
-struct Progress {
-    flushed: bool,
-    event: Option<MuxEvent>,
+pub(crate) struct Progress {
+    pub(crate) flushed: bool,
+    pub(crate) event: Option<MuxEvent>,
 }
 
 impl<IO> Driver<IO>
@@ -766,25 +911,38 @@ where
         opens: Option<mpsc::Receiver<OpenRequest>>,
         incoming: Option<mpsc::Sender<PendingMux>>,
     ) -> Self {
+        let memory = session.memory_leases();
+        let notify = Arc::new(Notify::new());
+        let ready = Arc::new(ReadyQueue::new(notify.clone()));
         Self {
             session,
             streams: BTreeMap::new(),
             opens,
             pending_open: None,
             incoming,
-            notify: Arc::new(Notify::new()),
+            notify,
             healthy: Arc::new(AtomicBool::new(true)),
             accepting: Arc::new(AtomicBool::new(true)),
             progress: Arc::new(AtomicU64::new(0)),
             target_timeouts: Arc::new(AtomicUsize::new(0)),
             pool_changed: None,
             need_flush: false,
-            first_stream: 0,
+            ready,
+            participants: Vec::with_capacity(MAX_STREAMS),
+            blocked: BTreeSet::new(),
+            #[cfg(test)]
+            visits: 0,
+            buffered: Arc::new(AtomicUsize::new(0)),
+            memory,
+            observation: None,
+            last_sample: None,
+            credit_waits: 0,
         }
     }
 
     async fn run(&mut self) -> Result<(), InnerError> {
         let result = self.run_loop().await;
+        self.sample(true);
         if let Err(InnerError::Io(error)) = &result {
             if error.kind() == io::ErrorKind::UnexpectedEof {
                 for shared in self.streams.values() {
@@ -797,6 +955,7 @@ where
 
     async fn run_loop(&mut self) -> Result<(), InnerError> {
         loop {
+            self.sample(false);
             // Freeze each finite output batch until it drains. This makes flush
             // barriers independent of subsequent traffic and retains partial
             // suffixes even if another stream has zero send credit.
@@ -821,17 +980,20 @@ where
                     let progress = progress?;
                     if progress.flushed {
                         self.need_flush = false;
-                        for shared in self.streams.values() {
+                        for id in self.participants.drain(..) {
+                            let Some(shared) = self.streams.get(&id) else { continue };
                             let mut state = shared.lock();
                             if state.phase == Phase::Opening {
                                 state.syn_sent = true;
                                 wake(&mut state.opener);
                             }
                             state.flushed = state.submitted;
-                            if state.send_phase == SendPhase::FinQueued {
-                                state.send_phase = SendPhase::FinFlushed;
-                            }
+                            if state.send_phase == SendPhase::FinQueued { state.send_phase = SendPhase::FinFlushed; }
                             wake(&mut state.writer);
+                            if state.outbound.is_some() || state.consumed != 0 || state.reset_requested
+                                || (state.send_phase == SendPhase::FinFlushed && state.peer_finished) {
+                                shared.schedule();
+                            }
                         }
                     }
                     if let Some(event) = progress.event {
@@ -843,31 +1005,87 @@ where
     }
 
     fn pump(&mut self) -> Result<(), InnerError> {
-        let mut retired = Vec::new();
-        // Rotate the first serviced id on every batch, even when the serialized
-        // writer fills before all streams have obtained their next DATA chunk.
-        let mut ids: Vec<_> = self.streams.keys().copied().collect();
-        if !ids.is_empty() {
-            let first = self.first_stream % ids.len();
-            ids.rotate_left(first);
-            self.first_stream = (first + 1) % ids.len();
-        }
-        for id in ids {
-            let Some(shared) = self.streams.get(&id) else {
-                continue;
+        // Entries added during this finite round are deferred to the next batch.
+        // No queue lock is held while acquiring a stream state lock.
+        for _ in 0..self.ready.len() {
+            let Some(shared) = self.ready.pop() else {
+                break;
             };
             let mut state = shared.lock();
-            match pump_stream(&mut self.session, &mut state, &mut self.need_flush) {
-                Ok(true) => retired.push(id),
-                Ok(false) => {}
-                Err(error) => return Err(error),
+            let id = state.id;
+            if !shared.active.load(Ordering::Acquire) || !self.streams.contains_key(&id) {
+                continue;
             }
-        }
-        for id in retired {
-            self.streams.remove(&id);
+            #[cfg(test)]
+            {
+                self.visits += 1;
+            }
+            let before = (state.submitted, state.send_phase, state.phase);
+            let waits = self.observation.as_ref().map(|_| &mut self.credit_waits);
+            if pump_stream(&mut self.session, &mut state, &mut self.need_flush, waits)? {
+                drop(state);
+                shared.deactivate();
+                self.streams.remove(&id);
+                self.blocked.remove(&id);
+                continue;
+            }
+            if before != (state.submitted, state.send_phase, state.phase) {
+                self.participants.push(id);
+            }
+            let blocked = state.outbound.is_some()
+                && state.consumed == 0
+                && !state.reset_requested
+                && state.phase != Phase::AcceptReady
+                && self.session.send_credit(id)? == 0;
+            if blocked {
+                self.blocked.insert(id);
+            } else {
+                self.blocked.remove(&id);
+            }
+            if !blocked
+                && (state.outbound.is_some()
+                    || state.consumed != 0
+                    || state.reset_requested
+                    || state.phase == Phase::AcceptReady
+                    || state.send_phase == SendPhase::FinRequested)
+            {
+                shared.schedule();
+                self.need_flush |= self.session.pending_output_bytes() != 0;
+            }
         }
         self.admit_open();
         Ok(())
+    }
+
+    fn schedule(&self, id: u32) {
+        if let Some(shared) = self.streams.get(&id) {
+            shared.schedule();
+        }
+    }
+
+    fn sample(&mut self, force: bool) {
+        let Some(observation) = &self.observation else {
+            return;
+        };
+        if !force
+            && self
+                .last_sample
+                .is_some_and(|last| last.elapsed() < Duration::from_millis(100))
+        {
+            return;
+        }
+        self.last_sample = Some(Instant::now());
+        let flow = self.session.flow_snapshot();
+        observation.credit(crate::diagnostics::CreditSnapshot {
+            receive_window: self.session.receive_capacity() as u64,
+            buffered_receive: Some(self.buffered.load(Ordering::Relaxed) as u64),
+            consumed: flow.map(|flow| flow.consumed),
+            send_credit: flow.map(|flow| flow.send_credit),
+            queued_output: Some(self.session.pending_output_bytes()),
+            mux_credit_waits: Some(self.credit_waits),
+            rtt: flow.map(|flow| flow.rtt),
+            ..crate::diagnostics::CreditSnapshot::default()
+        });
     }
 
     fn admit_open(&mut self) {
@@ -883,9 +1101,15 @@ where
         }
         match self.session.begin_open(&request.target) {
             Ok(stream) => {
-                request.shared.lock().id = stream.stream_id;
+                {
+                    let mut state = request.shared.lock();
+                    state.id = stream.stream_id;
+                    state.memory.clone_from(&self.memory);
+                    request.shared.active.store(true, Ordering::Release);
+                }
                 self.streams
                     .insert(stream.stream_id, request.shared.clone());
+                self.participants.push(stream.stream_id);
                 request.armed = false;
                 self.pending_open = None;
                 self.need_flush = true;
@@ -903,7 +1127,8 @@ where
         self.progress.fetch_add(1, Ordering::AcqRel);
         match event {
             MuxEvent::Syn { stream_id, target } => {
-                let stream = MuxIo::new(stream_id, Phase::Accepting, self.notify.clone());
+                let stream = MuxIo::new(stream_id, Phase::Accepting, self.ready.clone());
+                stream.shared.lock().memory.clone_from(&self.memory);
                 self.streams.insert(stream_id, stream.shared.clone());
                 let pending = PendingMux { target, stream };
                 // Backlog saturation or a dropped acceptor resets the new stream;
@@ -918,16 +1143,17 @@ where
                     let mut state = shared.lock();
                     state.phase = Phase::Established;
                     wake(&mut state.opener);
+                    shared.schedule();
                 }
             }
             MuxEvent::Data { stream_id, payload } => {
-                let buffered: usize = self.streams.values().map(|s| s.lock().inbound.len()).sum();
-                if payload.len() > MAX_RECEIVE_BUFFER_BYTES.saturating_sub(buffered) {
+                let buffered = self.buffered.load(Ordering::Relaxed);
+                if payload.len() > self.session.receive_capacity().saturating_sub(buffered) {
                     return Err(io::Error::from(io::ErrorKind::InvalidData).into());
                 }
                 if let Some(shared) = self.streams.get(&stream_id) {
                     let mut state = shared.lock();
-                    state.inbound.extend(payload);
+                    state.inbound.push(payload, &self.buffered);
                     wake(&mut state.reader);
                 }
             }
@@ -936,14 +1162,26 @@ where
                     let mut state = shared.lock();
                     state.peer_finished = true;
                     wake(&mut state.reader);
+                    shared.schedule();
                 }
             }
             MuxEvent::Rst { stream_id } => {
                 if let Some(shared) = self.streams.remove(&stream_id) {
+                    shared.deactivate();
+                    self.blocked.remove(&stream_id);
                     shared.lock().fail(io::ErrorKind::ConnectionReset);
                 }
             }
-            MuxEvent::WindowUpdate { .. } | MuxEvent::Ping { .. } => {}
+            MuxEvent::WindowUpdate { stream_id: 0, .. } => {
+                for id in std::mem::take(&mut self.blocked) {
+                    self.schedule(id);
+                }
+            }
+            MuxEvent::WindowUpdate { stream_id, .. } => {
+                self.blocked.remove(&stream_id);
+                self.schedule(stream_id);
+            }
+            MuxEvent::Ping { .. } => {}
             MuxEvent::UdpDatagram { .. } => {
                 return Err(io::Error::from(io::ErrorKind::InvalidData).into())
             }
@@ -959,6 +1197,7 @@ impl<IO> Drop for Driver<IO> {
             changed.notify_waiters();
         }
         for shared in self.streams.values() {
+            shared.deactivate();
             let mut state = shared.lock();
             // Gracefully closed streams keep their retained inbound for draining.
             if state.error.is_none() {
@@ -974,6 +1213,7 @@ fn pump_stream<IO>(
     session: &mut MuxSession<IO>,
     state: &mut State,
     dirty: &mut bool,
+    credit_waits: Option<&mut u64>,
 ) -> Result<bool, InnerError>
 where
     IO: AsyncRead + AsyncWrite + Unpin,
@@ -1002,10 +1242,10 @@ where
     }
     if state.consumed != 0 {
         let increment = u32::try_from(state.consumed).map_err(|_| InnerError::WindowOverflow)?;
-        match session.queue_window_update(id, increment) {
-            Ok(()) => {
+        match session.queue_consumed_data(id, increment) {
+            Ok(queued) => {
                 state.consumed = 0;
-                *dirty = true;
+                *dirty |= queued;
             }
             Err(InnerError::StreamReset) => state.consumed = 0,
             Err(error) if would_block(&error) => return Ok(false),
@@ -1014,6 +1254,13 @@ where
     }
     if let Some(chunk) = &mut state.outbound {
         let accepted = session.try_send_data(id, &chunk.bytes[chunk.offset..])?;
+        if accepted == 0 {
+            if let Some(waits) = credit_waits {
+                if session.send_credit(id)? == 0 {
+                    *waits = waits.saturating_add(1);
+                }
+            }
+        }
         chunk.offset += accepted;
         *dirty |= accepted != 0;
         if chunk.offset == chunk.bytes.len() {
@@ -1040,7 +1287,8 @@ where
         && state.consumed == 0
         && matches!(session.send_credit(id), Err(InnerError::StreamReset))
     {
-        state.inbound = VecDeque::new();
+        state.inbound = ReceiveChunks::new();
+        state.memory.clear();
         state.reservation.take();
         return Ok(true);
     }
@@ -1059,6 +1307,18 @@ fn poll_session<IO>(
 where
     IO: AsyncRead + AsyncWrite + Unpin,
 {
+    poll_session_with_input(session, need_flush, true, cx)
+}
+
+pub(crate) fn poll_session_with_input<IO>(
+    session: &mut MuxSession<IO>,
+    need_flush: bool,
+    read_allowed: bool,
+    cx: &mut Context<'_>,
+) -> Poll<Result<Progress, InnerError>>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
     let flushed = if need_flush {
         match pin!(session.flush_pending()).poll(cx) {
             Poll::Ready(result) => {
@@ -1072,7 +1332,12 @@ where
     };
     // Always poll input, even when output is blocked or a flush just completed.
     // Both futures retain partial offsets inside MuxSession when dropped here.
-    match pin!(session.receive_next()).poll(cx) {
+    let input = if read_allowed {
+        pin!(session.receive_next()).poll(cx)
+    } else {
+        Poll::Pending
+    };
+    match input {
         Poll::Ready(event) => Poll::Ready(Ok(Progress {
             flushed,
             event: Some(event?),
@@ -1088,6 +1353,91 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_streams_are_not_visited_and_ready_entries_coalesce() {
+        let (left, _right) = tokio::io::duplex(64);
+        let mut driver = Driver::new(session(left, MuxRole::Client, 8), None, None);
+        let mut held = Vec::new();
+        for index in 0..MAX_STREAMS {
+            let id = u32::try_from(index * 2 + 1).unwrap();
+            let stream = MuxIo::new(id, Phase::Established, driver.ready.clone());
+            driver.streams.insert(id, stream.shared.clone());
+            held.push(stream);
+        }
+        for _ in 0..32 {
+            held[0].shared.schedule();
+        }
+        assert_eq!(driver.ready.len(), 1);
+        driver.pump().unwrap();
+        assert_eq!(driver.visits, 1);
+        driver.pump().unwrap();
+        assert_eq!(driver.visits, 1, "idle mailboxes receive no polling work");
+        held[1].shared.schedule();
+        held[1].shared.deactivate();
+        held[1].shared.schedule();
+        assert_eq!(
+            driver.ready.len(),
+            0,
+            "retired mailboxes cannot leave stale ready entries"
+        );
+    }
+
+    #[tokio::test]
+    async fn final_positive_credit_reclaims_capacity_without_another_application_wake() {
+        use umbra_inner::budget::BudgetPool;
+        let limits = umbra_proto::flow::FlowSettings {
+            stream: 1024,
+            connection: 4096,
+            max_stream: 1024,
+            max_connection: 4096,
+        };
+        let budget = BudgetPool::new(16384, 16384).unwrap();
+        let (left, right) = duplex(4096);
+        let client_session = MuxSession::adaptive(
+            left,
+            MuxRole::Client,
+            &PadScheme::none(),
+            limits,
+            budget.reserve(0, 4096).unwrap(),
+        )
+        .unwrap();
+        let mut peer = MuxSession::adaptive(
+            right,
+            MuxRole::Server,
+            &PadScheme::none(),
+            limits,
+            budget.reserve(0, 4096).unwrap(),
+        )
+        .unwrap();
+        let (owner, client) = start_client(client_session).unwrap();
+        let reservation = client.try_reserve().unwrap();
+        let opening =
+            tokio::spawn(async move { reservation.open(target(1), DEADLINE, DEADLINE).await });
+        let (remote, _) = peer.accept().await.unwrap();
+        let mut stream = opening.await.unwrap().unwrap();
+        stream.write_all(b"x").await.unwrap();
+        stream.shutdown().await.unwrap();
+        let mut got_fin = false;
+        while !got_fin {
+            match peer.receive_next().await.unwrap() {
+                MuxEvent::Data { payload, .. } => assert_eq!(payload, b"x"),
+                MuxEvent::Fin { .. } => got_fin = true,
+                _ => {}
+            }
+        }
+        peer.queue_finish(remote.stream_id).unwrap();
+        peer.flush_pending().await.unwrap();
+        assert_eq!(stream.read(&mut [0; 1]).await.unwrap(), 0);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(client.capacity.slots.available_permits(), MAX_STREAMS - 1);
+        peer.queue_window_update(remote.stream_id, 1).unwrap();
+        peer.flush_pending().await.unwrap();
+        until(|| client.capacity.slots.available_permits() == MAX_STREAMS).await;
+        // The fully closed application handle is deliberately still retained.
+        assert_eq!(stream.read(&mut [0; 1]).await.unwrap(), 0);
+        owner.shutdown().await;
+    }
     use std::{net::Ipv4Addr, sync::atomic::AtomicUsize, time::Duration};
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
     use tokio::time::timeout;
@@ -1827,7 +2177,11 @@ mod tests {
     fn io_traits_and_bounded_write_mailbox() {
         fn assert_traits<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>() {}
         assert_traits::<MuxIo>();
-        let mut stream = MuxIo::new(1, Phase::Established, Arc::new(Notify::new()));
+        let mut stream = MuxIo::new(
+            1,
+            Phase::Established,
+            Arc::new(ReadyQueue::new(Arc::new(Notify::new()))),
+        );
         let mut cx = Context::from_waker(Waker::noop());
         assert!(matches!(
             Pin::new(&mut stream).poll_write(&mut cx, &[]),

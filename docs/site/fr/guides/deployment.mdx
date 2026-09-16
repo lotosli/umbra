@@ -1,0 +1,62 @@
+---
+id: "guides/deployment"
+title: "Déploiement et exploitation"
+description: "Superviser le serveur et gérer ses ressources."
+section: "guides"
+order: 6
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "docs/performance.md"]
+translation: "complete"
+---
+
+## Vue d’ensemble
+
+Validez d’abord un client et un serveur au premier plan avec la même version. Sous Linux, systemd peut superviser le serveur et journald recueillir stderr. Utilisez des chemins absolus pour le binaire et server.toml. Limitez la lecture du fichier à l’identité du service et aux administrateurs. Définissez l’utilisateur et les droits nécessaires aux ports bas selon votre distribution.
+
+## Détails
+
+Ouvrez le port TCP public configuré. Ouvrez UDP seulement si udp_listen est activé pour QUIC. Si un frontal de couche 4 possède déjà le port public, liez les écouteurs Umbra au bouclage et configurez un transfert transparent TCP/QUIC. Les ports internes ne nécessitent pas de règle publique. Un proxy HTTP ordinaire ne remplace pas ce transfert au niveau transport.
+
+### Exemple d’unité de service
+
+Enregistrez cette unité dans `/etc/systemd/system/umbra-server.service`. L’exemple suppose qu’un utilisateur Linux dédié `umbra` existe déjà, que le binaire se trouve dans `/usr/local/bin/umbra` et que cet utilisateur peut lire `/etc/umbra/server.toml`. Créez cette identité et installez les fichiers avec les outils d’administration de votre hôte avant d’activer l’unité ; adaptez chemins et utilisateur à votre déploiement.
+
+```ini
+[Unit]
+Description=Umbra Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=umbra
+ExecStart=/usr/local/bin/umbra server -c /etc/umbra/server.toml
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+```
+
+
+### Gestion du service
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now umbra-server
+sudo journalctl -u umbra-server -f
+```
+
+
+## Vérification et limites
+
+Réservez de la mémoire pour le système. Le déploiement orienté débit suppose au moins 1 Gio de RAM physique ; performance.memory_mib borne des engagements logiques, pas le RSS du processus. Les diagnostics sont désactivés par défaut. Activez-les pour une investigation limitée et ne confondez pas octets acceptés et livraison distante. Redémarrez volontairement après modification et gardez un ancien binaire vérifié pour revenir en arrière.
+
+## Pour continuer
+
+- [Performances et politiques](/fr/docs/reference/configuration/)
+- [Dépannage](/fr/docs/troubleshooting/)
+- [Mettre à jour Umbra](/fr/docs/guides/upgrade/)

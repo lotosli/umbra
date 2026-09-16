@@ -51,7 +51,7 @@ pub(crate) fn client_config(cfg: &ClientCfg) -> Result<quinn::ClientConfig, Core
     };
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
     config.initial_dst_cid_provider(Arc::new(move || random_connection_id(cid_len)));
-    config.transport_config(quic_transport_config());
+    config.transport_config(quic_transport_config(cfg.performance.validate()?));
     Ok(config)
 }
 
@@ -65,10 +65,17 @@ pub(crate) struct AuthenticatedServerCrypto {
     pub(crate) mldsa_seed: Secret<32>,
 }
 
-pub(crate) fn server_config(authenticated: AuthenticatedServerCrypto) -> quinn::ServerConfig {
+pub(crate) fn server_config(
+    authenticated: AuthenticatedServerCrypto,
+    congestion: crate::resources::QuicCongestion,
+    budget: &crate::quic_resources::QuicBudget,
+) -> quinn::ServerConfig {
     let mut config =
         quinn::ServerConfig::with_crypto(Arc::new(UmbraQuicServerConfig { authenticated }));
-    config.transport_config(quic_transport_config());
+    let mut transport = quinn_transport_base();
+    congestion.apply(&mut transport);
+    budget.configure(&mut transport);
+    config.transport_config(Arc::new(transport));
     config
 }
 
@@ -643,11 +650,20 @@ fn quic_profile(
     Ok((profile, grease_parameter, cid_len))
 }
 
-fn quic_transport_config() -> Arc<quinn::TransportConfig> {
+fn quic_transport_config(
+    performance: crate::resources::PerformanceCfg,
+) -> Arc<quinn::TransportConfig> {
+    let mut transport = quinn_transport_base();
+    performance.quic_congestion.apply(&mut transport);
+    performance.quic_windows().configure(&mut transport);
+    Arc::new(transport)
+}
+
+fn quinn_transport_base() -> quinn::TransportConfig {
     let mut transport = quinn::TransportConfig::default();
     transport.datagram_receive_buffer_size(None);
     transport.datagram_send_buffer_size(0);
-    Arc::new(transport)
+    transport
 }
 
 fn encode_transport_parameters(
@@ -924,6 +940,96 @@ mod tests {
     use quinn_proto::crypto::Session as _;
     use umbra_tls::clienthello::TLS_AES_128_GCM_SHA256;
 
+    #[tokio::test]
+    async fn production_initial_uses_selected_windows_and_default_capture_values() {
+        use base64::Engine as _;
+        let captured = include_str!(
+            "../../../fingerprints/captures/chrome-153-macos/chrome-153-quic-clienthello.hex"
+        );
+        let hex: String = captured.split_whitespace().collect();
+        let raw: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let reference = umbra_tls::parse::parse_client_hello(&raw).unwrap();
+        for stream_mib in [6, 32] {
+            let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let key = x25519::generate_keypair();
+            let mut cfg = ClientCfg::from_toml_str(&format!(
+                "server = '127.0.0.1:1'\ntransport = 'quic'\npublic_key = '{}'\nshort_id = '01'\nserver_name = 'server.example'\nfingerprint = 'chrome-latest'\nmldsa_verify = 'AQ=='\nsocks_listen = '127.0.0.1:0'",
+                base64::engine::general_purpose::STANDARD.encode(key.public.as_bytes()),
+            )).unwrap();
+            cfg.performance.quic_stream_window_mib = stream_mib;
+            let mut endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+            endpoint.set_default_client_config(client_config(&cfg).unwrap());
+            let connecting = endpoint
+                .connect(socket.local_addr().unwrap(), "server.example")
+                .unwrap();
+            let hello = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                let mut bytes = Vec::new();
+                let mut present = Vec::new();
+                let mut datagram = vec![0; 65_535];
+                loop {
+                    let read = socket.recv(&mut datagram).await.unwrap();
+                    for frame in
+                        umbra_transport::quic::decrypt_quic_initial_crypto_frames(&datagram[..read])
+                            .unwrap()
+                    {
+                        let end = frame.offset + frame.bytes.len();
+                        if end > bytes.len() {
+                            bytes.resize(end, 0);
+                            present.resize(end, false);
+                        }
+                        bytes[frame.offset..end].copy_from_slice(&frame.bytes);
+                        present[frame.offset..end].fill(true);
+                    }
+                    if bytes.len() >= 4 && present[..4].iter().all(|b| *b) {
+                        let needed = 4
+                            + (usize::from(bytes[1]) << 16)
+                            + (usize::from(bytes[2]) << 8)
+                            + usize::from(bytes[3]);
+                        if bytes.len() >= needed && present[..needed].iter().all(|b| *b) {
+                            bytes.truncate(needed);
+                            break bytes;
+                        }
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            let parsed = umbra_tls::parse::parse_client_hello(&hello).unwrap();
+            for (id, expected) in [
+                (4, 15 * 1024 * 1024),
+                (5, stream_mib * 1024 * 1024),
+                (6, stream_mib * 1024 * 1024),
+                (7, stream_mib * 1024 * 1024),
+            ] {
+                let parameter = parsed
+                    .quic_transport_parameters
+                    .iter()
+                    .find(|p| p.id == id)
+                    .unwrap();
+                assert_eq!(
+                    read_quic_varint(&parameter.value, &mut 0).unwrap(),
+                    u64::from(expected)
+                );
+                if stream_mib == 6 {
+                    let captured = reference
+                        .quic_transport_parameters
+                        .iter()
+                        .find(|p| p.id == id)
+                        .unwrap();
+                    assert_eq!(
+                        parameter.value, captured.value,
+                        "captured flow-control field {id}"
+                    );
+                }
+            }
+            endpoint.close(0_u32.into(), b"");
+            drop(connecting);
+        }
+    }
+
     #[test]
     fn scenario_quic_profile_validates_alpn_and_cid() {
         let profile = load_profile("chrome-latest").expect("profile loads");
@@ -1051,7 +1157,7 @@ mod tests {
 
     #[test]
     fn scenario_quic_udp_carrier_preserves_fingerprint_by_disabling_datagrams() {
-        let config = quic_transport_config();
+        let config = quic_transport_config(crate::resources::PerformanceCfg::default());
         let config_debug = format!("{config:?}");
 
         assert!(config_debug.contains("datagram_receive_buffer_size: None"));

@@ -5,7 +5,6 @@ use std::{collections::VecDeque, future::Future, io, time::Duration};
 use rand::{rngs::OsRng, RngCore};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf},
-    sync::watch,
     time::Instant,
 };
 use umbra_inner::vision_observer::{protected_record_len, Tls13Observer, VisionDirection};
@@ -66,7 +65,7 @@ enum SendState {
 }
 
 enum Event {
-    Peer(io::Result<Option<Vec<u8>>>),
+    Peer(io::Result<bool>),
     Local(io::Result<usize>),
     Flushed(io::Result<()>),
     Delivered(io::Result<bool>),
@@ -105,18 +104,12 @@ fn encode(message: Message, padding: Vec<u8>) -> io::Result<Vec<u8>> {
         .map_err(|_| invalid("invalid Vision envelope"))
 }
 
-fn decode(bytes: &[u8]) -> io::Result<Message> {
-    Envelope::decode(bytes)
-        .map(|envelope| envelope.message)
-        .map_err(|_| invalid("invalid Vision envelope"))
-}
-
 async fn receive<R: AsyncRead + Unpin>(reader: &mut OwnedTlsReader<R>) -> io::Result<Message> {
-    let bytes = reader
+    let mut bytes = reader
         .next_record()
         .await?
         .ok_or_else(|| invalid("EOF before Vision control"))?;
-    decode(&bytes)
+    Envelope::take_message(&mut bytes).map_err(|_| invalid("invalid Vision envelope"))
 }
 
 async fn send<W: AsyncWrite + Unpin>(
@@ -311,8 +304,9 @@ where
         } else {
             Vec::new()
         };
-        self.writer
-            .queue_record(&encode(Message::Data(bytes.to_vec()), padding)?)
+        let header = Envelope::data_header(bytes.len(), padding.len())
+            .map_err(|_| invalid("invalid Vision envelope"))?;
+        self.writer.queue_record_parts(&[&header, bytes, &padding])
     }
 
     fn can_read_local(&self) -> bool {
@@ -551,6 +545,7 @@ where
         let at_handoff = self.stats.snapshot();
         let peer_read = self.reader.into_raw()?;
         let peer_write = self.writer.into_raw()?;
+        drop(self.observer);
         eprintln!("umbra vision splice active");
         let (raw_sent, raw_received) = raw_relay(
             local_read,
@@ -588,13 +583,19 @@ where
     {
         let (mut local_read, mut local_write) = tokio::io::split(local);
         let mut pending_local = PendingBytes::default();
+        let mut incoming = Vec::with_capacity(crate::owned_tls::MAX_RECORD);
         let mut local_shutdown = false;
         let mut peer_eof = false;
         let mut input = [0_u8; DATA_CHUNK];
         let mut last_progress = Instant::now();
         loop {
+            if incoming.capacity() == 0 {
+                incoming = pending_local.take_buffer();
+            }
             self.drive(pending_local.is_idle())?;
             if self.stage == Stage::Raw {
+                drop(pending_local);
+                drop(incoming);
                 return self
                     .finish_raw(&mut local_read, &mut local_write, idle_timeout)
                     .await;
@@ -618,10 +619,9 @@ where
             let deadline = (last_progress + idle_timeout).min(switch_deadline);
             let read_limit = self.observer.read_limit(self.tx_direction(), DATA_CHUNK);
             let read_local = self.can_read_local();
-            let read_peer =
-                !peer_eof && self.can_read_peer() && pending_local.bytes <= QUEUE_LIMIT - 16376;
+            let read_peer = !peer_eof && self.can_read_peer() && pending_local.can_receive();
             let event = tokio::select! {
-                result = self.reader.next_record(), if read_peer => Event::Peer(result),
+                result = self.reader.next_record_into(&mut incoming), if read_peer => Event::Peer(result),
                 result = local_read.read(&mut input[..read_limit]), if read_local => Event::Local(result),
                 result = self.writer.flush_pending(), if !self.writer.is_idle() => Event::Flushed(result),
                 result = pending_local.flush_or_shutdown(&mut local_write, self.rx_fin && !local_shutdown), if !pending_local.is_idle() || (self.rx_fin && !local_shutdown) => Event::Delivered(result),
@@ -643,8 +643,10 @@ where
                     continue;
                 }
                 Event::Peer(record) => {
-                    if let Some(record) = record? {
-                        self.accept_message(decode(&record)?, &mut pending_local)?;
+                    if record? {
+                        let message = Envelope::take_message(&mut incoming)
+                            .map_err(|_| invalid("invalid Vision envelope"))?;
+                        self.accept_message(message, &mut pending_local)?;
                     } else if self.rx_fin
                         && matches!(self.stage, Stage::Wrapped | Stage::WrappedOnly)
                     {
@@ -683,6 +685,7 @@ fn add_bytes(count: u64, len: usize) -> io::Result<u64> {
 #[derive(Default)]
 struct PendingBytes {
     chunks: VecDeque<Vec<u8>>,
+    spares: Vec<Vec<u8>>,
     offset: usize,
     bytes: usize,
     needs_flush: bool,
@@ -690,13 +693,34 @@ struct PendingBytes {
 
 impl PendingBytes {
     fn push(&mut self, bytes: Vec<u8>) -> io::Result<()> {
-        if bytes.len() > QUEUE_LIMIT.saturating_sub(self.bytes) {
+        if bytes.is_empty() {
+            self.recycle(bytes);
+            return Ok(());
+        }
+        if self.chunks.len() == 16 || bytes.len() > QUEUE_LIMIT.saturating_sub(self.bytes) {
             return Err(invalid("Vision receive queue exceeds limit"));
         }
         self.bytes += bytes.len();
         self.chunks.push_back(bytes);
         self.needs_flush = true;
         Ok(())
+    }
+
+    fn can_receive(&self) -> bool {
+        self.chunks.len() < 16 && self.bytes <= QUEUE_LIMIT - umbra_proto::vision::MAX_DATA_LEN
+    }
+
+    fn recycle(&mut self, mut bytes: Vec<u8>) {
+        bytes.clear();
+        if self.spares.len() < 16 && bytes.capacity() <= crate::owned_tls::MAX_RECORD {
+            self.spares.push(bytes);
+        }
+    }
+
+    fn take_buffer(&mut self) -> Vec<u8> {
+        self.spares
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(crate::owned_tls::MAX_RECORD))
     }
 
     fn is_idle(&self) -> bool {
@@ -719,7 +743,9 @@ impl PendingBytes {
             self.offset += written;
             self.bytes -= written;
             if self.offset == front.len() {
-                self.chunks.pop_front();
+                if let Some(bytes) = self.chunks.pop_front() {
+                    self.recycle(bytes);
+                }
                 self.offset = 0;
             }
             return Ok(false);
@@ -737,74 +763,71 @@ async fn forward_records<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
     already_eof: bool,
-    progress: &watch::Sender<Instant>,
+    progress: &crate::relay::ProgressClock,
 ) -> io::Result<u64> {
     let mut count = 0;
     if already_eof {
         writer.shutdown().await?;
         return Ok(count);
     }
+    let mut buffer = vec![0; 64 * 1024];
+    let mut filled = 0;
     loop {
-        let mut header = [0_u8; 5];
-        let first = reader.read(&mut header[..1]).await?;
-        if first == 0 {
+        let read = match reader.read(&mut buffer[filled..]).await {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if read == 0 {
+            if filled != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "truncated raw TLS record",
+                ));
+            }
             writer.shutdown().await?;
             return Ok(count);
         }
-        progress.send_replace(Instant::now());
-        read_progress(reader, &mut header[1..], progress).await?;
-        let len = protected_record_len(&header)
-            .map_err(|_| invalid("invalid protected record after Vision handoff"))?;
-        let mut record = vec![0_u8; len];
-        record[..5].copy_from_slice(&header);
-        read_progress(reader, &mut record[5..], progress).await?;
-        progress.send_replace(Instant::now());
-        let mut written = 0;
-        while written < record.len() {
-            let n = writer.write(&record[written..]).await?;
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "raw TLS write stopped",
-                ));
+        filled += read;
+        progress.advance();
+        let mut complete = 0;
+        let mut invalid_header = false;
+        while filled - complete >= 5 {
+            let mut header = [0; 5];
+            header.copy_from_slice(&buffer[complete..complete + 5]);
+            let Ok(length) = protected_record_len(&header) else {
+                invalid_header = true;
+                break;
+            };
+            if length > filled - complete {
+                break;
             }
-            written += n;
-            progress.send_replace(Instant::now());
+            complete += length;
         }
-        writer.flush().await?;
-        count = add_bytes(count, len)?;
-        progress.send_replace(Instant::now());
-    }
-}
-
-async fn read_progress<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    bytes: &mut [u8],
-    progress: &watch::Sender<Instant>,
-) -> io::Result<()> {
-    let mut read = 0;
-    while read < bytes.len() {
-        let n = reader.read(&mut bytes[read..]).await?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "truncated raw TLS record",
-            ));
+        if complete != 0 {
+            let mut written = 0;
+            while written < complete {
+                let n = match writer.write(&buffer[written..complete]).await {
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    result => result?,
+                };
+                if n == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "raw TLS write stopped",
+                    ));
+                }
+                written += n;
+                progress.advance();
+            }
+            writer.flush().await?;
+            count = add_bytes(count, complete)?;
+            buffer.copy_within(complete..filled, 0);
+            filled -= complete;
         }
-        read += n;
-        progress.send_replace(Instant::now());
-    }
-    Ok(())
-}
-
-async fn wait_idle(mut progress: watch::Receiver<Instant>, idle: Duration) {
-    loop {
-        let deadline = *progress.borrow_and_update() + idle;
-        tokio::select! {
-            () = tokio::time::sleep_until(deadline) => {
-                if progress.borrow().elapsed() >= idle { return; }
-            },
-            changed = progress.changed() => if changed.is_err() { return; },
+        // Valid preceding records are forwarded, but never an offending header
+        // or partial body. Read-ahead remains bounded to this fixed batch buffer.
+        if invalid_header || filled == buffer.len() {
+            return Err(invalid("invalid protected record after Vision handoff"));
         }
     }
 }
@@ -823,7 +846,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let (progress, changes) = watch::channel(Instant::now());
+    let progress = crate::relay::ProgressClock::new();
     tokio::select! {
         result = async {
             tokio::try_join!(
@@ -831,7 +854,7 @@ where
                 forward_records(&mut peer_read, local_write, false, &progress),
             )
         } => result,
-        () = wait_idle(changes, idle) => Err(io::Error::new(io::ErrorKind::TimedOut, "Vision raw relay idle timeout")),
+        () = progress.expired(idle) => Err(io::Error::new(io::ErrorKind::TimedOut, "Vision raw relay idle timeout")),
     }
 }
 

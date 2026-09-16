@@ -1,0 +1,41 @@
+---
+id: "concepts/architecture"
+title: "アーキテクチャ"
+description: "Rust クレートごとの役割と接続の流れを説明します。"
+section: "concepts"
+order: 11
+version: "1.0.0-alpha"
+source: ["README.md"]
+translation: "complete"
+---
+
+## 概要
+
+Umbra は Cargo ワークスペースで、ワイヤー型、暗号、TLS、認証、内部通信、実行時制御を別々のクレートに分けています。解析境界、暗号テストベクトル、接続ライフサイクルを役割別に検証できます。CLI は server、client、keygen でそれらを組み合わせます。サイトは遠隔管理 API やユーザー設定保存機能を提供しません。
+
+## 詳細
+
+umbra-proto は型とアドレス、umbra-crypto は鍵交換、署名、導出、MAC、AEAD を扱います。umbra-fingerprint はプロファイルと JA3/JA4、umbra-tls は TLS の構築と解析を担当します。umbra-reality は認証、リプレイ対策、接続先準備を行い、umbra-inner は多重化、パディング、Vision、umbra-transport は TCP と QUIC を提供します。
+```text
+umbra CLI
+    ↓
+umbra-core
+    ↓
+umbra-reality · umbra-inner · umbra-transport
+    ↓
+umbra-tls
+    ↓
+umbra-crypto · umbra-fingerprint
+    ↓
+umbra-proto
+```
+
+## 確認と制約
+
+umbra-core が設定、振り分け、SOCKS、ターゲット接続、リソース所有権を統合します。認証済み接続は内部モードへ、未認証接続は実サイトへ進みます。umbra-testkit はループバック検証、xtask は品質ゲートや配布ビルドを担当します。アーキテクチャ文書には計画も含まれ、名前が記載されただけで関連機能すべてが完成済みとはいえません。利用可能な動作は現行ガイドを参照します。
+
+## 次のステップ
+
+- [プロトコルリファレンス](/ja/docs/reference/protocol/)
+- [セキュリティモデル](/ja/docs/concepts/security-model/)
+- [開発への参加](/ja/docs/contributing/)

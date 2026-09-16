@@ -1,0 +1,55 @@
+---
+id: "configuration/server"
+title: "Configuració del servidor"
+description: "Camps obligatoris, valors per defecte i validació del servidor."
+section: "configuration"
+order: 8
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Visió general
+
+El servidor es configura amb TOML. Tots els valors obligatoris han d’existir després d’aplicar les opcions CLI. Es rebutgen camps desconeguts i tipus incorrectes. Les escoltes fan servir IP:port numèrica, amb claudàtors per a IPv6; dest utilitza host:port. La taula cobreix els camps principals, mentre que performance s’explica en una referència separada.
+
+## Detalls
+
+private_key i mldsa_seed han de descodificar exactament 32 bytes cadascun des de base64. No utilitzis literalment els marcadors en una instal·lació. short_ids ha de tenir almenys una entrada; cada cadena hexadecimal de longitud parella codifica entre zero i vuit bytes. Es permet una cadena buida. max_time_diff admet ms, s, m, h o segons sense sufix i ha de representar almenys un segon.
+
+### Plantilla del servidor
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+| Camp | Valor per defecte / requisit | Significat |
+|---|---|---|
+| `listen` | Obligatori | Adreça numèrica d’escolta TCP |
+| `udp_listen` | `—` | Escolta QUIC UDP opcional; omet per desactivar |
+| `private_key` | Obligatori | Clau privada X25519, base64, exactament 32 bytes |
+| `short_ids` | Obligatori | Llista no buida d’ID hexadecimals de 0–8 bytes |
+| `dest` | Obligatori | Destinació real de retorn, host:port |
+| `server_names` | Obligatori | Llista no buida de SNI admesos |
+| `max_time_diff` | Obligatori | Desfasament permès, almenys un segon |
+| `mldsa_seed` | Obligatori | Llavor ML-DSA, base64, exactament 32 bytes |
+| `prebuild` | `true` | Actualització periòdica; comprovació inicial obligatòria |
+| `padding_scheme` | `"default"` | Política de farciment intern |
+| `tcp_evasion` | `"segment"` | Escriptures ordenades de ClientHello |
+
+## Verificació i límits
+
+server_names no pot estar buit. Cada nom passa comprovacions de longitud, ASCII i absència d’espais; això no demostra que la destinació existeixi o tingui un SNI adequat. La comprovació inicial sempre és necessària. Les opcions CLI fan servir guionets, com --udp-listen, i substitueixen només allò indicat. Desa els secrets en un fitxer protegit, no a l’historial del shell ni en arguments visibles.
+
+## Passos següents
+
+- [Configurar un servidor](/ca/docs/guides/server/)
+- [Rendiment i polítiques](/ca/docs/reference/configuration/)
+- [Referència de la CLI](/ca/docs/reference/cli/)

@@ -1,0 +1,41 @@
+---
+id: "concepts/architecture"
+title: "架構"
+description: "瞭解 Rust crate 如何分擔連線生命週期。"
+section: "concepts"
+order: 11
+version: "1.0.0-alpha"
+source: ["README.md"]
+translation: "complete"
+---
+
+## 概覽
+
+Umbra 是 Cargo workspace，線格式、密碼學、TLS、認證、內層流量與執行時編排分別放在不同 crate。這樣的劃分使解析邊界、密碼學向量和連線生命週期能分別測試。CLI 透過 server、client、keygen 組合這些能力；官網不提供遠端執行時管理 API，也不儲存使用者設定。
+
+## 詳細說明
+
+umbra-proto 定義線型別與地址；umbra-crypto 集中封裝金鑰交換、簽名、派生、MAC 和 AEAD；umbra-fingerprint 管理檔案和 JA3/JA4 輔助；umbra-tls 構造並解析 TLS 表面。umbra-reality 負責認證、反重放和目標預構建，umbra-inner 提供多路複用、填充和 Vision，umbra-transport 提供 TCP 與 QUIC 路徑。
+```text
+umbra CLI
+    ↓
+umbra-core
+    ↓
+umbra-reality · umbra-inner · umbra-transport
+    ↓
+umbra-tls
+    ↓
+umbra-crypto · umbra-fingerprint
+    ↓
+umbra-proto
+```
+
+## 驗證與邊界
+
+umbra-core 負責設定、分派、SOCKS、目標連線與資源所有權。已認證連線進入選定內層模式，未認證連線走真實目標轉發。umbra-testkit 提供迴環測試設施，xtask 執行工程閘門與構建釋出產物。公開架構文件也包含規劃目標，表中出現元件名稱不代表該方向下所有功能都已經完成。判斷實際可用能力時，應結合當前指南和有原始碼依據的參考頁。
+
+## 下一步
+
+- [協議參考](/zh-hant/docs/reference/protocol/)
+- [安全模型](/zh-hant/docs/concepts/security-model/)
+- [參與貢獻](/zh-hant/docs/contributing/)

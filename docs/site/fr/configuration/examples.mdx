@@ -1,0 +1,81 @@
+---
+id: "configuration/examples"
+title: "Exemples de configuration"
+description: "Modèles de départ pour TCP mux, Vision et QUIC UDP."
+section: "configuration"
+order: 10
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Vue d’ensemble
+
+Ces exemples définissent les modes après avoir renseigné l’identité et les adresses du démarrage rapide. Remplacez toutes les valeurs de substitution ; ce ne sont pas des identifiants complets. Ne publiez jamais les fichiers remplis avec vos vrais secrets. Un binaire suffit pour chaque rôle et un deuxième client n’est pas nécessaire uniquement pour choisir un transport UDP distinct.
+
+## Détails
+
+Le multiplexage TCP chiffré utilise transport=tcp et mux=true ; les clients alpha activent par défaut le contrôle adaptatif. Pour TCP/Vision dédié, choisissez transport=tcp et mux=false. Le trafic TLS 1.3 éligible peut être transféré après l’échange de frontière authentifié ; les autres données restent chiffrées. Aucun paramètre vision supplémentaire n’existe et le transfert reste une opération en espace utilisateur.
+
+### TCP multiplexé
+
+```toml
+transport = "tcp"
+mux = true
+```
+
+
+### TCP / Vision dédié
+
+```toml
+transport = "tcp"
+mux = false
+```
+
+
+### TCP / Vision + QUIC UDP
+
+```toml
+transport = "tcp"
+udp_transport = "quic"
+mux = false
+socks_listen = "127.0.0.1:1080"
+```
+
+
+### Modèle serveur
+
+```toml
+listen = "0.0.0.0:443"
+udp_listen = "0.0.0.0:443"
+```
+
+
+### QUIC natif
+
+```toml
+transport = "quic"
+```
+
+
+### Nœud SOCKS5 Clash
+
+```yaml
+proxies:
+  - name: Umbra
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+    udp: true
+```
+
+
+## Vérification et limites
+
+Pour TCP/Vision et QUIC UDP dans une instance, ajoutez udp_transport=quic puis activez listen et udp_listen sur le serveur. Pour QUIC principal, sélectionnez transport=quic et omettez udp_transport afin d’hériter de quic. La destination de repli doit réellement offrir QUIC/HTTP3. udp: true dans Clash permet UDP ASSOCIATE tout en conservant le transport principal pour TCP. Changez un réglage à la fois et mesurez avant d’ajuster remplissage ou segmentation.
+
+## Pour continuer
+
+- [Configuration du serveur](/fr/docs/configuration/server/)
+- [Configuration du client](/fr/docs/configuration/client/)
+- [Transports et modes de trafic](/fr/docs/concepts/transports/)

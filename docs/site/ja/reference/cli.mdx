@@ -1,0 +1,76 @@
+---
+id: "reference/cli"
+title: "CLI リファレンス"
+description: "server、client、keygen のサブコマンドとオプションです。"
+section: "reference"
+order: 14
+version: "1.0.0-alpha"
+source: ["crates/umbra/src/main.rs", "README.md"]
+translation: "complete"
+---
+
+## 概要
+
+CLI のサブコマンドは三つです。server は待ち受けと実行処理、client はローカル SOCKS、keygen は標準出力への鍵生成です。umbra --help と各サブコマンドの --help でインストール済みバイナリを確認します。別バージョンの文書より、その版が実際に受け付けるオプションを優先してください。
+
+## 詳細
+
+-c または --config で TOML を読み込みます。CLI は対応する項目を上書きし、省略した値はファイルを維持します。short ID と server name はカンマ区切りを使えます。--mux や --prebuild は明示的な真偽値を取ります。performance は TOML の表に置き、すべての内部項目に CLI フラグが存在するわけではありません。
+
+### ヘルプと識別鍵の生成
+
+```sh
+umbra --help
+umbra server --help
+umbra client --help
+umbra keygen
+```
+
+
+### umbra server
+
+| コマンド / オプション | 役割 |
+|---|---|
+| `-c, --config` | `server.toml` |
+| `--listen` | 数値 IP の TCP 待ち受け |
+| `--udp-listen` | 設定ファイルの QUIC UDP 待ち受けを上書き |
+| `--private-key` | X25519 秘密鍵。base64 復号後32バイト |
+| `--short-ids` | 0〜8バイトの16進 ID。リストは1件以上 |
+| `--dest` | 実際のフォールバック先 host:port |
+| `--server-names` | 許可する SNI のリスト。空は不可 |
+| `--max-time-diff` | 時刻の許容差。最低1秒 |
+| `--mldsa-seed` | ML-DSA 署名シード。base64 復号後32バイト |
+| `--prebuild` | 接続先の定期更新。起動検査は常に実行 |
+| `--padding-scheme` | 内部パディング方式 |
+| `--tcp-evasion` | ClientHello の順序付き分割 write |
+
+
+### umbra client
+
+| コマンド / オプション | 役割 |
+|---|---|
+| `-c, --config` | `client.toml` |
+| `--server` | Umbra サーバー host:port |
+| `--transport` | 主要な外側方式。tcp または quic |
+| `--udp-transport` | UDP 方式を上書き。tcp または quic |
+| `--public-key` | サーバー X25519 公開鍵。復号後32バイト |
+| `--short-id` | サーバーが許可する short ID 一つ |
+| `--server-name` | サーバーが許可する SNI |
+| `--fingerprint` | 組み込みフィンガープリントの名前 |
+| `--mldsa-verify` | サーバー ML-DSA 検証鍵。空でない base64 |
+| `--socks-listen` | 認証なしのローカル SOCKS5 待ち受け |
+| `--spider-path` | 実サイトのパス。先頭は /、CR/LF 不可 |
+| `--mux` | 暗号化 mux。false は専用 TCP/Vision |
+| `--padding-scheme` | 内部パディング方式 |
+| `--tcp-evasion` | ClientHello の順序付き分割 write |
+
+
+## 確認と制約
+
+keygen に追加オプションはなく、x25519_private、x25519_public、mldsa_seed、mldsa_verify の base64 値を出力します。秘密を含むので私的なターミナルと保護されたファイルを使います。シェル履歴やプロセス一覧に現れる引数は避けてください。設定オプションは下表のとおりで、クラウドアカウント、DB 移行、自動サービスインストール用コマンドはありません。起動後は実際の要求を確認します。
+
+## 次のステップ
+
+- [サーバー設定](/ja/docs/configuration/server/)
+- [クライアント設定](/ja/docs/configuration/client/)
+- [性能とポリシー](/ja/docs/reference/configuration/)

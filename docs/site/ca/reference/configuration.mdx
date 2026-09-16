@@ -1,0 +1,66 @@
+---
+id: "reference/configuration"
+title: "Rendiment i polítiques"
+description: "Pressupostos de memòria, mux adaptatiu, farciment i congestió."
+section: "reference"
+order: 15
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/resources.rs", "README.md", "docs/performance.md", "crates/umbra-transport/src/evasion.rs", "crates/umbra-inner/src/padding.rs", "docs/usage.md"]
+translation: "complete"
+---
+
+## Visió general
+
+Tots dos extrems admeten una taula performance opcional. Els límits representen compromisos lògics, no assignacions completes en arrencar. Reserva marge per al sistema, buffers del nucli, assignador i negociacions. Les connexions amb la mateixa credencial canònica comparteixen pressupost de grup; no creen comptes independents ni garanteixen la mateixa amplada de banda.
+
+## Detalls
+
+memory_mib accepta 16–16384 MiB. group_memory_mib ha de ser almenys 16 MiB i no superar el límit del procés. Les finestres admeten 1–64 MiB; les finestres QUIC i l’emmagatzematge efectiu es retallen també segons els pressupostos. adaptive_mux afecta les noves sessions TCP CONNECT multiplexades del client. mux=false conserva Vision dedicat.
+
+### Taula de rendiment opcional
+
+```toml
+[performance]
+memory_mib = 512
+group_memory_mib = 256
+max_window_mib = 64
+quic_stream_window_mib = 6
+quic_send_window_mib = 32
+adaptive_mux = true
+diagnostics_interval_secs = 0
+quic_congestion = "bbr"
+```
+
+| Camp | Valor per defecte / requisit | Significat |
+|---|---|---|
+| `memory_mib` | `512` | Compromís lògic del procés, 16–16384 MiB |
+| `group_memory_mib` | `256` | Límit de grup, des de 16 MiB fins al del procés |
+| `max_window_mib` | `64` | Finestra agregada adaptativa màxima, 1–64 MiB |
+| `quic_stream_window_mib` | `6` | Finestra de recepció de flux QUIC, 1–64 MiB |
+| `quic_send_window_mib` | `32` | Emmagatzematge retingut d’enviament QUIC, 1–64 MiB |
+| `adaptive_mux` | `true` | Activació client del nou mux TCP adaptatiu |
+| `diagnostics_interval_secs` | `0` | Interval servidor: 0 desactivat, 1–3600 segons |
+| `quic_congestion` | `"bbr"` | QUIC sortint: bbr, cubic, new-reno |
+
+
+### Farciment i escriptures TCP
+
+default: cadascuna de les primeres 16 escriptures per sentit rep una trama PADDING aleatòria de 100–1400 bytes abans i després; més tard s’afegeix una trama cada 32 escriptures. none desactiva el farciment. Forma: early=N,min=N,max=N,later=N; early compta escriptures inicials, min/max limiten bytes i later fixa l’interval (0 desactiva la fase). min no supera max, max no supera 65535 i el farciment inicial exigeix max diferent de zero.
+
+segment: escriptures ordenades, llindar per defecte de 64 bytes i primer bloc de 32 bytes. off: escriptura ordinària. Forma personalitzada: segment:threshold=N,first=M. Les estratègies Geneva es rebutgen.
+
+```toml
+padding_scheme = "default"
+tcp_evasion = "segment"
+```
+
+
+## Verificació i límits
+
+diagnostics_interval_secs=0 desactiva la recopilació; 1–3600 estableix un interval de servidor en segons. Les observacions separen bytes de transport i destinació sense adreces, credencials, SNI ni càrrega útil. Compromís lògic no és RSS; escriptura acceptada no és lliurament; durada de poll no és CPU. quic_congestion només modifica QUIC sortint. Ajusta els valors a partir de proves reproduïbles sense pressuposar que una finestra més gran sempre millora el rendiment.
+
+## Passos següents
+
+- [Transports i modes de trànsit](/ca/docs/concepts/transports/)
+- [Desplegament i operació](/ca/docs/guides/deployment/)
+- [Resolució de problemes](/ca/docs/troubleshooting/)

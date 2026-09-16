@@ -1,0 +1,68 @@
+---
+id: "getting-started/introduction"
+title: "Why choose Umbra"
+description: "Explore real-site cover, separate TCP and QUIC paths, integration with existing clients, and when Umbra is a suitable choice."
+section: "getting-started"
+order: 1
+version: "1.0.0-alpha"
+source: ["README.md", "docs/usage.md", "docs/performance.md"]
+translation: "complete"
+---
+
+## Overview
+
+Umbra is an open-source privacy transport tool for self-hosted nodes. You run different modes of the same binary on your server and device, and applications connect through a local SOCKS5 endpoint. It brings real-site cover, TLS 1.3/TCP and QUIC into a single client and server pair, helping you choose a connection method for different network conditions.
+
+It is not a ready-to-use VPN service, does not provide node subscriptions, and does not automatically take over system-wide traffic after installation. You need a reachable server, configuration at both ends, and applications or proxy clients that support SOCKS5. The project is intended for lawful privacy protection and access to the open internet.
+
+## What Umbra offers in practice
+
+### Avoid directly exposing a proxy endpoint to probes
+
+The server checks the connection's identity first. Traffic that fails authentication goes to the configured real destination site instead of receiving a proxy-specific rejection. For users, this means deployment considers not just encrypting traffic, but also what an outside observer sees when actively connecting. It cannot guarantee that the node's IP address will not be blocked, nor does it make traffic completely unrecognizable.
+
+### Handle TCP and UDP with one configuration
+
+One client can send TCP requests over TCP/Vision and UDP requests over QUIC while exposing just one SOCKS5 endpoint to applications. The server also needs only one instance, with both TCP and UDP listeners enabled. You do not need to maintain two local proxy nodes for these two traffic types.
+
+If the network does not allow UDP, start with TCP; if TCP connections suffer from reset interference and UDP is available, try QUIC. This is an explicit configuration choice, not automatic failover. Whether QUIC is faster depends on the network path, not simply the protocol's name.
+
+### Choose how to handle connection overhead
+
+TCP multiplexing lets multiple requests share an outer connection, reducing the need to establish connections repeatedly. For eligible inner TLS 1.3 traffic, dedicated Vision mode forwards records that are already encrypted after authenticated negotiation, reducing redundant encryption and extra encapsulation; other traffic remains encrypted.
+
+These modes involve different trade-offs: multiplexing shares connections, but also shares the waiting caused by TCP packet loss; Vision uses dedicated connections. There are currently no performance comparisons with other proxies under uniform conditions, so these mechanisms do not justify claiming that Umbra is faster.
+
+### Keep the proxy client you know
+
+Clash-style clients that support SOCKS5 outbounds can use local Umbra as a node, leaving rules, application routing and the interface to the existing client. Umbra handles the remote transport without requiring you to reorganize your existing rules.
+
+This does not mean native compatibility with VLESS, VMess or Trojan: the remote endpoint must run an Umbra server, and existing protocol nodes cannot be imported directly as Umbra nodes. See [client integration](/en/docs/guides/client/).
+
+## When Umbra may be a good fit
+
+| Your needs | Recommendation |
+| --- | --- |
+| You host your own node, value real-site cover and are comfortable with the command line | Try Umbra, starting by verifying a connection from a single application |
+| You want one endpoint to carry TCP and QUIC-based UDP separately | Use the single-instance mixed-transport configuration |
+| You already use a Clash-style client and want to keep its rules and interface | Connect it to Umbra through a local SOCKS5 node |
+| You want to use existing VLESS / VMess subscriptions directly | Keep a compatible client; Umbra is not a protocol replacement plugin |
+| You need a mature graphical client, ready-made nodes or an audited production solution | Do not migrate to the current alpha release based on the feature list alone |
+
+To understand the differences, read the [comparison with Xray, VMess and other options](/en/docs/reference/protocol/). It discusses specific protocol combinations rather than reducing all proxies to a simple ranking.
+
+## Before you start
+
+- The current version is **1.0.0-alpha**. Evaluate prerelease stability for yourself; open source does not mean an independent security audit has been completed.
+- The installation page lists macOS, Linux and Windows build targets; check the corresponding release for the files actually available to download.
+- The local SOCKS5 endpoint has no password authentication and should remain bound to loopback at `127.0.0.1:1080`.
+- Keep using application-layer HTTPS. Proxy transport does not provide complete anonymity and cannot protect a compromised device or browser.
+- `chrome-latest` currently uses the historical Chrome 150 profile; Chrome 153 packet captures do not prove full browser fingerprint equivalence.
+- The source code is MIT licensed and requires no Umbra cloud account. You remain responsible for the server, network and routine maintenance.
+
+## Next steps
+
+1. [Install the client and server](/en/docs/getting-started/installation/).
+2. [Generate keys and make your first connection](/en/docs/getting-started/quick-start/).
+3. [Connect applications or a Clash-style client](/en/docs/guides/client/).
+4. [Choose TCP, Vision or QUIC](/en/docs/concepts/transports/) and read the [security model](/en/docs/concepts/security-model/).

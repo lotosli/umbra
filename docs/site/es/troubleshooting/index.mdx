@@ -1,0 +1,36 @@
+---
+id: "troubleshooting"
+title: "Resolución de problemas"
+description: "Diagnostica problemas de configuración y conectividad."
+section: "troubleshooting"
+order: 17
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md"]
+translation: "complete"
+---
+
+## Descripción general
+
+Empieza por la versión instalada, la etapa que falla y una descripción mínima sin secretos. Reproduce una petición antes de cambiar varios ajustes. Distingue una aplicación que omite SOCKS, un fallo cliente/servidor y un fallo del servidor al sitio de respaldo o destino de aplicación: no requieren las mismas comprobaciones.
+
+## Detalles
+
+Si el servidor termina inmediatamente, revisa TOML, campos obligatorios, conflictos de puerto y la comprobación inicial. Los errores conservan categoría y posición sin reproducir secretos. Ante un fallo de autenticación, compara identidad pública, short ID y server_name por un canal fiable. Sincroniza los relojes antes de ampliar max_time_diff. Comprueba el puerto público TCP y también UDP cuando utilices QUIC.
+
+### Verificar la conexión
+
+```sh
+umbra --help
+curl --socks5-hostname 127.0.0.1:1080 https://example.com/
+```
+
+
+## Verificación y límites
+
+Ver el certificado real del destino es normal en una prueba no autenticada. Si solo falla UDP, comprueba udp_transport, udp_listen, cortafuegos y el servicio QUIC del destino. Para rendimiento, usa una carga repetible y diagnósticos opcionales. Un informe útil incluye versión, plataforma, comando saneado y categoría de error; evita configuraciones reales, claves privadas, capturas con tráfico de usuarios y detalles de infraestructura activa.
+
+## Siguientes pasos
+
+- [Configuración del servidor](/es/docs/configuration/server/)
+- [Configuración del cliente](/es/docs/configuration/client/)
+- [Rendimiento y políticas](/es/docs/reference/configuration/)

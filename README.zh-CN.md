@@ -25,7 +25,7 @@ Umbra 把协议伪装、响应前认证、浏览器级指纹保真、抗量子�
 
 ## 当前状态
 
-**0.0.8** 修复标准混合 TLS/QUIC 互通，并支持一个 SOCKS 客户端实例：TCP 走 TCP/Vision，UDP 走 QUIC。客户端与服务端需一起升级，不保留旧版错误混合格式的兼容分支。
+**1.0.0-alpha** 增加硬件加速与可复用的 TLS 密码上下文、按就绪流调度的 mux、更大的受预算约束的启动窗口、QUIC 批量入队及独立推进的 UDP 收发。QUIC 继续默认使用 BBR。客户端与服务端建议一起升级；单实例 TCP/Vision + QUIC UDP 配置仍可使用。详见[吞吐与配置说明](docs/performance.md)。
 
 在已有客户端配置中设置：
 
@@ -60,6 +60,19 @@ socks_listen = "127.0.0.1:1080"
 | `xtask` | 开发、CI、覆盖率、指纹检查和 dist 任务 |
 | `openspec` | SDD 变更和已接受规范 |
 | `.github/workflows` | CI 与 tag 触发的发布构建 |
+| `apps/web` | React / TanStack Start 官网与 Fumadocs，独立部署到 Cloudflare Workers |
+| `docs/site` | 七种语言的公开用户文档 |
+
+## 官网开发
+
+仓库同时包含 Cargo workspace 和私有 pnpm workspace。官网使用 Node 24.18.1、pnpm 9.11.0；单独开发 Rust 不需要 Node。
+
+```bash
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+本地地址为 `http://127.0.0.1:3000`。发布前运行 `pnpm build`、`pnpm check`、`pnpm test` 和 `pnpm test:e2e`。官网与文档使用规划主域名 `https://umbra.cat` 下的七种语言目录；网站发布由手动工作流触发，Rust 二进制仍独立发布。详见[官网开发与部署](docs/website-development.md)。
 
 ## 快速开始
 
@@ -106,7 +119,7 @@ git push origin v0.0.1
 
 普通分支 push 只触发 `CI`。这样每个分支都能被验证，同时不会为每个开发提交消耗完整 release 构建时间。
 
-本次按明确要求手动发布 0.0.8：本地构建二进制，提交使用 `[skip ci]`，发布已有产物，不经过 Actions 构建。提供 macOS Apple Silicon/Intel 和 Linux x86_64/aarch64 四个程序及 SHA-256 校验文件。检查范围和最终部署情况见[验证记录](openspec/changes/archive/2026-09-14-fix-standard-quic-tls/verification.md)。
+`1.0.0-alpha` 是预发布版本。macOS/Linux 构建产物、SHA-256 校验和、两端部署、本地测试及远程 CI 状态见[验证记录](openspec/changes/optimize-throughput-alpha/verification.md)。
 
 ## 开发模型
 

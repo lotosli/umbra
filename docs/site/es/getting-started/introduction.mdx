@@ -1,0 +1,68 @@
+---
+id: "getting-started/introduction"
+title: "Por qué elegir Umbra"
+description: "Conoce el camuflaje con sitios reales, la separación de rutas TCP y QUIC, la integración con clientes existentes y cuándo conviene elegir Umbra."
+section: "getting-started"
+order: 1
+version: "1.0.0-alpha"
+source: ["README.md", "docs/usage.md", "docs/performance.md"]
+translation: "complete"
+---
+
+## Descripción general
+
+Umbra es una herramienta de transporte de código abierto orientada a la privacidad y a los nodos autogestionados. Ejecutas el mismo binario en modos distintos en el servidor y en tu dispositivo, y las aplicaciones se conectan a través de una entrada SOCKS5 local. Reúne el camuflaje con sitios reales, TLS 1.3/TCP y QUIC en un mismo cliente y servidor para que puedas elegir cómo conectarte según las condiciones de la red.
+
+No es un servicio VPN listo para usar tras contratarlo, no ofrece suscripciones de nodos ni redirige automáticamente todo el tráfico del sistema al instalarlo. Necesitas un servidor accesible, configurar ambos extremos y disponer de aplicaciones o clientes proxy que admitan SOCKS5. El proyecto está destinado a la protección legítima de la privacidad y al acceso a internet abierto.
+
+## Qué aporta Umbra en la práctica
+
+### No revelar directamente la entrada del proxy ante sondeos
+
+El servidor comprueba primero la identidad de la conexión. El tráfico que no supera la autenticación se reenvía al sitio real configurado, en lugar de recibir un rechazo característico de un proxy. Esto significa que el despliegue no se limita a «cifrar el tráfico»: también tiene en cuenta lo que verá un observador externo que intente conectarse activamente. No garantiza que la IP del nodo no sea bloqueada ni que el tráfico sea absolutamente indistinguible.
+
+### Una configuración para TCP y UDP
+
+Un cliente puede enviar las solicitudes TCP por TCP/Vision y las UDP por QUIC, manteniendo una única entrada SOCKS5 para las aplicaciones. En el servidor también basta una instancia con escuchas TCP y UDP habilitadas a la vez. No necesitas mantener dos nodos proxy locales para estos dos tipos de tráfico.
+
+Si la red no permite UDP, puedes empezar por TCP; si las conexiones TCP sufren interferencias por reinicios y UDP está disponible, puedes probar QUIC. Se trata de una elección explícita de configuración, no de una conmutación automática ante fallos. Que QUIC sea más rápido depende de la ruta de red, no solo del nombre del protocolo.
+
+### Elegir cómo gestionar la sobrecarga de cada conexión
+
+El modo de multiplexación TCP permite que varias solicitudes compartan una conexión exterior y reduce la necesidad de establecer conexiones repetidas. Para el tráfico TLS 1.3 interior compatible, el modo Vision dedicado reenvía los registros que ya estaban cifrados tras una negociación autenticada, lo que reduce el cifrado duplicado y la encapsulación adicional; el resto del tráfico sigue cifrado.
+
+Ambos modos tienen contrapartidas: la multiplexación comparte la conexión, pero también las esperas causadas por pérdidas de paquetes TCP; Vision utiliza conexiones dedicadas. Actualmente no hay comparativas de rendimiento con otros proxies en condiciones uniformes, por lo que esto no permite afirmar que Umbra sea más rápido.
+
+### Conservar el cliente proxy que ya conoces
+
+Los clientes de tipo Clash que admiten salidas SOCKS5 pueden usar Umbra local como nodo y seguir encargándose de las reglas, el enrutamiento por aplicación y la interfaz. Umbra gestiona el transporte remoto sin obligarte a reorganizar tus reglas existentes.
+
+Esto no implica compatibilidad nativa con VLESS, VMess o Trojan: el extremo remoto debe ejecutar el servidor Umbra, y los nodos de otros protocolos no pueden importarse directamente como nodos Umbra. Consulta la [integración de clientes](/es/docs/guides/client/).
+
+## Cuándo puede encajar
+
+| Tu necesidad | Recomendación |
+| --- | --- |
+| Gestionar tu propio nodo, dar importancia al camuflaje con sitios reales y trabajar con la línea de comandos | Puedes probar Umbra; empieza por verificar la conexión de una sola aplicación |
+| Transportar TCP y UDP sobre QUIC por rutas separadas desde una misma entrada | Usa una configuración de transporte mixto en una sola instancia |
+| Mantener las reglas y la interfaz de un cliente de tipo Clash existente | Conecta ese cliente a Umbra mediante un nodo SOCKS5 local |
+| Usar directamente suscripciones VLESS / VMess existentes | Conserva un cliente compatible; Umbra no es un complemento que sustituya esos protocolos |
+| Necesitar un cliente gráfico maduro, nodos listos para usar o una solución de producción auditada | No migres a la versión alpha actual solo por su lista de funciones |
+
+Para entender las diferencias, lee la [comparación con Xray, VMess y otras soluciones](/es/docs/reference/protocol/). Se comparan combinaciones concretas de protocolos, sin reducir todos los proxies a una clasificación de mejores y peores.
+
+## Lo que debes saber antes de empezar
+
+- La versión actual es **1.0.0-alpha**. Debes evaluar por tu cuenta la estabilidad del software preliminar; que sea de código abierto no significa que haya pasado una auditoría de seguridad independiente.
+- La página de instalación enumera los destinos de compilación para macOS, Linux y Windows; los archivos realmente disponibles dependen de cada versión publicada.
+- La entrada SOCKS5 local no tiene autenticación por contraseña. Mantén la vinculación a la dirección de bucle local `127.0.0.1:1080`.
+- Sigue usando HTTPS en las aplicaciones. El transporte proxy no ofrece anonimato completo ni protege dispositivos o navegadores que ya estén comprometidos.
+- `chrome-latest` utiliza actualmente un perfil histórico de Chrome 150; las capturas de Chrome 153 no demuestran una equivalencia completa con la huella del navegador.
+- El código se distribuye bajo licencia MIT y no exige registrar una cuenta en la nube de Umbra. El servidor, la red y el mantenimiento diario siguen siendo tu responsabilidad.
+
+## Siguientes pasos
+
+1. [Instala el cliente y el servidor](/es/docs/getting-started/installation/).
+2. [Genera las claves y establece la primera conexión](/es/docs/getting-started/quick-start/).
+3. [Conecta aplicaciones o un cliente de tipo Clash](/es/docs/guides/client/).
+4. [Elige TCP, Vision o QUIC](/es/docs/concepts/transports/) y lee el [modelo de seguridad](/es/docs/concepts/security-model/).

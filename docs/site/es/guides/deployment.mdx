@@ -1,0 +1,62 @@
+---
+id: "guides/deployment"
+title: "Despliegue y operación"
+description: "Supervisa el servidor y administra sus recursos."
+section: "guides"
+order: 6
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "docs/performance.md"]
+translation: "complete"
+---
+
+## Descripción general
+
+Primero valida un cliente y un servidor en primer plano con la misma versión. En Linux, systemd puede supervisar el proceso y journald recoger stderr. Utiliza rutas absolutas para el binario y server.toml. Restringe la lectura del archivo al usuario del servicio y a los administradores. Configura ese usuario y los permisos para puertos bajos según tu sistema.
+
+## Detalles
+
+Abre el puerto TCP público configurado. Abre UDP únicamente si udp_listen está activo para QUIC. Si un frontal de capa 4 ocupa el puerto público, vincula Umbra al bucle local y configura reenvío transparente TCP/QUIC. Los puertos internos no necesitan reglas públicas. Un proxy inverso HTTP corriente no sustituye el reenvío de transporte requerido por Umbra.
+
+### Ejemplo de unidad de servicio
+
+Guarda esta unidad en `/etc/systemd/system/umbra-server.service`. El ejemplo supone que ya existe el usuario Linux dedicado `umbra`, que el binario está instalado en `/usr/local/bin/umbra` y que ese usuario puede leer `/etc/umbra/server.toml`. Crea la identidad e instala los archivos con las herramientas de administración de tu equipo antes de activar la unidad; adapta rutas y usuario si tu despliegue es diferente.
+
+```ini
+[Unit]
+Description=Umbra Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=umbra
+ExecStart=/usr/local/bin/umbra server -c /etc/umbra/server.toml
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+```
+
+
+### Administrar el servicio
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now umbra-server
+sudo journalctl -u umbra-server -f
+```
+
+
+## Verificación y límites
+
+Reserva memoria para el sistema operativo. El despliegue orientado a rendimiento supone al menos 1 GiB de RAM física; performance.memory_mib limita compromisos lógicos, no el RSS del proceso. Los diagnósticos están desactivados inicialmente. Actívalos durante una investigación concreta y no confundas escrituras aceptadas con entrega remota. Reinicia de forma deliberada tras cambiar la configuración y conserva un binario anterior verificado para poder revertir.
+
+## Siguientes pasos
+
+- [Rendimiento y políticas](/es/docs/reference/configuration/)
+- [Resolución de problemas](/es/docs/troubleshooting/)
+- [Actualizar Umbra](/es/docs/guides/upgrade/)

@@ -1,0 +1,58 @@
+---
+id: "configuration/client"
+title: "Client configuration"
+description: "Transport selection, identity and local proxy settings."
+section: "configuration"
+order: 9
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Overview
+
+Client configuration is TOML and selects both the remote server identity and a local SOCKS listener. Required fields are validated after command-line overrides. transport is required and accepts tcp or quic. If udp_transport is absent, UDP inherits the final merged transport value; setting it changes UDP associations without changing TCP CONNECT traffic.
+
+## Details
+
+public_key must decode to 32 bytes. mldsa_verify must be a nonempty base64 value and should be the verification key generated for the server identity. short_id must be an accepted server entry, and server_name must be accepted by the server. fingerprint is required: the built-in names include chrome-latest and chrome-150-macos. At this release, chrome-latest still follows the historical Chrome 150 profile.
+
+### Client template
+
+```toml
+server = "198.51.100.10:443"
+transport = "tcp"
+public_key = "<X25519_PUBLIC_BASE64>"
+short_id = "<SHORT_ID_HEX>"
+server_name = "cover.example"
+fingerprint = "chrome-latest"
+mldsa_verify = "<MLDSA_VERIFY_BASE64>"
+socks_listen = "127.0.0.1:1080"
+```
+
+
+| Field | Default / requirement | Meaning |
+|---|---|---|
+| `server` | Required | Umbra server, host:port |
+| `transport` | Required | Main outer transport: tcp or quic |
+| `udp_transport` | `transport` | UDP outer transport; inherits transport if omitted |
+| `public_key` | Required | Server X25519 public identity, 32 base64-decoded bytes |
+| `short_id` | Required | One accepted server short ID |
+| `server_name` | Required | Accepted server SNI |
+| `fingerprint` | Required | Built-in fingerprint profile name |
+| `mldsa_verify` | Required | Server ML-DSA verification key, nonempty base64 |
+| `socks_listen` | Required | Local SOCKS5 socket, no-auth |
+| `spider_path` | `"/"` | Real-site path; begins with /, no CR/LF |
+| `mux` | `true` | Encrypted mux; false selects dedicated TCP/Vision |
+| `padding_scheme` | `"default"` | Inner padding policy |
+| `tcp_evasion` | `"segment"` | Ordered ClientHello write policy |
+
+## Verify
+
+Use a loopback socks_listen address because SOCKS supports no-auth negotiation. mux defaults to true; false chooses the dedicated TCP/Vision mode for TCP connections. spider_path defaults to /, must start with / and cannot contain carriage returns or line feeds. It is used for the real-site behavior when authentication does not establish an Umbra session. Optional performance limits are a separate table. A syntactically valid file is not proof that keys match or that the selected destination is reachable.
+
+## Next steps
+
+- [Connect a client](/en/docs/guides/client/)
+- [Performance and policy reference](/en/docs/reference/configuration/)
+- [CLI reference](/en/docs/reference/cli/)

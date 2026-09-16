@@ -1,0 +1,30 @@
+---
+id: "concepts/security-model"
+title: "安全模型"
+description: "理解认证、密钥管理和保护边界。"
+section: "concepts"
+order: 13
+version: "1.0.0-alpha"
+source: ["README.md", "crates/umbra-core/src/socks.rs"]
+translation: "complete"
+---
+
+## 概览
+
+Umbra 将首个服务端响应前的认证与真实站点回落结合。未认证连接转发至配置目标，不返回带有明显代理特征的认证错误。已认证客户端验证预期身份材料。反重放缓存受容量和时间限制，它是安全模型的一部分，不代表对所有资源耗尽攻击都提供无限防护。
+
+## 详细说明
+
+代码集中使用常量时间校验与秘密零化封装。private_key、mldsa_seed 仅保留在服务端；客户端配置通过可信方式分发，不要把密钥、目标地址或内容放进日志和报告。SOCKS 入口免认证，建议只绑定回环。应用仍应使用 HTTPS 或自身的认证加密，不能把代理传输当作所有端到端保护的替代。
+
+[GitHub Security](https://github.com/lotosli/umbra/security)
+
+## 验证与边界
+
+隐私传输不能修复被入侵的端点、消除所有流量特征，也不等同于多跳匿名网络。当前 alpha 没有独立安全审计或与最新 Chrome 完全等价的声明。chrome-latest 仍是历史 Chrome 150 档案，Chrome 153 采样证据不代表全面保真。报告安全问题时先查看项目公开的安全页面，不要在普通公开 issue 中附上敏感漏洞细节、真实配置或运营信息。
+
+## 下一步
+
+- [协议参考](/zh-hans/docs/reference/protocol/)
+- [故障排查](/zh-hans/docs/troubleshooting/)
+- [参与贡献](/zh-hans/docs/contributing/)

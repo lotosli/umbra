@@ -1,0 +1,30 @@
+---
+id: "concepts/security-model"
+title: "安全模型"
+description: "理解認證、金鑰管理和保護邊界。"
+section: "concepts"
+order: 13
+version: "1.0.0-alpha"
+source: ["README.md", "crates/umbra-core/src/socks.rs"]
+translation: "complete"
+---
+
+## 概覽
+
+Umbra 將首個伺服器端響應前的認證與真實站點回落結合。未認證連線轉發至設定目標，不返回帶有明顯代理特徵的認證錯誤。已認證用戶端驗證預期身份材料。反重放快取受容量和時間限制，它是安全模型的一部分，不代表對所有資源耗盡攻擊都提供無限防護。
+
+## 詳細說明
+
+程式碼集中使用常量時間校驗與秘密零化封裝。private_key、mldsa_seed 僅保留在伺服器端；用戶端設定透過可信方式分發，不要把金鑰、目標地址或內容放進日誌和報告。SOCKS 入口免認證，建議只繫結迴環。應用仍應使用 HTTPS 或自身的認證加密，不能把代理傳輸當作所有端到端保護的替代。
+
+[GitHub Security](https://github.com/lotosli/umbra/security)
+
+## 驗證與邊界
+
+隱私傳輸不能修復被入侵的端點、消除所有流量特徵，也不等同於多跳匿名網路。當前 alpha 沒有獨立安全審計或與最新 Chrome 完全等價的宣告。chrome-latest 仍是歷史 Chrome 150 檔案，Chrome 153 取樣證據不代表全面保真。報告安全問題時先檢視專案公開的安全頁面，不要在普通公開 issue 中附上敏感漏洞細節、真實設定或運營資訊。
+
+## 下一步
+
+- [協議參考](/zh-hant/docs/reference/protocol/)
+- [故障排查](/zh-hant/docs/troubleshooting/)
+- [參與貢獻](/zh-hant/docs/contributing/)

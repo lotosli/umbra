@@ -1,0 +1,58 @@
+---
+id: "configuration/client"
+title: "Configuració del client"
+description: "Selecció de transport, identitat i escolta local."
+section: "configuration"
+order: 9
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Visió general
+
+El TOML del client defineix la identitat remota i l’escolta SOCKS local. Es valida després de combinar les opcions CLI. transport és obligatori i admet tcp o quic. Sense udp_transport, UDP hereta el valor final de transport; indicar-lo modifica les associacions UDP sense canviar les connexions TCP CONNECT.
+
+## Detalls
+
+public_key ha de descodificar 32 bytes. mldsa_verify ha de ser un base64 no buit procedent de la identitat del servidor. short_id i server_name han de coincidir amb les entrades permeses. fingerprint és obligatori: els noms integrats inclouen chrome-latest i chrome-150-macos. En aquesta versió, chrome-latest encara segueix el perfil històric de Chrome 150 tot i existir una captura més recent.
+
+### Plantilla del client
+
+```toml
+server = "198.51.100.10:443"
+transport = "tcp"
+public_key = "<X25519_PUBLIC_BASE64>"
+short_id = "<SHORT_ID_HEX>"
+server_name = "cover.example"
+fingerprint = "chrome-latest"
+mldsa_verify = "<MLDSA_VERIFY_BASE64>"
+socks_listen = "127.0.0.1:1080"
+```
+
+
+| Camp | Valor per defecte / requisit | Significat |
+|---|---|---|
+| `server` | Obligatori | Servidor Umbra, host:port |
+| `transport` | Obligatori | Transport principal: tcp o quic |
+| `udp_transport` | `transport` | Transport UDP; hereta transport si s’omet |
+| `public_key` | Obligatori | Identitat pública X25519, 32 bytes descodificats |
+| `short_id` | Obligatori | Un short ID admès pel servidor |
+| `server_name` | Obligatori | SNI admès pel servidor |
+| `fingerprint` | Obligatori | Nom del perfil d’empremta integrat |
+| `mldsa_verify` | Obligatori | Clau de verificació ML-DSA, base64 no buit |
+| `socks_listen` | Obligatori | Escolta SOCKS5 local, sense autenticació |
+| `spider_path` | `"/"` | Camí del lloc real; comença per /, sense CR/LF |
+| `mux` | `true` | Mux xifrat; false tria TCP/Vision dedicat |
+| `padding_scheme` | `"default"` | Política de farciment intern |
+| `tcp_evasion` | `"segment"` | Escriptures ordenades de ClientHello |
+
+## Verificació i límits
+
+Vincula socks_listen al bucle local perquè SOCKS no demana contrasenya. mux val true per defecte; false tria Vision dedicat per a TCP. spider_path val /, ha de començar amb / i no admet retorns de carro ni salts de línia. S’utilitza per al comportament de lloc real quan no s’estableix una sessió Umbra autenticada. Una configuració sintàcticament vàlida no garanteix claus coincidents ni una ruta accessible.
+
+## Passos següents
+
+- [Connectar un client](/ca/docs/guides/client/)
+- [Rendiment i polítiques](/ca/docs/reference/configuration/)
+- [Referència de la CLI](/ca/docs/reference/cli/)

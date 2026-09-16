@@ -1,0 +1,66 @@
+---
+id: "reference/configuration"
+title: "Rendimiento y políticas"
+description: "Presupuestos de memoria, mux adaptativo, relleno y congestión."
+section: "reference"
+order: 15
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/resources.rs", "README.md", "docs/performance.md", "crates/umbra-transport/src/evasion.rs", "crates/umbra-inner/src/padding.rs", "docs/usage.md"]
+translation: "complete"
+---
+
+## Descripción general
+
+Ambos extremos admiten una tabla performance opcional. Sus límites representan compromisos lógicos, no asignaciones completas al arrancar. Reserva margen para el sistema, buffers del núcleo, asignador y negociaciones. Las conexiones con la misma credencial canónica comparten presupuesto de grupo; no crean cuentas de usuario independientes ni garantizan idéntico ancho de banda.
+
+## Detalles
+
+memory_mib acepta 16–16384 MiB. group_memory_mib debe ser al menos 16 MiB y no superar el límite del proceso. Las ventanas admiten 1–64 MiB; las ventanas QUIC y el almacenamiento efectivo se recortan también según los presupuestos. adaptive_mux afecta a las nuevas sesiones TCP CONNECT multiplexadas del cliente. mux=false conserva Vision dedicado.
+
+### Tabla de rendimiento opcional
+
+```toml
+[performance]
+memory_mib = 512
+group_memory_mib = 256
+max_window_mib = 64
+quic_stream_window_mib = 6
+quic_send_window_mib = 32
+adaptive_mux = true
+diagnostics_interval_secs = 0
+quic_congestion = "bbr"
+```
+
+| Campo | Valor predeterminado / requisito | Significado |
+|---|---|---|
+| `memory_mib` | `512` | Compromiso lógico del proceso, 16–16384 MiB |
+| `group_memory_mib` | `256` | Límite de grupo, desde 16 MiB hasta el del proceso |
+| `max_window_mib` | `64` | Ventana agregada adaptativa máxima, 1–64 MiB |
+| `quic_stream_window_mib` | `6` | Ventana de recepción de flujo QUIC, 1–64 MiB |
+| `quic_send_window_mib` | `32` | Almacenamiento retenido de envío QUIC, 1–64 MiB |
+| `adaptive_mux` | `true` | Activación cliente del nuevo mux TCP adaptativo |
+| `diagnostics_interval_secs` | `0` | Intervalo servidor: 0 desactivado, 1–3600 segundos |
+| `quic_congestion` | `"bbr"` | QUIC saliente: bbr, cubic, new-reno |
+
+
+### Relleno y escrituras TCP
+
+default: cada una de las primeras 16 escrituras por dirección recibe una trama PADDING aleatoria de 100–1400 bytes antes y después; luego se añade una trama cada 32 escrituras. none desactiva el relleno. Forma: early=N,min=N,max=N,later=N; early cuenta escrituras iniciales, min/max limitan bytes y later fija el intervalo (0 desactiva esa fase). min no supera max, max no supera 65535 y el relleno inicial exige max distinto de cero.
+
+segment: escrituras ordenadas, umbral predeterminado de 64 bytes y primer bloque de 32 bytes. off: escritura ordinaria. Forma personalizada: segment:threshold=N,first=M. Se rechazan estrategias Geneva.
+
+```toml
+padding_scheme = "default"
+tcp_evasion = "segment"
+```
+
+
+## Verificación y límites
+
+diagnostics_interval_secs=0 desactiva la recopilación; 1–3600 establece un intervalo del servidor en segundos. Las observaciones separan bytes de transporte y destino sin direcciones, credenciales, SNI ni carga útil. Compromiso lógico no significa RSS; escritura aceptada no significa entrega; duración de poll no equivale a CPU. quic_congestion solo cambia QUIC saliente. Ajusta los valores a partir de pruebas reproducibles y no supongas que una ventana mayor siempre mejora el rendimiento.
+
+## Siguientes pasos
+
+- [Transportes y modos de tráfico](/es/docs/concepts/transports/)
+- [Despliegue y operación](/es/docs/guides/deployment/)
+- [Resolución de problemas](/es/docs/troubleshooting/)

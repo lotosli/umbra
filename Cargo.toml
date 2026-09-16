@@ -21,7 +21,7 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.0.8"
+version = "1.0.0-alpha"
 edition = "2021"
 rust-version = "1.96.1"
 license = "MIT"
@@ -33,15 +33,15 @@ authors = ["Umbra contributors"]
 # 未被任何 crate 引用的条目不会被拉取/编译（脚手架阶段保持零外部依赖，构建极快）。
 [workspace.dependencies]
 # 内部 crate
-umbra-proto = { path = "crates/umbra-proto", version = "0.0.8" }
-umbra-crypto = { path = "crates/umbra-crypto", version = "0.0.8" }
-umbra-tls = { path = "crates/umbra-tls", version = "0.0.8" }
-umbra-fingerprint = { path = "crates/umbra-fingerprint", version = "0.0.8" }
-umbra-reality = { path = "crates/umbra-reality", version = "0.0.8" }
-umbra-inner = { path = "crates/umbra-inner", version = "0.0.8" }
-umbra-transport = { path = "crates/umbra-transport", version = "0.0.8" }
-umbra-core = { path = "crates/umbra-core", version = "0.0.8" }
-umbra-testkit = { path = "crates/umbra-testkit", version = "0.0.8" }
+umbra-proto = { path = "crates/umbra-proto", version = "1.0.0-alpha" }
+umbra-crypto = { path = "crates/umbra-crypto", version = "1.0.0-alpha" }
+umbra-tls = { path = "crates/umbra-tls", version = "1.0.0-alpha" }
+umbra-fingerprint = { path = "crates/umbra-fingerprint", version = "1.0.0-alpha" }
+umbra-reality = { path = "crates/umbra-reality", version = "1.0.0-alpha" }
+umbra-inner = { path = "crates/umbra-inner", version = "1.0.0-alpha" }
+umbra-transport = { path = "crates/umbra-transport", version = "1.0.0-alpha" }
+umbra-core = { path = "crates/umbra-core", version = "1.0.0-alpha" }
+umbra-testkit = { path = "crates/umbra-testkit", version = "1.0.0-alpha" }
 
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
@@ -54,7 +54,8 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 ml-kem = "0.2.0"        # ML-KEM-768（FIPS 203），落地前确认版本/codepoint
 kem = "0.3.0-pre.0"    # ml-kem Encapsulate/Decapsulate traits
 ml-dsa = { version = "0.1.1", features = ["zeroize"] } # ML-DSA-65（FIPS 204）
-aes-gcm = "0.10"
+# 0.11 enables ARM AES/PMULL detection by default and propagates key/hash clearing.
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "alloc", "zeroize"] }
 chacha20poly1305 = "0.10"
 chacha20 = "0.9"
 hkdf = "0.12"
@@ -71,15 +72,15 @@ tls-parser = "0.11"
 x509-parser = "0.16"
 rcgen = "0.13"
 ring = "0.17"
-rustls = { version = "0.23.31", default-features = false, features = ["std", "ring"] }
+rustls = { version = "0.23.45", default-features = false, features = ["std", "ring"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 time = "0.3"
 webpki-roots = "1.0.8"
 
 # 外层传输（组件 G/H）
 socket2 = "0.5"
-quinn = "0.11"          # 或 quiche（BoringSSL 系，指纹更易定制）
-quinn-proto = "0.11"
+quinn = "0.11.12"          # 或 quiche（BoringSSL 系，指纹更易定制）
+quinn-proto = "0.11.18"
 
 # 配置 / CLI / 日志
 serde = { version = "1", features = ["derive"] }

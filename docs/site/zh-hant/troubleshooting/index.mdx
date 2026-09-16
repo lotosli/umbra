@@ -1,0 +1,36 @@
+---
+id: "troubleshooting"
+title: "故障排查"
+description: "定位設定、連線和傳輸問題。"
+section: "troubleshooting"
+order: 17
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md"]
+translation: "complete"
+---
+
+## 概覽
+
+排查先確認安裝版本、失敗階段和去除所有秘密的最小設定描述。先復現一個請求，再調整設定。需要區分應用繞過 SOCKS、用戶端到伺服器端失敗，以及伺服器端到回落目標或業務目標失敗；這些現象的檢查位置不同，不能只憑頁面打不開認定協議失敗。
+
+## 詳細說明
+
+伺服器端立即退出時，檢查 TOML 語法、必填項、監聽衝突和啟動目標探測。解析錯誤保留安全的類別和行列位置，不回顯秘密。用戶端認證失敗時，透過可信渠道核對公鑰、short ID 與 server_name。先同步兩端系統時鐘，再考慮 max_time_diff。檢查實際 TCP 公網埠；使用 QUIC 時還要檢查 UDP。
+
+### 驗證連線
+
+```sh
+umbra --help
+curl --socks5-hostname 127.0.0.1:1080 https://example.com/
+```
+
+
+## 驗證與邊界
+
+探測看到真實目標證書對未認證連線是正常現象。僅 UDP 失敗則核對 udp_transport、udp_listen、防火牆和目標真實 QUIC 服務。效能問題應使用固定負載和按需診斷，不要把邏輯記憶體、已接受寫入當成遠端交付指標。報告中提供脫敏命令、版本、平臺和錯誤類別，不附真實設定、私鑰、含使用者內容的抓包或實時基礎設施細節。
+
+## 下一步
+
+- [伺服器端設定](/zh-hant/docs/configuration/server/)
+- [用戶端設定](/zh-hant/docs/configuration/client/)
+- [效能與策略參考](/zh-hant/docs/reference/configuration/)

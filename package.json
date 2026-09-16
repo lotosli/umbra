@@ -1,0 +1,15 @@
+{
+  "name": "umbra-workspace",
+  "private": true,
+  "packageManager": "pnpm@9.11.0",
+  "engines": { "node": ">=24.18.1 <25" },
+  "scripts": {
+    "dev": "pnpm --filter @umbra/web dev",
+    "build": "pnpm --filter @umbra/web build",
+    "check": "pnpm --filter @umbra/web check",
+    "test": "pnpm --filter @umbra/web test",
+    "test:e2e": "pnpm --filter @umbra/web test:e2e",
+    "content": "pnpm --filter @umbra/web content",
+    "preview": "pnpm --filter @umbra/web preview"
+  }
+}

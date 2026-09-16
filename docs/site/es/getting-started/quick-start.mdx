@@ -1,0 +1,85 @@
+---
+id: "getting-started/quick-start"
+title: "Inicio rápido"
+description: "Genera una identidad y conecta tu primer cliente y servidor."
+section: "getting-started"
+order: 3
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Descripción general
+
+Prepara un servidor y un cliente con la misma versión. El cliente debe alcanzar la dirección del servidor y este debe alcanzar un destino real de respaldo. Los ejemplos contienen marcadores, no credenciales utilizables: sustituye cover.example por un sitio TLS 1.3 apropiado y accesible, y reemplaza los datos de identidad con tu propia salida de keygen.
+
+## Detalles
+
+Ejecuta umbra keygen en una terminal privada. Conserva x25519_private y mldsa_seed en el servidor; comparte x25519_public, mldsa_verify y un short_id con el cliente por un canal fiable. Crea server.toml y arranca el servidor. La comprobación inicial del destino debe funcionar. El server_name del cliente debe pertenecer a server_names y su short_id a short_ids.
+
+### Generar una identidad
+
+```sh
+umbra keygen
+```
+
+`umbra keygen` no genera `short_id`. Elige una cadena hexadecimal de longitud par, entre 0 y 16 caracteres (0–8 bytes), e indica el mismo valor en ambos extremos. Sustituye la dirección de documentación `198.51.100.10` por la dirección accesible de tu servidor y utiliza el puerto de su escucha.
+
+
+### Plantilla del servidor
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+### Iniciar el servidor
+
+```sh
+umbra server -c server.toml
+```
+
+
+### Plantilla del cliente
+
+```toml
+server = "198.51.100.10:443"
+transport = "tcp"
+public_key = "<X25519_PUBLIC_BASE64>"
+short_id = "<SHORT_ID_HEX>"
+server_name = "cover.example"
+fingerprint = "chrome-latest"
+mldsa_verify = "<MLDSA_VERIFY_BASE64>"
+socks_listen = "127.0.0.1:1080"
+```
+
+
+### Iniciar el cliente
+
+```sh
+umbra client -c client.toml
+```
+
+
+### Verificar la conexión
+
+```sh
+curl --socks5-hostname 127.0.0.1:1080 https://example.com/
+```
+
+
+## Verificación y límites
+
+Crea client.toml, inicia el cliente y configura una aplicación con SOCKS5 en 127.0.0.1:1080. SOCKS no autentica mediante contraseña, por lo que debe seguir siendo local. Una petición curl con --socks5-hostname verifica la ruta completa y transmite el nombre de destino por SOCKS. Detén los procesos con Ctrl-C. Cuando TCP funcione, puedes añadir QUIC UDP en la misma instancia.
+
+## Siguientes pasos
+
+- [Configurar un servidor](/es/docs/guides/server/)
+- [Conectar un cliente](/es/docs/guides/client/)
+- [Ejemplos de configuración](/es/docs/configuration/examples/)

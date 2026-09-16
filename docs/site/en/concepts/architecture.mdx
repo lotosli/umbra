@@ -1,0 +1,41 @@
+---
+id: "concepts/architecture"
+title: "Architecture"
+description: "How the Rust crates divide the connection lifecycle."
+section: "concepts"
+order: 11
+version: "1.0.0-alpha"
+source: ["README.md"]
+translation: "complete"
+---
+
+## Overview
+
+Umbra is a Cargo workspace with separate crates for wire types, cryptography, TLS, authentication, inner traffic and runtime orchestration. This separation lets parser tests, cryptographic vectors and connection lifecycle tests target their own responsibilities. The CLI combines those components into server, client and keygen commands; the website does not provide a remote management API for the runtime.
+
+## Details
+
+umbra-proto defines wire types and addresses. umbra-crypto centralizes key exchange, signatures, derivation, MAC and AEAD wrappers. umbra-fingerprint stores profiles and JA3/JA4 helpers. umbra-tls constructs and parses the TLS surface. umbra-reality handles authentication, replay protection and destination preparation. umbra-inner owns multiplexing, padding and Vision behavior; umbra-transport supplies TCP and QUIC paths.
+```text
+umbra CLI
+    ↓
+umbra-core
+    ↓
+umbra-reality · umbra-inner · umbra-transport
+    ↓
+umbra-tls
+    ↓
+umbra-crypto · umbra-fingerprint
+    ↓
+umbra-proto
+```
+
+## Verify
+
+umbra-core brings together configuration, dispatch, local SOCKS, target connections and resource ownership. Authenticated sessions enter the configured inner mode; unauthenticated traffic follows the real destination path. umbra-testkit supports loopback tests, while xtask runs engineering gates and release builds. The public architecture document also contains design goals: a component listed there is not evidence that every possible feature is implemented. Use the current guides and code-backed references for supported behavior.
+
+## Next steps
+
+- [Protocol reference](/en/docs/reference/protocol/)
+- [Security model](/en/docs/concepts/security-model/)
+- [Contributing](/en/docs/contributing/)

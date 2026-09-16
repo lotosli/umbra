@@ -1,0 +1,93 @@
+---
+id: "guides/client"
+title: "Connecter des applications et des clients de type Clash"
+description: "Reliez vos applications et clients à règles existants via SOCKS5 local, et choisissez séparément les transports TCP et UDP."
+section: "guides"
+order: 5
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Vue d’ensemble
+
+Le client Umbra fournit un point d’entrée SOCKS5 sur votre machine. Les applications ou votre client proxy existant lui confient leurs requêtes, puis Umbra se connecte au serveur Umbra distant. Votre client habituel peut continuer à gérer le routage par règles, l’interface et le proxy système ; Umbra n’est pas une interface TUN, et l’installation du binaire ne fait pas passer automatiquement les autres applications par le proxy.
+
+## 1. Configurer et démarrer Umbra
+
+Préparez d’abord le serveur en suivant le [guide du serveur](/fr/docs/guides/server/). Renseignez les éléments d’identité correspondants dans `client.toml` ; les valeurs ci-dessous sont des espaces réservés à remplacer, pas de véritables identifiants :
+
+```toml
+server = "198.51.100.10:443"
+transport = "tcp"
+public_key = "<X25519_PUBLIC_BASE64>"
+short_id = "<SHORT_ID_HEX>"
+server_name = "cover.example"
+fingerprint = "chrome-latest"
+mldsa_verify = "<MLDSA_VERIFY_BASE64>"
+socks_listen = "127.0.0.1:1080"
+```
+
+`server` est l’adresse de votre serveur Umbra ; `server_name` est le SNI du site réel, identique à celui configuré sur le serveur, et non un nom de domaine de camouflage choisi arbitrairement. Après vérification, lancez :
+
+```sh
+umbra client -c client.toml
+```
+
+Conservez l’écoute sur l’interface de bouclage. Le SOCKS5 local ne propose pas d’authentification par mot de passe : ne l’exposez pas directement à internet ni à un réseau local non fiable.
+
+## 2. Connecter directement une application compatible SOCKS5
+
+Dans les paramètres proxy de l’application, choisissez SOCKS5, saisissez l’adresse `127.0.0.1` et le port `1080`, sans nom d’utilisateur ni mot de passe. L’application doit s’exécuter sur le même appareil qu’Umbra ou dans le même espace de noms réseau permettant d’accéder à ce point d’entrée de bouclage.
+
+Pour vérifier une requête HTTPS, vous pouvez remplacer l’adresse ci-dessous par le site à tester :
+
+```sh
+curl --proxy socks5h://127.0.0.1:1080 https://example.com/
+```
+
+`socks5h` demande à curl de transmettre le nom de domaine cible au proxy, plutôt que de le résoudre d’abord localement. Le comportement DNS des autres applications dépend de leurs propres paramètres ; configurer SOCKS5 ne signifie pas que toutes les requêtes DNS de l’appareil passeront par le proxy.
+
+## 3. Conserver les règles avec un client de type Clash
+
+Ajoutez le nœud suivant à la liste `proxies` de la configuration de votre client existant, puis sélectionnez-le dans le groupe de proxys que vous utilisez. Ne remplacez pas la configuration complète :
+
+```yaml
+proxies:
+  - name: Umbra Local
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+    udp: true
+```
+
+Les règles restent exécutées par le client existant ; Umbra local assure la connexion distante. Veillez à ce que les règles ne renvoient pas l’adresse du serveur Umbra distant vers `Umbra Local`, ce qui pourrait créer une boucle de proxy. Les règles précises ainsi que les réglages DNS et TUN dépendent du client utilisé.
+
+Il s’agit ici d’un nœud SOCKS5 standard, pas d’une prise en charge native du protocole Umbra. Renommer un nœud ou un abonnement VLESS / VMess / Trojan ne le transforme pas en nœud Umbra ; les deux extrémités doivent disposer de programmes Umbra compatibles et d’éléments d’identité correspondants.
+
+## 4. Facultatif : Vision pour TCP, QUIC pour UDP
+
+Intégrez ces paramètres à votre `client.toml` existant :
+
+```toml
+transport = "tcp"
+udp_transport = "quic"
+mux = false
+```
+
+Activez `listen` et `udp_listen` sur le serveur, et autorisez les ports TCP et UDP correspondants dans le pare-feu. `udp: true` permet aux clients de type Clash d’envoyer des requêtes UDP, sans changer le transport des requêtes TCP. Le point de relais UDP est négocié par SOCKS ; il n’exige pas une écoute fixe sur le port UDP 1080.
+
+Si UDP est inaccessible, vérifiez d’abord les requêtes applicatives ordinaires avec TCP. Il n’y a pas de basculement automatique de QUIC vers TCP en cas d’échec ; consultez les [modes de transport](/fr/docs/concepts/transports/) pour choisir.
+
+## Vérification et dépannage
+
+1. Testez d’abord une application directement via SOCKS5, puis ajoutez le client à règles, afin de ne pas confondre un problème de règles avec un échec de transport.
+2. Comparez les clés publiques, les clés de vérification, le short ID, le SNI et l’adresse du serveur aux deux extrémités ; vérifiez l’heure système et le pare-feu.
+3. Testez TCP et UDP séparément ; l’ouverture réussie d’une page web ne prouve pas qu’UDP fonctionne.
+4. Ne modifiez qu’un paramètre de transport ou de performance à la fois ; lors d’une mise à niveau du mux adaptatif, mettez à jour les deux extrémités ensemble.
+
+## Pour continuer
+
+- [Paramètres de configuration du client](/fr/docs/configuration/client/)
+- [Exemples de configuration complets](/fr/docs/configuration/examples/)
+- [Dépannage des connexions](/fr/docs/troubleshooting/)

@@ -218,6 +218,9 @@ pub struct MuxSession<IO> {
     io: Option<IO>,
     role: MuxRole,
     settings: MuxSettings,
+    adaptive: Option<crate::flow::AdaptiveFlow>,
+    adaptive_control: Option<MuxFrame>,
+    memory_leases: Vec<crate::budget::BudgetLease>,
     next_stream_id: u32,
     last_peer_stream_id: u32,
     streams: HashMap<u32, StreamState>,
@@ -258,6 +261,9 @@ where
             io: Some(io),
             role,
             settings,
+            adaptive: None,
+            adaptive_control: None,
+            memory_leases: Vec::new(),
             next_stream_id: 1,
             last_peer_stream_id: 0,
             streams: HashMap::new(),
@@ -267,6 +273,74 @@ where
             events: VecDeque::new(),
             event_bytes: 0,
         })
+    }
+
+    /// Construct an adaptive session using receiver-owned shared commitments.
+    /// Both endpoints must support adaptive settings; legacy constructors stay fixed.
+    pub fn adaptive(
+        io: IO,
+        role: MuxRole,
+        pad: &PadScheme,
+        limits: umbra_proto::flow::FlowSettings,
+        lease: crate::budget::BudgetLease,
+    ) -> Result<Self, InnerError> {
+        let mut session = Self::with_settings(io, role, pad, MuxSettings::default())?;
+        let mut flow = crate::flow::AdaptiveFlow::new(limits, lease)?;
+        let settings = flow
+            .next_control()?
+            .ok_or_else(|| invalid("adaptive settings missing"))?;
+        let covers = session.padding.clone().schedule(settings.clone())?;
+        let mut batch = settings.encode()?;
+        let mut extra = 0;
+        for frame in covers
+            .iter()
+            .filter(|frame| frame.command == MuxCommand::Padding)
+        {
+            batch.extend_from_slice(&frame.encode()?);
+            extra += 1;
+        }
+        session.writer.bytes = batch.len();
+        session.writer.setup_extra_frames = extra;
+        session.writer.frames.push_back(batch);
+        session.adaptive = Some(flow);
+        Ok(session)
+    }
+
+    /// Adaptive window and transfer counters, absent for a legacy connection.
+    #[must_use]
+    pub fn flow_snapshot(&self) -> Option<crate::flow::FlowSnapshot> {
+        self.adaptive
+            .as_ref()
+            .map(crate::flow::AdaptiveFlow::snapshot)
+    }
+
+    /// Bytes held by serialized output, including the current partially written frame.
+    pub fn pending_output_bytes(&self) -> usize {
+        self.writer.bytes
+    }
+
+    /// Funded aggregate receive capacity for the connection's event driver.
+    #[must_use]
+    pub fn receive_capacity(&self) -> usize {
+        self.flow_snapshot()
+            .map_or(MAX_RECEIVE_BUFFER_BYTES, |flow| {
+                flow.receive_window as usize
+            })
+    }
+
+    /// Keep separate transport storage alive with retained logical-stream data.
+    pub fn retain_lease(&mut self, lease: crate::budget::BudgetLease) {
+        self.memory_leases.push(lease);
+    }
+
+    /// Clone reservation ownership without duplicating its accounted commitment.
+    #[must_use]
+    pub fn memory_leases(&self) -> Vec<crate::budget::BudgetLease> {
+        let mut leases = self.memory_leases.clone();
+        if let Some(flow) = &self.adaptive {
+            leases.push(flow.lease());
+        }
+        leases
     }
 
     /// Return this session role.
@@ -284,6 +358,9 @@ where
     /// Maximum streams allowed by both the stream count and reserved receive budget.
     #[must_use]
     pub fn stream_capacity(&self) -> usize {
+        if self.adaptive.is_some() {
+            return MAX_STREAMS;
+        }
         MAX_RECEIVE_BUFFER_BYTES
             .checked_div(self.settings.initial_window)
             .map_or(MAX_STREAMS, |limit| MAX_STREAMS.min(limit))
@@ -313,6 +390,9 @@ where
         )?;
         let stream = state.stream.clone();
         self.streams.insert(stream_id, state);
+        if let Some(flow) = &mut self.adaptive {
+            flow.register(stream_id);
+        }
         self.next_stream_id = next_id;
         Ok(stream)
     }
@@ -396,7 +476,9 @@ where
             return Err(InnerError::StreamClosed);
         }
         Ok(if state.phase == StreamPhase::Established {
-            state.stream.send_window
+            self.adaptive
+                .as_ref()
+                .map_or(state.stream.send_window, |flow| flow.send_credit(stream_id))
         } else {
             0
         })
@@ -416,14 +498,18 @@ where
         if allowed == 0 {
             return Ok(0);
         }
-        let frame = MuxFrame::new(MuxCommand::Data, stream_id, data[..allowed].to_vec())?;
-        match self.queue_frame(frame, true) {
+        let frame = MuxFrame::new(MuxCommand::Data, stream_id, Vec::new())?;
+        match self.queue_frame_payload(frame, true, Some(&data[..allowed])) {
             Err(InnerError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
                 return Ok(0)
             }
             result => result?,
         }
-        self.state_mut(stream_id)?.stream.send_window -= allowed;
+        if let Some(flow) = &mut self.adaptive {
+            flow.sent(stream_id, allowed)?;
+        } else {
+            self.state_mut(stream_id)?.stream.send_window -= allowed;
+        }
         Ok(allowed)
     }
 
@@ -473,7 +559,46 @@ where
         stream_id: u32,
         increment: u32,
     ) -> Result<(), InnerError> {
+        self.acknowledge_consumption(stream_id, increment, true)
+            .map(|_| ())
+    }
+
+    /// Record application consumption, coalescing adaptive wire updates while
+    /// preserving immediate low-credit and FIN settlement. Returns whether
+    /// control output was queued. Explicit `queue_window_update` stays immediate.
+    pub fn queue_consumed_data(
+        &mut self,
+        stream_id: u32,
+        increment: u32,
+    ) -> Result<bool, InnerError> {
+        self.acknowledge_consumption(stream_id, increment, false)
+    }
+
+    fn acknowledge_consumption(
+        &mut self,
+        stream_id: u32,
+        increment: u32,
+        force: bool,
+    ) -> Result<bool, InnerError> {
         let amount = usize::try_from(increment).map_err(|_| InnerError::WindowOverflow)?;
+        if self.adaptive.is_some() {
+            if amount == 0 || amount > self.state(stream_id)?.delivered_unacked {
+                return Err(InnerError::WindowOverflow);
+            }
+            let queued = if let Some(flow) = &mut self.adaptive {
+                if force {
+                    flow.consume(stream_id, amount)?;
+                    true
+                } else {
+                    flow.consume_coalesced(stream_id, amount)?
+                }
+            } else {
+                false
+            };
+            self.state_mut(stream_id)?.delivered_unacked -= amount;
+            self.reclaim_closed(stream_id);
+            return Ok(queued);
+        }
         let state = self.state(stream_id)?;
         let window = state
             .receive_window
@@ -492,7 +617,7 @@ where
         state.delivered_unacked -= amount;
         state.receive_window = window;
         self.reclaim_closed(stream_id);
-        Ok(())
+        Ok(true)
     }
 
     /// Acknowledge application consumption and flush the owned WINDOW_UPDATE.
@@ -536,6 +661,9 @@ where
         self.state(stream_id)?;
         self.queue_control(MuxCommand::Rst, stream_id, Vec::new())?;
         self.streams.remove(&stream_id);
+        if let Some(flow) = &mut self.adaptive {
+            flow.retire(stream_id)?;
+        }
         Ok(())
     }
 
@@ -552,12 +680,22 @@ where
         target: &TargetAddr,
         payload: &[u8],
     ) -> Result<(), InnerError> {
+        self.queue_udp_datagram(target, payload)?;
+        self.flush_pending().await
+    }
+
+    /// Queue one stream-zero datagram without suspending input/control progress.
+    /// Successful admission must not be repeated after cancellation of a later flush.
+    pub fn queue_udp_datagram(
+        &mut self,
+        target: &TargetAddr,
+        payload: &[u8],
+    ) -> Result<(), InnerError> {
         let envelope = UdpEnvelope::new(target.clone(), payload.to_vec())?;
         self.queue_frame(
             MuxFrame::new(MuxCommand::UdpDatagram, 0, envelope.encode()?)?,
             true,
-        )?;
-        self.flush_pending().await
+        )
     }
 
     /// Receive the next event exactly once, draining retained events first.
@@ -597,6 +735,15 @@ where
     }
 
     fn queue_frame(&mut self, frame: MuxFrame, business: bool) -> Result<(), InnerError> {
+        self.queue_frame_payload(frame, business, None)
+    }
+
+    fn queue_frame_payload(
+        &mut self,
+        frame: MuxFrame,
+        business: bool,
+        data: Option<&[u8]>,
+    ) -> Result<(), InnerError> {
         self.ensure_alive()?;
         // Roll back the padding schedule too when queue admission fails.
         let mut padding = self.padding.clone();
@@ -607,11 +754,18 @@ where
         };
         let encoded: Vec<Vec<u8>> = frames
             .iter()
-            .map(MuxFrame::encode)
+            .map(|frame| match data {
+                Some(data) if frame.command == MuxCommand::Data => {
+                    MuxFrame::encode_payload(frame.command, frame.stream_id, data)
+                }
+                _ => frame.encode(),
+            })
             .collect::<Result<_, _>>()?;
         let bytes: usize = encoded.iter().map(Vec::len).sum();
-        if self.writer.frames.len() + encoded.len() > MAX_PENDING_WRITE_FRAMES
-            || self.writer.bytes + bytes > MAX_PENDING_WRITE_BYTES
+        let reserve = usize::from(business && self.adaptive.is_some());
+        if self.writer.frames.len() + self.writer.setup_extra_frames + encoded.len()
+            > MAX_PENDING_WRITE_FRAMES - 8 * reserve
+            || self.writer.bytes + bytes > MAX_PENDING_WRITE_BYTES - 1024 * reserve
         {
             return Err(would_block());
         }
@@ -630,11 +784,37 @@ where
         self.queue_frame(MuxFrame::new(command, stream_id, payload)?, false)
     }
 
+    fn queue_adaptive_controls(&mut self) -> Result<(), InnerError> {
+        loop {
+            if self.adaptive_control.is_none() {
+                self.adaptive_control = match self.adaptive.as_mut() {
+                    Some(flow) => flow.next_control()?,
+                    None => None,
+                };
+            }
+            let Some(frame) = &self.adaptive_control else {
+                return Ok(());
+            };
+            let bytes = frame.payload.len() + 8;
+            if self.writer.frames.len() + self.writer.setup_extra_frames == MAX_PENDING_WRITE_FRAMES
+                || self.writer.bytes + bytes > MAX_PENDING_WRITE_BYTES
+            {
+                return Ok(());
+            }
+            self.writer.frames.push_back(frame.encode()?);
+            self.writer.bytes += bytes;
+            self.adaptive_control = None;
+        }
+    }
+
     async fn receive_wire_event(&mut self) -> Result<MuxEvent, InnerError> {
         poll_fn(|cx| self.poll_wire_event(cx)).await
     }
 
     fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), InnerError>> {
+        if let Err(error) = self.queue_adaptive_controls() {
+            return Poll::Ready(Err(self.terminate(error)));
+        }
         let Some(io) = self.io.as_mut() else {
             return Poll::Ready(Err(InnerError::StreamClosed));
         };
@@ -649,6 +829,9 @@ where
             return Poll::Ready(Err(error));
         }
         loop {
+            if let Poll::Ready(Err(error)) = self.poll_flush(cx) {
+                return Poll::Ready(Err(error));
+            }
             let Some(io) = self.io.as_mut() else {
                 return Poll::Ready(Err(InnerError::StreamClosed));
             };
@@ -683,6 +866,13 @@ where
     }
 
     fn apply_frame(&mut self, frame: MuxFrame) -> Result<Option<MuxEvent>, InnerError> {
+        if self.adaptive.as_ref().is_some_and(|flow| !flow.is_ready())
+            && frame.command != MuxCommand::Settings
+        {
+            return Err(invalid(
+                "adaptive peer settings must precede stream traffic",
+            ));
+        }
         let stream_id = frame.stream_id;
         let event = match frame.command {
             MuxCommand::Syn => self.apply_syn(stream_id, &frame.payload)?,
@@ -701,46 +891,29 @@ where
                 if frame.payload.len() > MAX_DATA_CHUNK_LEN {
                     return Err(ProtocolError::LengthViolation.into());
                 }
+                let _ = self.peer_state(stream_id)?;
+                if let Some(flow) = &mut self.adaptive {
+                    flow.received(stream_id, frame.payload.len())?;
+                }
+                let adaptive = self.adaptive.is_some();
                 let Some(state) = self.peer_state(stream_id)? else {
                     return Ok(None);
                 };
                 if state.phase != StreamPhase::Established || state.stream.receive_closed {
                     return Err(invalid("DATA on unopened or finished direction"));
                 }
-                state.receive_window = state
-                    .receive_window
-                    .checked_sub(frame.payload.len())
-                    .ok_or(InnerError::WindowOverflow)?;
+                if !adaptive {
+                    state.receive_window = state
+                        .receive_window
+                        .checked_sub(frame.payload.len())
+                        .ok_or(InnerError::WindowOverflow)?;
+                }
                 MuxEvent::Data {
                     stream_id,
                     payload: frame.payload,
                 }
             }
-            MuxCommand::WindowUpdate => {
-                let increment = parse_window_update(&frame.payload)?;
-                let maximum = self.settings.initial_window;
-                let Some(state) = self.peer_state(stream_id)? else {
-                    return Ok(None);
-                };
-                if state.phase != StreamPhase::Established {
-                    return Err(invalid("WINDOW_UPDATE before establishment"));
-                }
-                let amount = usize::try_from(increment).map_err(|_| InnerError::WindowOverflow)?;
-                let window = state
-                    .stream
-                    .send_window
-                    .checked_add(amount)
-                    .ok_or(InnerError::WindowOverflow)?;
-                if window > maximum {
-                    return Err(InnerError::WindowOverflow);
-                }
-                state.stream.send_window = window;
-                self.reclaim_closed(stream_id);
-                MuxEvent::WindowUpdate {
-                    stream_id,
-                    increment,
-                }
-            }
+            MuxCommand::WindowUpdate => return self.apply_window_update(stream_id, &frame.payload),
             MuxCommand::Fin => {
                 require_empty(&frame.payload)?;
                 let Some(state) = self.peer_state(stream_id)? else {
@@ -750,6 +923,9 @@ where
                     return Err(invalid("unexpected FIN"));
                 }
                 state.stream.receive_closed = true;
+                if let Some(flow) = &mut self.adaptive {
+                    flow.finish_received(stream_id)?;
+                }
                 self.reclaim_closed(stream_id);
                 MuxEvent::Fin { stream_id }
             }
@@ -759,6 +935,9 @@ where
                     return Ok(None);
                 }
                 self.streams.remove(&stream_id);
+                if let Some(flow) = &mut self.adaptive {
+                    flow.retire(stream_id)?;
+                }
                 MuxEvent::Rst { stream_id }
             }
             MuxCommand::Ping => MuxEvent::Ping {
@@ -775,9 +954,86 @@ where
                     payload: envelope.payload,
                 }
             }
+            MuxCommand::Settings
+            | MuxCommand::Credit
+            | MuxCommand::Probe
+            | MuxCommand::ProbeAck => {
+                return self.apply_adaptive(&frame);
+            }
             MuxCommand::Padding => return Err(invalid("padding is not an event")),
         };
         Ok(Some(event))
+    }
+
+    fn apply_window_update(
+        &mut self,
+        stream_id: u32,
+        payload: &[u8],
+    ) -> Result<Option<MuxEvent>, InnerError> {
+        if self.adaptive.is_some() {
+            return Err(invalid("legacy update in adaptive mux"));
+        }
+        let increment = parse_window_update(payload)?;
+        let maximum = self.settings.initial_window;
+        let Some(state) = self.peer_state(stream_id)? else {
+            return Ok(None);
+        };
+        if state.phase != StreamPhase::Established {
+            return Err(invalid("WINDOW_UPDATE before establishment"));
+        }
+        let amount = usize::try_from(increment).map_err(|_| InnerError::WindowOverflow)?;
+        let window = state
+            .stream
+            .send_window
+            .checked_add(amount)
+            .ok_or(InnerError::WindowOverflow)?;
+        if window > maximum {
+            return Err(InnerError::WindowOverflow);
+        }
+        state.stream.send_window = window;
+        self.reclaim_closed(stream_id);
+        Ok(Some(MuxEvent::WindowUpdate {
+            stream_id,
+            increment,
+        }))
+    }
+
+    fn apply_adaptive(&mut self, frame: &MuxFrame) -> Result<Option<MuxEvent>, InnerError> {
+        let stream_id = frame.stream_id;
+        let was_live = self.streams.contains_key(&stream_id);
+
+        if frame.command == MuxCommand::Credit && stream_id != 0 {
+            let _ = self.peer_state(stream_id)?;
+        }
+        let flow = self
+            .adaptive
+            .as_mut()
+            .ok_or_else(|| invalid("adaptive command on legacy mux"))?;
+        let before = if stream_id == 0 {
+            flow.connection_credit()
+        } else {
+            flow.send_credit(stream_id)
+        };
+        flow.handle(frame)?;
+        let after = if stream_id == 0 {
+            flow.connection_credit()
+        } else {
+            flow.send_credit(stream_id)
+        };
+        if stream_id != 0 {
+            self.reclaim_closed(stream_id);
+        }
+        // Consumption-only updates can reclaim a fully closed stream even when
+        // its available credit was already positive. Drivers must see that event.
+        if frame.command == MuxCommand::Credit
+            && ((was_live && !self.streams.contains_key(&stream_id)) || (before == 0 && after > 0))
+        {
+            return Ok(Some(MuxEvent::WindowUpdate {
+                stream_id,
+                increment: 0,
+            }));
+        }
+        Ok(None)
     }
 
     fn apply_syn(&mut self, stream_id: u32, payload: &[u8]) -> Result<MuxEvent, InnerError> {
@@ -798,6 +1054,9 @@ where
                 StreamPhase::Accepting,
             ),
         );
+        if let Some(flow) = &mut self.adaptive {
+            flow.register(stream_id);
+        }
         self.last_peer_stream_id = stream_id;
         Ok(MuxEvent::Syn { stream_id, target })
     }
@@ -835,7 +1094,11 @@ where
     }
 
     fn snapshot(&self, stream_id: u32) -> Result<MuxStream, InnerError> {
-        Ok(self.state(stream_id)?.stream.clone())
+        let mut stream = self.state(stream_id)?.stream.clone();
+        if let Some(flow) = &self.adaptive {
+            stream.send_window = flow.send_credit(stream_id);
+        }
+        Ok(stream)
     }
 
     fn refresh_handle(&self, stream: &mut MuxStream) -> Result<(), InnerError> {
@@ -856,10 +1119,17 @@ where
         if self.streams.get(&stream_id).is_some_and(|state| {
             state.stream.send_closed
                 && state.stream.receive_closed
-                && state.receive_window == self.settings.initial_window
-                && state.stream.send_window == self.settings.initial_window
+                && self.adaptive.as_ref().map_or(
+                    state.receive_window == self.settings.initial_window
+                        && state.stream.send_window == self.settings.initial_window,
+                    |flow| flow.settled(stream_id),
+                )
         }) {
             self.streams.remove(&stream_id);
+            if let Some(flow) = &mut self.adaptive {
+                // A settled stream has no unconsumed receive bytes to return.
+                let _ = flow.retire(stream_id);
+            }
         }
     }
 
@@ -873,6 +1143,8 @@ where
 
     fn terminate(&mut self, error: InnerError) -> InnerError {
         self.io.take();
+        self.adaptive.take();
+        self.adaptive_control.take();
         self.streams.clear();
         self.events.clear();
         self.event_bytes = 0;
@@ -918,7 +1190,8 @@ impl FrameReader {
             if self.offset == self.bytes.len() {
                 let frame =
                     MuxFrame::decode(&self.bytes, max_payload_len).map_err(InnerError::from);
-                *self = Self::new();
+                self.bytes.truncate(8);
+                self.offset = 0;
                 return Poll::Ready(frame);
             }
             let mut buf = ReadBuf::new(&mut self.bytes[self.offset..]);
@@ -935,6 +1208,7 @@ impl FrameReader {
 #[derive(Default)]
 struct FrameWriter {
     frames: VecDeque<Vec<u8>>,
+    setup_extra_frames: usize,
     offset: usize,
     bytes: usize,
     needs_flush: bool,
@@ -956,6 +1230,7 @@ impl FrameWriter {
             if self.offset == frame.len() {
                 self.bytes -= frame.len();
                 self.frames.pop_front();
+                self.setup_extra_frames = 0;
                 self.offset = 0;
             }
         }

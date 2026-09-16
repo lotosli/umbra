@@ -1,0 +1,85 @@
+---
+id: "getting-started/quick-start"
+title: "快速开始"
+description: "生成身份材料，连接第一组客户端与服务端。"
+section: "getting-started"
+order: 3
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## 概览
+
+先准备一台服务端、一台客户端，并使用相同版本的 Umbra。客户端必须能访问服务端地址，服务端必须能访问真实回落目标。下方示例只有占位值，不能直接投入使用：把 cover.example 换成合适且可达的真实 TLS 1.3 站点，并用自己的 keygen 输出替换所有身份占位值。
+
+## 详细说明
+
+在私密终端运行 umbra keygen。x25519_private 与 mldsa_seed 只保留在服务端；通过可信方式向客户端分发 x25519_public、mldsa_verify 和选中的 short_id。创建 server.toml 并先启动服务端，确认启动探测成功。客户端 server_name 必须属于服务端 server_names，short_id 必须匹配一个 short_ids 条目。
+
+### 生成身份材料
+
+```sh
+umbra keygen
+```
+
+`umbra keygen` 不生成 `short_id`。请自行选择一个0–16个字符、长度为偶数的十六进制字符串（0–8字节），并在两端使用相同值。把文档地址 `198.51.100.10` 替换为客户端可达的实际服务端地址，端口与服务端监听一致。
+
+
+### 服务端模板
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+### 启动服务端
+
+```sh
+umbra server -c server.toml
+```
+
+
+### 客户端模板
+
+```toml
+server = "198.51.100.10:443"
+transport = "tcp"
+public_key = "<X25519_PUBLIC_BASE64>"
+short_id = "<SHORT_ID_HEX>"
+server_name = "cover.example"
+fingerprint = "chrome-latest"
+mldsa_verify = "<MLDSA_VERIFY_BASE64>"
+socks_listen = "127.0.0.1:1080"
+```
+
+
+### 启动客户端
+
+```sh
+umbra client -c client.toml
+```
+
+
+### 验证连接
+
+```sh
+curl --socks5-hostname 127.0.0.1:1080 https://example.com/
+```
+
+
+## 验证与边界
+
+创建 client.toml 并启动客户端，然后把应用代理设为 SOCKS5 127.0.0.1:1080。本地 SOCKS 协商不提供用户名密码认证，因此应保持回环绑定。使用 curl 的 --socks5-hostname 选项可检查完整链路，并通过 SOCKS 传递目标主机名。前台进程用 Ctrl-C 结束。先确认 TCP 能用，再按配置示例为同一实例增加 QUIC UDP。
+
+## 下一步
+
+- [配置服务端](/zh-hans/docs/guides/server/)
+- [连接客户端](/zh-hans/docs/guides/client/)
+- [配置示例](/zh-hans/docs/configuration/examples/)

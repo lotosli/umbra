@@ -1,0 +1,8 @@
+{
+  "title": "Configuration",
+  "pages": [
+    "server",
+    "client",
+    "examples"
+  ]
+}

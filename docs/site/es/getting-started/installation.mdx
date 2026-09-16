@@ -1,0 +1,49 @@
+---
+id: "getting-started/installation"
+title: "Instalación"
+description: "Elige una versión para tu plataforma o compila el binario Rust."
+section: "getting-started"
+order: 2
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", ".github/workflows/dist.yml"]
+translation: "complete"
+---
+
+## Descripción general
+
+El flujo de publicación contempla macOS, Linux y Windows. Elige la arquitectura de la máquina que ejecutará Umbra. La tabla identifica destinos de compilación; comprueba los archivos adjuntos de la versión de GitHub seleccionada para saber qué existe realmente. Un destino no garantiza que todas las versiones preliminares incluyan ese archivo, y esta página no inventa firmas ni sumas de comprobación.
+
+## Detalles
+
+Descarga desde la página de versiones del proyecto. En macOS o Linux, concede permiso de ejecución al archivo concreto y colócalo en un directorio de PATH, renombrándolo como umbra si lo deseas. En Windows utiliza el archivo .exe desde una terminal. Lee las notas y comprueba las sumas de verificación cuando esa publicación las proporcione.
+
+### Descargas de versiones
+
+[Descargas de versiones](https://github.com/lotosli/umbra/releases)
+
+| Plataforma | Arquitectura | Destino de compilación |
+|---|---|---|
+| macOS | Apple Silicon | `umbra-aarch64-apple-darwin` |
+| macOS | Intel | `umbra-x86_64-apple-darwin` |
+| Linux | x86_64 | `umbra-x86_64-unknown-linux-gnu` |
+| Linux | aarch64 | `umbra-aarch64-unknown-linux-gnu` |
+| Windows | x86_64 | `umbra-x86_64-pc-windows-msvc.exe` |
+
+### Compilar las fuentes
+
+```sh
+git clone https://github.com/lotosli/umbra.git
+cd umbra
+cargo build --release
+./target/release/umbra --help
+```
+
+
+## Verificación y límites
+
+Para compilar, utiliza Rust 1.96.1, fijado por el repositorio. Clona el repositorio público y ejecuta cargo build --release; encontrarás el programa en target/release. Comprueba que umbra --help muestre server, client y keygen. Ambos roles usan el mismo binario. Instalarlo no arranca un servicio ni crea escuchas automáticamente; continúa generando tu propia identidad con el inicio rápido.
+
+## Siguientes pasos
+
+- [Inicio rápido](/es/docs/getting-started/quick-start/)
+- [Contribuir](/es/docs/contributing/)

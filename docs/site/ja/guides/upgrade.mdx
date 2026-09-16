@@ -1,0 +1,37 @@
+---
+id: "guides/upgrade"
+title: "Umbra の更新"
+description: "両端の互換性を考慮して alpha 版を更新します。"
+section: "guides"
+order: 7
+version: "1.0.0-alpha"
+source: ["docs/performance.md", "README.md"]
+translation: "complete"
+---
+
+## 概要
+
+現在のソースは 1.0.0-alpha です。置き換える前にリリース説明を読み、両端の版を記録し、設定を保護してバックアップし、動作済みのバイナリを保存します。ワイヤー形式が変わる場合は両端を組として更新します。サイトに新版が表示されても、遠隔ホストが更新済みだとは限りません。
+
+## 詳細
+
+0.0.8 は X25519MLKEM768 の共有値と共有秘密の順序を修正しました。以前の逆順形式は未対応なので両端の更新が必要です。alpha には再利用可能な高速 TLS 暗号コンテキスト、準備済みストリーム単位の mux スケジューリング、QUIC バッチ受信などが含まれます。新クライアントは adaptive_mux=true が既定で、対応サーバーを必要とします。false は旧 mux の明示選択であり、業務データを自動再送する機能ではありません。
+
+### 任意の性能設定
+
+```toml
+[performance]
+adaptive_mux = true
+quic_congestion = "bbr"
+```
+
+
+## 確認と制約
+
+リリースが鍵の交換を要求しなければ、識別鍵、short ID、SNI は維持できます。mux=false は Vision を維持し、udp_transport も独立しています。更新後は TCP、設定済みの UDP、終了と再起動を確認します。性能比較は同等の経路と負荷で行います。Quinn BBR は Linux TCP の輻輳制御とは独立しており、速度向上を保証しません。
+
+## 次のステップ
+
+- [トランスポートと通信モード](/ja/docs/concepts/transports/)
+- [性能とポリシー](/ja/docs/reference/configuration/)
+- [トラブルシューティング](/ja/docs/troubleshooting/)

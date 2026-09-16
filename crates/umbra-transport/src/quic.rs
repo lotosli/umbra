@@ -648,13 +648,68 @@ pub async fn write_udp_envelope_stream<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let envelope = UdpEnvelope::new(target.clone(), payload.to_vec())?.encode()?;
-    let len = u16::try_from(envelope.len())
-        .map_err(|_| TransportError::Protocol(umbra_proto::ProtocolError::LengthViolation))?;
-    writer.write_all(&len.to_be_bytes()).await?;
-    writer.write_all(&envelope).await?;
-    writer.flush().await?;
-    Ok(())
+    let mut pending = UdpEnvelopeWriter::default();
+    pending.queue(target, payload)?;
+    pending.flush_pending(writer).await
+}
+
+/// Reusable length-delimited UDP output with cancellation-safe partial writes.
+#[derive(Debug, Default)]
+pub struct UdpEnvelopeWriter {
+    bytes: Vec<u8>,
+    offset: usize,
+    queued: bool,
+}
+
+impl UdpEnvelopeWriter {
+    /// Whether the prior envelope and its flush barrier have completed.
+    #[must_use]
+    pub const fn is_idle(&self) -> bool {
+        !self.queued
+    }
+
+    /// Queue borrowed target/payload bytes exactly once in their final wire buffer.
+    /// A busy writer refuses admission without altering its pending prefix.
+    pub fn queue(&mut self, target: &TargetAddr, payload: &[u8]) -> Result<(), TransportError> {
+        if self.queued {
+            return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock).into());
+        }
+        let address = target.encode()?;
+        let length = address
+            .len()
+            .checked_add(payload.len())
+            .and_then(|n| u16::try_from(n).ok())
+            .ok_or(umbra_proto::ProtocolError::LengthViolation)?;
+        self.bytes.clear();
+        self.bytes.reserve(usize::from(length) + 2);
+        self.bytes.extend_from_slice(&length.to_be_bytes());
+        self.bytes.extend_from_slice(&address);
+        self.bytes.extend_from_slice(payload);
+        self.offset = 0;
+        self.queued = true;
+        Ok(())
+    }
+
+    /// Resume the exact pending suffix; cancellation never repeats a header or payload.
+    pub async fn flush_pending<W: AsyncWrite + Unpin>(
+        &mut self,
+        writer: &mut W,
+    ) -> Result<(), TransportError> {
+        while self.offset < self.bytes.len() {
+            let written = writer.write(&self.bytes[self.offset..]).await?;
+            if written == 0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
+            }
+            self.offset += written;
+        }
+        if self.queued {
+            writer.flush().await?;
+            self.bytes.clear();
+            self.offset = 0;
+            self.queued = false;
+        }
+        Ok(())
+    }
 }
 
 /// Persistent framing state for cancellation-safe UDP envelope reads.
@@ -1446,6 +1501,53 @@ fn take<'a>(input: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8],
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn udp_writer_retains_partial_prefix_and_reuses_final_buffer() {
+        let target = TargetAddr::Ipv4(std::net::Ipv4Addr::LOCALHOST, 53);
+        let payload = vec![0xa5; 64];
+        let body = UdpEnvelope::new(target.clone(), payload.clone())
+            .unwrap()
+            .encode()
+            .unwrap();
+        let mut expected = u16::try_from(body.len()).unwrap().to_be_bytes().to_vec();
+        expected.extend_from_slice(&body);
+        let mut pending = UdpEnvelopeWriter::default();
+        pending.queue(&target, &payload).unwrap();
+        let capacity = pending.bytes.capacity();
+        assert!(
+            matches!(pending.queue(&target, b"duplicate"), Err(TransportError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+        let (mut writer, mut reader) = tokio::io::duplex(8);
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(1),
+            pending.flush_pending(&mut writer)
+        )
+        .await
+        .is_err());
+        assert_eq!(pending.offset, 8);
+        let mut observed = vec![0; expected.len()];
+        let (written, read) = tokio::join!(
+            pending.flush_pending(&mut writer),
+            reader.read_exact(&mut observed)
+        );
+        written.unwrap();
+        read.unwrap();
+        assert_eq!(observed, expected);
+        assert!(pending.is_idle());
+        assert_eq!(pending.bytes.capacity(), capacity);
+        pending.queue(&target, &[]).unwrap();
+        let mut next = Vec::new();
+        pending.flush_pending(&mut next).await.unwrap();
+        assert_eq!(
+            UdpEnvelope::decode(&next[2..]).unwrap(),
+            UdpEnvelope::new(target.clone(), Vec::new()).unwrap()
+        );
+        assert_eq!(pending.bytes.capacity(), capacity);
+        assert!(pending.queue(&target, &vec![0; 65_535]).is_err());
+        assert!(pending.is_idle());
+        pending.flush_pending(&mut next).await.unwrap();
+    }
     use umbra_crypto::x25519;
     use umbra_fingerprint::load_profile;
     use umbra_tls::clienthello::{

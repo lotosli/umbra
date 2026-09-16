@@ -1,0 +1,36 @@
+---
+id: "contributing"
+title: "参与贡献"
+description: "通过规格、评审和有效测试参与项目。"
+section: "contributing"
+order: 18
+version: "1.0.0-alpha"
+source: ["CONTRIBUTING.md", "README.md", "LICENSE"]
+translation: "complete"
+---
+
+## 概览
+
+Umbra 使用规格驱动开发。实现能力前，先提出 OpenSpec 变更并完成人工需求评审与批准，再按任务清单实现，并为场景建立测试。Rust 代码、公共 API 和协议行为仍受根目录 AGENTS.md 与贡献规则约束。文档修改也应核对事实来源，避免把规划写成既成能力。
+
+## 详细说明
+
+按改动范围运行格式化、严格 lint、测试、依赖检查与覆盖率闸门。行覆盖率必须保持至少 90%，不能降低阈值或用无实质断言的测试凑数。网络解析需要边界和错误路径测试；密码学与指纹改动需要相应向量和真实采样依据。依赖集中在 workspace catalog，并保持 crate 单向依赖。
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
+cargo deny check
+cargo xtask coverage
+npx --yes @fission-ai/openspec@latest validate --all --strict
+```
+
+## 验证与边界
+
+网站文档保持稳定 ID、当前公开来源与完整七语翻译。不要提交真实密钥、私有基础设施地址或未公开漏洞详情。AI 辅助贡献必须由承担责任的人类理解、审查和测试；大段生成内容在 PR 或提交 trailer 中披露。采用 Conventional Commits 并遵循仓库分支与评审规则。项目使用 MIT 许可证，新增包前仍需检查依赖许可证兼容性。
+
+## 下一步
+
+- [架构](/zh-hans/docs/concepts/architecture/)
+- [协议参考](/zh-hans/docs/reference/protocol/)
+- [认识 Umbra](/zh-hans/docs/getting-started/introduction/)

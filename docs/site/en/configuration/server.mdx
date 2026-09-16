@@ -1,0 +1,55 @@
+---
+id: "configuration/server"
+title: "Server configuration"
+description: "Required fields, optional defaults and server validation rules."
+section: "configuration"
+order: 8
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Overview
+
+Server configuration is TOML. Required values must be present after merging command-line overrides with the file. Unknown fields and invalid types are rejected. Socket listeners use numeric IP:port forms, including bracketed IPv6 where applicable; dest is a host:port endpoint. The following table covers top-level server fields. The optional performance table is documented separately.
+
+## Details
+
+private_key and mldsa_seed decode from base64 to exactly 32 bytes. Do not use the literal placeholder strings in a real deployment. short_ids must contain at least one entry; each entry is an even-length hexadecimal string encoding zero through eight bytes. An empty short ID is permitted by the parser. max_time_diff supports ms, s, m and h, or a bare number of seconds, and must represent at least one second.
+
+### Server template
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+| Field | Default / requirement | Meaning |
+|---|---|---|
+| `listen` | Required | TCP socket bind address |
+| `udp_listen` | `—` | Optional QUIC UDP socket; omit to disable |
+| `private_key` | Required | X25519 private key, base64, exactly 32 bytes |
+| `short_ids` | Required | Nonempty list of hex IDs, each 0–8 bytes |
+| `dest` | Required | Real fallback destination, host:port |
+| `server_names` | Required | Nonempty accepted SNI list |
+| `max_time_diff` | Required | Allowed timestamp skew, at least 1 second |
+| `mldsa_seed` | Required | ML-DSA signing seed, base64, exactly 32 bytes |
+| `prebuild` | `true` | Periodic destination refresh; startup probe always runs |
+| `padding_scheme` | `"default"` | Inner padding policy |
+| `tcp_evasion` | `"segment"` | Ordered ClientHello write policy |
+
+## Verify
+
+server_names must be nonempty, and entries must satisfy the parser's bounded ASCII/no-whitespace checks. Operationally choose a meaningful SNI matching the destination; syntactic acceptance alone does not establish that a destination is usable. The server always probes the destination at startup. CLI overrides use hyphenated names such as --udp-listen; omitted flags preserve the file value. Keep secrets in the protected configuration file rather than shell history or process arguments.
+
+## Next steps
+
+- [Set up a server](/en/docs/guides/server/)
+- [Performance and policy reference](/en/docs/reference/configuration/)
+- [CLI reference](/en/docs/reference/cli/)

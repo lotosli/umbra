@@ -1,0 +1,36 @@
+---
+id: "troubleshooting"
+title: "故障排查"
+description: "定位配置、连接和传输问题。"
+section: "troubleshooting"
+order: 17
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md"]
+translation: "complete"
+---
+
+## 概览
+
+排查先确认安装版本、失败阶段和去除所有秘密的最小配置描述。先复现一个请求，再调整设置。需要区分应用绕过 SOCKS、客户端到服务端失败，以及服务端到回落目标或业务目标失败；这些现象的检查位置不同，不能只凭页面打不开认定协议失败。
+
+## 详细说明
+
+服务端立即退出时，检查 TOML 语法、必填项、监听冲突和启动目标探测。解析错误保留安全的类别和行列位置，不回显秘密。客户端认证失败时，通过可信渠道核对公钥、short ID 与 server_name。先同步两端系统时钟，再考虑 max_time_diff。检查实际 TCP 公网端口；使用 QUIC 时还要检查 UDP。
+
+### 验证连接
+
+```sh
+umbra --help
+curl --socks5-hostname 127.0.0.1:1080 https://example.com/
+```
+
+
+## 验证与边界
+
+探测看到真实目标证书对未认证连接是正常现象。仅 UDP 失败则核对 udp_transport、udp_listen、防火墙和目标真实 QUIC 服务。性能问题应使用固定负载和按需诊断，不要把逻辑内存、已接受写入当成远端交付指标。报告中提供脱敏命令、版本、平台和错误类别，不附真实配置、私钥、含用户内容的抓包或实时基础设施细节。
+
+## 下一步
+
+- [服务端配置](/zh-hans/docs/configuration/server/)
+- [客户端配置](/zh-hans/docs/configuration/client/)
+- [性能与策略参考](/zh-hans/docs/reference/configuration/)

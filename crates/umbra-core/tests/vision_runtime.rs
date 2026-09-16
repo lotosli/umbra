@@ -141,6 +141,7 @@ async fn server_fixture() -> (ClientCfg, RunningServer) {
     let seed = [0x63; 32];
     let signing = mldsa_keygen_from_seed(&seed);
     let mut cfg = ClientCfg {
+        performance: umbra_core::resources::PerformanceCfg::default(),
         server: String::new(),
         transport: TransportKind::Tcp,
         udp_transport: None,
@@ -156,6 +157,7 @@ async fn server_fixture() -> (ClientCfg, RunningServer) {
         tcp_evasion: TcpEvasionPolicy::Off,
     };
     let server_cfg = ServerCfg {
+        performance: umbra_core::resources::PerformanceCfg::default(),
         listen: cfg.socks_listen,
         udp_listen: None,
         private_key: key.private,

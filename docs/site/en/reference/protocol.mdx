@@ -1,0 +1,102 @@
+---
+id: "reference/protocol"
+title: "Umbra compared with mainstream proxy options"
+description: "Compare Xray, VMess, Trojan, Shadowsocks and Hysteria 2 by real-site cover, certificate maintenance, TCP/UDP paths and client integration."
+section: "reference"
+order: 16
+version: "1.0.0-alpha"
+source: ["README.md", "docs/usage.md", "docs/performance.md", "crates/umbra-core/src/runtime.rs", "crates/umbra-reality/src/prebuild.rs", "crates/umbra-reality/src/cert.rs", "crates/umbra-tls/src/server.rs"]
+translation: "complete"
+---
+
+## Overview
+
+When choosing a proxy, start with whether it suits your network, applications and maintenance preferences, rather than the number of algorithms or test coverage. Umbra is a self-hosted privacy transport: it integrates real-site cover, TCP/Vision, QUIC and a local SOCKS5 endpoint into one client and server pair.
+
+**Comparison scope:** Umbra 1.0.0-alpha; other projects are described using official documentation consulted on 2026-09-16. This compares features and deployment approaches, not speed, security rankings or anonymity guarantees. Later versions and different clients may change specific behavior.
+
+Xray is a proxy platform supporting multiple protocols and routing; VMess, VLESS and Trojan are protocols. For a meaningful comparison, Xray below is explicitly limited to the common **VLESS + REALITY + Vision configuration with a RAW/TCP outer transport**. Limitations of one configuration must not be presented as limitations of all of Xray.
+
+## Selection at a glance
+
+| Option | Outer connection and site behavior | Deployment and maintenance | TCP and UDP |
+| --- | --- | --- | --- |
+| **Umbra** | REALITY-style real-site cover; unauthenticated connections are forwarded to the destination site | Self-host both ends, manage identity keys and a reachable real site; no need to obtain a CA certificate for the node yourself; currently alpha | TCP/Vision, TCP mux or QUIC; one SOCKS5 endpoint can select separate outer transports for TCP and UDP |
+| **Xray + VLESS + REALITY + Vision** | Borrows a real site's identity; Vision handles eligible inner TLS traffic | Maintain Xray configuration, keys and the destination site; no need to obtain your own certificate for a REALITY node | This comparison covers the TCP outer transport; UDP requests can also be proxied, depending on flow and client configuration |
+| **VMess AEAD** | Provides an encrypted proxy itself; TLS, WebSocket and similar options are separately chosen transport configurations | VMess itself does not require a website certificate; adding TLS requires the corresponding authentication configuration | Supports TCP and UDP requests; the actual outer transport depends on configuration |
+| **Trojan (original TLS approach)** | Real TLS handshake; authentication failures or non-Trojan requests can fall back to an HTTP service | Typical deployments maintain a domain, TLS certificate and private key; needing a certificate does not mean paying for one | Proxies both TCP and UDP requests, with UDP encapsulated in TLS/TCP |
+| **Shadowsocks AEAD / 2022** | Native encrypted TCP/UDP; browser TLS and real-site cover are not built into the base protocol | No website domain or TLS certificate required; maintain keys and matching clients, with plugins configured separately | Native TCP/UDP support; a TCP-only SIP003 plugin must not be treated as UDP camouflage |
+| **Hysteria 2** | QUIC/UDP; behaves as an HTTP/3 website when unauthenticated | Requires a usable UDP path and TLS configuration, using certificate files or ACME | TCP uses QUIC streams and UDP uses unreliable datagrams; it is not a TCP outer-transport solution |
+
+## Strengths and trade-offs
+
+Every option here helps somewhere and costs something elsewhere. The list below condenses each option's strengths and trade-offs so you can match them to your network conditions and maintenance appetite.
+
+- **Umbra** — Strengths: one endpoint carries both paths (TCP Vision and QUIC UDP) behind a single local SOCKS5 node; identity keys and temporary certificate binding remove public certificate paperwork; cover, transports and SOCKS5 ship as one tested client-and-server pair. Trade-offs: alpha and CLI-only today; no VLESS, VMess or Trojan node import; protocol changes between releases require upgrading both endpoints together.
+- **Xray + VLESS + REALITY + Vision** — Strengths: mature multiprotocol platform with rich routing, many ready-made clients and extensive community documentation; REALITY and Vision are as available here as anywhere. Trade-offs: you assemble and maintain the stack yourself — core config, transport layers, routing rules and matching clients; shared mechanisms do not make it interoperable with Umbra.
+- **VMess AEAD** — Strengths: very wide client support across platforms, including older and low-power devices. Trade-offs: the protocol encrypts but does not camouflage — cover depends entirely on the transport you add; legacy non-AEAD modes are deprecated, so pin clients that implement AEAD.
+- **Trojan (original TLS approach)** — Strengths: a real TLS handshake with documented fallback behavior and a design stable for years. Trade-offs: typical setups maintain a domain and renew a publicly trusted certificate; UDP rides inside TLS over TCP, so UDP timing follows the TCP path.
+- **Shadowsocks AEAD / 2022** — Strengths: minimal moving parts — keys and a matching client, no domain or certificate; native TCP and UDP support. Trade-offs: base protocols provide encryption, not camouflage; plugins are a separate surface to assess, and a TCP-only SIP003 plugin must not be treated as UDP camouflage.
+- **Hysteria 2** — Strengths: an unreliable-datagram UDP path designed for lossy networks, with congestion control tuned for harsh conditions; behaves like an HTTP/3 website when unauthenticated. Trade-offs: blocked or restricted UDP removes its main advantage; TCP still travels as QUIC streams, so loss can stall streams like any reliable transport, and its design is not a guarantee of speed on your network.
+
+## Reasons to consider Umbra
+
+### Bring two transport paths into one endpoint
+
+One Umbra client can set `transport = "tcp"`, `udp_transport = "quic"` and `mux = false` to use Vision for TCP and QUIC for UDP; the same server opens both TCP and UDP. Existing clients connect to just one local SOCKS5 node, without splitting the two paths into two sets of Umbra processes.
+
+This is a configuration and usability convenience, not a claim that other platforms cannot achieve similar results with different outbounds or routing. Umbra does not automatically determine which path is fastest and does not provide automatic TCP/QUIC failover.
+
+### Reduce redundant processing for eligible traffic
+
+After completing the authenticated boundary exchange, TCP/Vision can directly forward eligible inner TLS 1.3 encrypted records, avoiding subsequent outer TLS encryption and extra encapsulation. Non-TLS and unsupported TLS traffic remain encrypted. TCP mux instead lets multiple requests share outer connections, reducing repeated connection establishment.
+
+Neither REALITY nor Vision is unique to Umbra, and neither justifies claiming comprehensive superiority over Xray. Forwarding here happens in userspace, not through kernel zero-copy; without competitor benchmarks in a uniform environment, there is no basis to say "how much faster" it is.
+
+### Avoid maintaining a public certificate for your node yourself
+
+Umbra uses identity keys and temporary certificate binding, so deployment does not require you to obtain or renew a public CA certificate. You still need to manage server secrets, client credentials and a reachable real destination site. Enabling QUIC also requires real QUIC fallback and UDP reachability.
+
+Likewise, a REALITY combination can reduce this certificate maintenance, and native Shadowsocks deployments do not depend on website certificates either. This is a deployment trade-off, not an advantage exclusive to Umbra.
+
+## Decide whether to migrate from your current setup
+
+- **Already using Xray / VLESS / REALITY:** If you depend on multiple protocols, complex routing and the existing client ecosystem, there is no need to migrate just for a similar cover mechanism. Choose Umbra because its single-instance dual-transport approach fits your usage, not because "REALITY is more advanced."
+- **Already using VMess:** First identify the actual TLS, WebSocket or other carrier in use. The VMess name alone does not imply plaintext, a lack of camouflage or an inability to carry UDP. Umbra cannot import VMess nodes directly.
+- **Want to maintain a standard TLS service:** Trojan has documented deployment approaches for real TLS and fallback; do not describe it as lacking probe resistance. Its differences from Umbra include certificate maintenance and the UDP transport path.
+- **Only need a lightweight encrypted proxy:** Shadowsocks may be closer to your needs. Discuss AEAD and 2022 by version; 2022 includes full replay protection. Plugin capabilities are not the same as base protocol capabilities.
+- **Primarily considering QUIC and lossy networks:** Evaluate Hysteria 2 as well. Its UDP uses unreliable datagrams, whereas Umbra currently encapsulates UDP association data in reliable QUIC streams; loss can still leave the same stream waiting for retransmission, so it is incorrect to advertise "no head-of-line blocking for all UDP." Whether either is better for games, calls or downloads requires testing on the actual path.
+- **Need a mature graphical interface, mobile support or ready-made subscriptions:** Check the specific client and version first. Umbra is currently a CLI transport tool that can integrate with rule-based clients supporting SOCKS5, but does not include these ecosystem features itself.
+
+## Implemented connection flow
+
+1. **Establish the outer handshake.** The TCP client constructs its own TLS 1.3 ClientHello and records; native QUIC uses Quinn. Authentication material is bound to the ClientHello and placed in `legacy_session_id`.
+2. **Check the connection's identity.** The server checks this material before selecting the authenticated transport path; unauthenticated connections go to the configured real destination. The client verifies the temporary certificate's binding information to avoid mistaking an ordinary real site for an Umbra server.
+3. **Transport application requests.** Authenticated connections carry addresses, streams and padding according to the mode; Vision changes forwarding behavior only when its conditions are met and negotiation is complete.
+
+Real-site fallback does not guarantee that traffic will always be unrecognizable. Destination site failures, network conditions, timeouts and observer capabilities all affect real-world behavior, and the server IP may also be blocked directly.
+
+## Browser fingerprint and post-quantum boundaries
+
+- `chrome-latest` still uses the historical Chrome 150 profile. Extension ordering, GREASE, JA3/JA4 checks and actual Chrome 153 samples cannot individually prove complete equivalence to a current browser.
+- ML-DSA-65 provides a signature binding for the temporary certificate's public key; this does not mean every authentication step becomes post-quantum authentication.
+- The code has an X25519 + ML-KEM-768 hybrid exchange path, but its shared secret is used only when a hybrid group is actually negotiated. The current standard CLI probes the destination using the ring provider, which does not support ML-KEM, and the server follows the probed group. Default connections therefore cannot be claimed to have hybrid post-quantum exchange enabled.
+- Current official Xray REALITY configuration also includes optional ML-DSA and hybrid exchange support tied to the group negotiated with the destination site. Post-quantum capabilities must not be advertised as exclusive to Umbra.
+- Umbra currently does not support Geneva DSL sending, 0-RTT or fallback preconnection; plans in the protocol design are not existing product capabilities.
+
+## Official comparison sources
+
+The following links are the sources for the other options on this page, consulted on **2026-09-16**. Umbra's sources are the README, usage guide, performance notes and runtime code listed in this page's metadata.
+
+- Xray: [Official REALITY examples (pinned revision)](https://github.com/XTLS/REALITY/blob/431b6ff8c67cc18811d48b18df9ec28e1ecf57f7/README.md), [REALITY configuration and post-quantum options (pinned revision)](https://github.com/XTLS/Xray-docs-next/blob/9125d3237c2f1717425dc94f1b54d2743ec1797a/docs/config/transports/reality.md), [VLESS / Vision configuration](https://xtls.github.io/config/outbounds/vless.html), [Routing](https://xtls.github.io/config/routing.html).
+- VMess: [V2Fly protocol documentation](https://www.v2fly.org/developer/protocols/vmess.html), [Xray transport layering](https://github.com/XTLS/Xray-docs-next/blob/main/docs/config/transport.md).
+- Trojan: [Protocol](https://trojan-gfw.github.io/trojan/protocol), [TLS and server configuration](https://trojan-gfw.github.io/trojan/config).
+- Shadowsocks: [AEAD](https://shadowsocks.org/doc/aead.html), [2022 / SIP022](https://shadowsocks.org/doc/sip022.html), [SIP003 plugin boundaries](https://shadowsocks.org/doc/sip003.html).
+- Hysteria 2: [Protocol specification](https://v2.hysteria.network/docs/developers/Protocol/), [Server deployment](https://v2.hysteria.network/docs/getting-started/Server/), [Client modes](https://v2.hysteria.network/docs/advanced/Full-Client-Config/).
+
+## Next steps
+
+- [Decide whether Umbra is right for you](/en/docs/getting-started/introduction/)
+- [Choose a transport mode](/en/docs/concepts/transports/)
+- [Connect applications and existing clients](/en/docs/guides/client/)
+- [Understand the security model](/en/docs/concepts/security-model/)

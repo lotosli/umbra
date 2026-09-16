@@ -1,0 +1,62 @@
+---
+id: "guides/deployment"
+title: "部署與運維"
+description: "將伺服器端作為服務執行並管理資源。"
+section: "guides"
+order: 6
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "docs/performance.md"]
+translation: "complete"
+---
+
+## 概覽
+
+先用相同版本的兩端驗證前臺執行。在 Linux 上，可用 systemd 管理伺服器端，並由 journald 收集標準錯誤輸出。二進位制與 server.toml 都使用絕對路徑。設定檔案只允許服務身份和管理員讀取；服務身份、檔案所有權和低埠繫結許可權需要按主機環境設定，不能假定各發行版預設值一致。
+
+## 詳細說明
+
+開放實際設定的公網 TCP 埠。只有開啟 udp_listen 並使用原生 QUIC 時才開放對應 UDP 埠。如果公網埠由獨立四層入口占用，把 Umbra 後端繫結到迴環地址，並在入口設定透明 TCP/QUIC 轉發；內部後端埠無需開放到公網。普通 HTTP 反向代理不能代替 Umbra 所需的傳輸層轉發。
+
+### 服務單元示例
+
+將此單元儲存為 `/etc/systemd/system/umbra-server.service`。範例假設已建立專用 Linux 使用者 `umbra`，二進位檔已安裝至 `/usr/local/bin/umbra`，且該使用者可讀取 `/etc/umbra/server.toml`。啟用前請先以主機管理工具建立服務身分並安裝檔案；部署方式不同時須調整路徑及使用者。
+
+```ini
+[Unit]
+Description=Umbra Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=umbra
+ExecStart=/usr/local/bin/umbra server -c /etc/umbra/server.toml
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+```
+
+
+### 服務管理命令
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now umbra-server
+sudo journalctl -u umbra-server -f
+```
+
+
+## 驗證與邊界
+
+給作業系統預留記憶體。吞吐設計假定伺服器端至少有 1 GiB 實體記憶體；performance.memory_mib 是應用邏輯承諾上限，不是程序 RSS 硬限制。診斷預設關閉，排查時才啟用有限週期，並注意寫入接收計數不等於遠端已經收到。修改設定後安排重啟，保留之前驗證過的二進位制用於回退。服務化不會自動驗證目的站點或替你完成防火牆設定。
+
+## 下一步
+
+- [效能與策略參考](/zh-hant/docs/reference/configuration/)
+- [故障排查](/zh-hant/docs/troubleshooting/)
+- [升級 Umbra](/zh-hant/docs/guides/upgrade/)

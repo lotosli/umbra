@@ -1,0 +1,93 @@
+---
+id: "guides/client"
+title: "Connectar aplicacions i clients de tipus Clash"
+description: "Connecta aplicacions i clients amb regles existents mitjançant SOCKS5 local i tria per separat els transports TCP i UDP."
+section: "guides"
+order: 5
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## Visió general
+
+El client Umbra ofereix una entrada SOCKS5 a la teva màquina. Les aplicacions o el client de servidor intermediari existent li lliuren les peticions, i Umbra es connecta al servidor Umbra remot. El client que ja coneixes pot continuar gestionant l’encaminament per regles, la interfície i el servidor intermediari del sistema; Umbra no és una interfície TUN, i instal·lar el binari no fa que les altres aplicacions l’utilitzin automàticament.
+
+## 1. Configurar i iniciar Umbra
+
+Prepara primer el servidor seguint la [guia del servidor](/ca/docs/guides/server/). Introdueix les dades d’identitat corresponents a `client.toml`; els marcadors següents s’han de substituir i no són credencials reals:
+
+```toml
+server = "198.51.100.10:443"
+transport = "tcp"
+public_key = "<X25519_PUBLIC_BASE64>"
+short_id = "<SHORT_ID_HEX>"
+server_name = "cover.example"
+fingerprint = "chrome-latest"
+mldsa_verify = "<MLDSA_VERIFY_BASE64>"
+socks_listen = "127.0.0.1:1080"
+```
+
+`server` és l’adreça del teu servidor Umbra; `server_name` és el SNI del lloc real, que ha de coincidir amb el configurat al servidor, no un domini de camuflatge triat arbitràriament. Un cop ho hagis comprovat, executa:
+
+```sh
+umbra client -c client.toml
+```
+
+Mantén l’escolta a la interfície de bucle local. SOCKS5 local no ofereix autenticació amb contrasenya i no s’ha d’exposar directament a internet ni a una xarxa local no fiable.
+
+## 2. Connectar directament una aplicació compatible amb SOCKS5
+
+A la configuració del servidor intermediari de l’aplicació, tria SOCKS5, introdueix l’adreça `127.0.0.1` i el port `1080`, i deixa buits l’usuari i la contrasenya. L’aplicació s’ha d’executar al mateix dispositiu que Umbra o al mateix espai de noms de xarxa des del qual es pugui accedir a aquesta entrada de bucle local.
+
+Per verificar una petició HTTPS, pots substituir l’adreça següent pel lloc que vulguis provar:
+
+```sh
+curl --proxy socks5h://127.0.0.1:1080 https://example.com/
+```
+
+`socks5h` fa que curl passi el domini de destinació al servidor intermediari, en lloc de resoldre’l primer localment. El comportament DNS de les altres aplicacions depèn de la seva configuració; configurar SOCKS5 no implica que totes les consultes DNS del dispositiu passin pel servidor intermediari.
+
+## 3. Conservar les regles amb un client de tipus Clash
+
+Afegeix el node següent a la llista `proxies` de la configuració del client existent i selecciona’l al grup de servidors intermediaris que utilitzis. No substitueixis tota la configuració:
+
+```yaml
+proxies:
+  - name: Umbra Local
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+    udp: true
+```
+
+El client existent continua aplicant les regles, i Umbra local s’encarrega de la connexió remota. Assegura’t que les regles no tornin a enviar l’adreça del servidor Umbra remot cap a `Umbra Local`, perquè es podria crear un bucle. Les regles concretes i els paràmetres DNS i TUN depenen del client que utilitzis.
+
+Aquí s’utilitza un node SOCKS5 estàndard, no compatibilitat nativa amb el protocol Umbra. Canviar el nom d’un node o d’una subscripció VLESS / VMess / Trojan no els converteix en nodes Umbra; els dos extrems de la connexió necessiten programes Umbra compatibles i dades d’identitat corresponents.
+
+## 4. Opcional: Vision per a TCP i QUIC per a UDP
+
+Integra aquests paràmetres al teu `client.toml` existent:
+
+```toml
+transport = "tcp"
+udp_transport = "quic"
+mux = false
+```
+
+Activa `listen` i `udp_listen` al servidor i permet els ports TCP i UDP corresponents al tallafoc. `udp: true` permet que els clients de tipus Clash enviïn peticions UDP, però no canvia el transport de les peticions TCP. SOCKS negocia el punt de retransmissió UDP; no cal una escolta fixa al port UDP 1080.
+
+Si UDP no és accessible, verifica primer les peticions ordinàries de les aplicacions amb TCP. No hi ha cap commutació automàtica de QUIC a TCP en cas de fallada; consulta els [modes de transport](/ca/docs/concepts/transports/) per triar.
+
+## Verificació i resolució de problemes
+
+1. Prova primer una aplicació directament amb SOCKS5 i després connecta el client amb regles, per no confondre un problema de regles amb una fallada del transport.
+2. Compara les claus públiques, les claus de verificació, el short ID, el SNI i l’adreça del servidor als dos extrems; comprova l’hora del sistema i el tallafoc.
+3. Verifica TCP i UDP per separat; poder obrir una pàgina web no demostra que UDP funcioni.
+4. Ajusta només una opció de transport o de rendiment cada vegada; quan actualitzis el mux adaptatiu, actualitza tots dos extrems alhora.
+
+## Passos següents
+
+- [Camps de configuració del client](/ca/docs/configuration/client/)
+- [Exemples de configuració complets](/ca/docs/configuration/examples/)
+- [Resolució de problemes de connexió](/ca/docs/troubleshooting/)

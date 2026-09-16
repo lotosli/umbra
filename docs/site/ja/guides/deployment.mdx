@@ -1,0 +1,62 @@
+---
+id: "guides/deployment"
+title: "デプロイと運用"
+description: "サーバーをサービスとして管理し、リソースを配分します。"
+section: "guides"
+order: 6
+version: "1.0.0-alpha"
+source: ["docs/usage.md", "README.md", "docs/performance.md"]
+translation: "complete"
+---
+
+## 概要
+
+同じ版の両端をフォアグラウンドで確認してからサービス化します。Linux では systemd がサーバーを監視し、journald で stderr を収集できます。バイナリと server.toml は絶対パスで指定します。設定はサービス実行ユーザーと管理者だけが読めるようにし、実行ユーザーや低番号ポートの権限はホストに合わせて用意します。
+
+## 詳細
+
+設定した公開 TCP ポートを開きます。UDP は udp_listen を有効にして QUIC を使用する場合だけ開きます。別のレイヤー4入口が公開ポートを所有する場合、Umbra をループバックにバインドし、透明な TCP/QUIC 転送を構成します。内部ポートを外部に開ける必要はありません。通常の HTTP リバースプロキシはこの転送の代わりにはなりません。
+
+### サービスユニット例
+
+ユニットを `/etc/systemd/system/umbra-server.service` に保存します。この例は専用 Linux ユーザー `umbra` が存在し、バイナリが `/usr/local/bin/umbra` にあり、そのユーザーが `/etc/umbra/server.toml` を読めることを前提にしています。有効化する前にホストの管理ツールでユーザーを作成してファイルを配置し、異なる構成ではパスとユーザー名を変更してください。
+
+```ini
+[Unit]
+Description=Umbra Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=umbra
+ExecStart=/usr/local/bin/umbra server -c /etc/umbra/server.toml
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+```
+
+
+### サービス管理
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now umbra-server
+sudo journalctl -u umbra-server -f
+```
+
+
+## 確認と制約
+
+OS 用のメモリ余裕を確保してください。スループット重視の設計は最低 1 GiB の物理 RAM を想定し、performance.memory_mib は論理的な使用予約の上限であって RSS 制限ではありません。診断は既定で無効です。調査時にだけ有効にし、受け付けた書き込み量を遠端への配送完了と解釈しないでください。変更後は計画的に再起動し、検証済み旧バイナリを残します。
+
+## 次のステップ
+
+- [性能とポリシー](/ja/docs/reference/configuration/)
+- [トラブルシューティング](/ja/docs/troubleshooting/)
+- [Umbra の更新](/ja/docs/guides/upgrade/)

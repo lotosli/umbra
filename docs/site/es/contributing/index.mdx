@@ -1,0 +1,36 @@
+---
+id: "contributing"
+title: "Contribuir"
+description: "Contribuye mediante especificaciones, revisión y pruebas útiles."
+section: "contributing"
+order: 18
+version: "1.0.0-alpha"
+source: ["CONTRIBUTING.md", "README.md", "LICENSE"]
+translation: "complete"
+---
+
+## Descripción general
+
+Umbra utiliza desarrollo guiado por especificaciones. Propón un cambio OpenSpec y consigue revisión y aprobación de requisitos antes de implementar. Completa las tareas con pruebas asociadas a los escenarios. El código Rust, las API públicas y el protocolo siguen sujetos a AGENTS.md y a las normas de contribución del repositorio.
+
+## Detalles
+
+Ejecuta formato, lint estricto, pruebas, revisión de dependencias y cobertura según el cambio. La cobertura de líneas debe permanecer al menos en 90 %, sin reducir el umbral ni añadir pruebas sin aserciones útiles. Los analizadores de red necesitan casos límite y de error; la criptografía y las huellas requieren sus vectores o evidencias de captura. Centraliza dependencias y conserva un grafo sin ciclos.
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
+cargo deny check
+cargo xtask coverage
+npx --yes @fission-ai/openspec@latest validate --all --strict
+```
+
+## Verificación y límites
+
+La documentación mantiene identificadores estables, fuentes públicas actuales y siete traducciones completas. Distingue objetivos de implementación y excluye secretos, infraestructura privada y vulnerabilidades inéditas. Una persona responsable debe entender, revisar y probar las contribuciones asistidas por IA, declarando generaciones importantes en la PR o el commit. Sigue Conventional Commits y revisa la compatibilidad de dependencias con la licencia MIT del proyecto.
+
+## Siguientes pasos
+
+- [Arquitectura](/es/docs/concepts/architecture/)
+- [Referencia del protocolo](/es/docs/reference/protocol/)
+- [Introducción](/es/docs/getting-started/introduction/)

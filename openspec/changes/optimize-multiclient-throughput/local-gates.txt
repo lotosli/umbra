@@ -1,0 +1,4 @@
+advisories ok, bans ok, licenses ok, sources ok
+Fingerprint field and production-builder self-checks passed; this command does not verify full TLS payload or QUIC parity against raw Chrome captures.
+     Summary [  18.422s] 513 tests run: 513 passed, 0 skipped
+TOTAL                                    34503              2559    92.58%        2037               110    94.60%       22472              1136    94.94%           0                 0         -

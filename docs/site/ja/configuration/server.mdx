@@ -1,0 +1,55 @@
+---
+id: "configuration/server"
+title: "サーバー設定"
+description: "サーバーの必須項目、既定値、検証規則を確認します。"
+section: "configuration"
+order: 8
+version: "1.0.0-alpha"
+source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.rs"]
+translation: "complete"
+---
+
+## 概要
+
+サーバー設定は TOML です。コマンドラインの上書き後に必須項目が揃っている必要があり、未知の項目や型の誤りは拒否されます。待ち受けは数値 IP:port、IPv6 は角括弧付きで指定します。dest は host:port です。下表はトップレベル項目を扱い、performance 表は別ページで説明します。
+
+## 詳細
+
+private_key と mldsa_seed は base64 から正確に 32 バイトへ復号できる必要があります。例のプレースホルダーは実際には使えません。short_ids は最低1件で、各値は偶数桁の16進数として0〜8バイトを表します。空文字列も構文上許可されています。max_time_diff は ms、s、m、h または単位なしの秒数を受け付け、少なくとも1秒が必要です。
+
+### サーバーテンプレート
+
+```toml
+listen = "0.0.0.0:443"
+private_key = "<X25519_PRIVATE_BASE64>"
+short_ids = ["<SHORT_ID_HEX>"]
+dest = "cover.example:443"
+server_names = ["cover.example"]
+max_time_diff = "120s"
+mldsa_seed = "<MLDSA_SEED_BASE64>"
+```
+
+
+| 項目 | 既定値 / 要件 | 意味 |
+|---|---|---|
+| `listen` | 必須 | 数値 IP の TCP 待ち受け |
+| `udp_listen` | `—` | 任意の QUIC UDP 待ち受け。省略で無効 |
+| `private_key` | 必須 | X25519 秘密鍵。base64 復号後32バイト |
+| `short_ids` | 必須 | 0〜8バイトの16進 ID。リストは1件以上 |
+| `dest` | 必須 | 実際のフォールバック先 host:port |
+| `server_names` | 必須 | 許可する SNI のリスト。空は不可 |
+| `max_time_diff` | 必須 | 時刻の許容差。最低1秒 |
+| `mldsa_seed` | 必須 | ML-DSA 署名シード。base64 復号後32バイト |
+| `prebuild` | `true` | 接続先の定期更新。起動検査は常に実行 |
+| `padding_scheme` | `"default"` | 内部パディング方式 |
+| `tcp_evasion` | `"segment"` | ClientHello の順序付き分割 write |
+
+## 確認と制約
+
+server_names は空にできず、各値は長さ制限、ASCII、空白なしの検査を受けます。構文が通っても接続先や SNI が運用可能だとは証明されません。起動時の検査は常に実行されます。CLI は --udp-listen のようなハイフン形式で指定項目だけを上書きします。秘密情報は履歴やプロセス引数を避け、保護された設定ファイルに置いてください。
+
+## 次のステップ
+
+- [サーバーの設定](/ja/docs/guides/server/)
+- [性能とポリシー](/ja/docs/reference/configuration/)
+- [CLI リファレンス](/ja/docs/reference/cli/)

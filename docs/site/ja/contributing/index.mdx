@@ -1,0 +1,36 @@
+---
+id: "contributing"
+title: "開発への参加"
+description: "仕様、レビュー、有効なテストを通じて貢献します。"
+section: "contributing"
+order: 18
+version: "1.0.0-alpha"
+source: ["CONTRIBUTING.md", "README.md", "LICENSE"]
+translation: "complete"
+---
+
+## 概要
+
+Umbra は仕様駆動開発を採用しています。実装前に OpenSpec 変更を提案し、要件のレビューと承認を受けます。承認済みタスクを実装し、各シナリオに対応するテストを用意します。Rust コード、公開 API、プロトコルには引き続き AGENTS.md と貢献規則が適用されます。
+
+## 詳細
+
+変更範囲に応じて整形、厳格 lint、テスト、依存関係検査、カバレッジを実行します。行カバレッジは90%以上を維持し、閾値を下げたり意味のないアサーションで数を稼いだりしません。ネットワーク解析は境界・異常系、暗号と指紋は標準ベクトルや実採取資料が必要です。依存関係を workspace へ集約し、クレートの循環を避けます。
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
+cargo deny check
+cargo xtask coverage
+npx --yes @fission-ai/openspec@latest validate --all --strict
+```
+
+## 確認と制約
+
+文書は安定した ID、現行の公開ソース、七言語の完全な翻訳を保ち、計画と実装済みを区別します。実際の鍵、非公開設備、未公開脆弱性は含めません。AI 支援の貢献は責任を持つ人間が理解、レビュー、テストし、大規模な生成を PR やコミットで開示します。Conventional Commits とレビュー規則を守り、MIT ライセンスと依存ライセンスの適合も確認してください。
+
+## 次のステップ
+
+- [アーキテクチャ](/ja/docs/concepts/architecture/)
+- [プロトコルリファレンス](/ja/docs/reference/protocol/)
+- [Umbra について](/ja/docs/getting-started/introduction/)

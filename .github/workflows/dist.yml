@@ -66,8 +66,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
-        run: >
-          gh release create "$TAG_NAME" target/release-artifacts/*
-          --repo "$GITHUB_REPOSITORY"
-          --title "$TAG_NAME"
-          --notes "Automated release for $TAG_NAME."
+        run: |
+          flags=()
+          if [[ "$TAG_NAME" == *-* ]]; then
+            flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$TAG_NAME" target/release-artifacts/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG_NAME" \
+            --notes "Automated release for $TAG_NAME." \
+            "${flags[@]}"

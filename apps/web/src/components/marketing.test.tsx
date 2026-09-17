@@ -90,7 +90,7 @@ describe('Seven-language presentation', () => {
         'href',
         localePath(locale, 'docs/getting-started/quick-start'),
       );
-      expect(screen.getByRole('figure')).toHaveAccessibleName(copy.diagram.caption);
+      expect(screen.queryByRole('figure')).not.toBeInTheDocument();
     });
 
     it(`compares named deployments rather than conflating platforms and protocols in ${locale}`, () => {
@@ -105,6 +105,9 @@ describe('Seven-language presentation', () => {
       expect(screen.getByRole('link', { name: marketingCopy[locale].nav.docs })).toHaveAttribute(
         'href',
         localePath(locale, 'docs/reference/protocol'),
+      );
+      expect(screen.getByRole('figure')).toHaveAccessibleName(
+        marketingCopy[locale].diagram.caption,
       );
     });
   }

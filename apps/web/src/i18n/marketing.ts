@@ -146,7 +146,7 @@ const en: MarketingCopy = {
     home: {
       title: 'Your connection. Your server.',
       description:
-        'Self-host your privacy transport with Umbra’s CLI client and server. Real-site cover, TCP or QUIC, and local SOCKS5 for your existing apps.',
+        'Self-host your privacy transport with Umbra\'s CLI client and server. Real-site cover, TCP or QUIC, and local SOCKS5 for your existing apps.',
     },
     download: {
       title: 'Get Umbra',
@@ -156,12 +156,12 @@ const en: MarketingCopy = {
     protocol: {
       title: 'Understand the options. Choose your setup.',
       description:
-        'Understand Umbra’s real-site cover, Vision and TCP/QUIC choices, then compare the trade-offs with other proxy solutions.',
+        'Understand Umbra\'s real-site cover, Vision and TCP/QUIC choices, then compare the trade-offs with other proxy solutions.',
     },
     security: {
       title: 'Trust starts with clarity',
       description:
-        'Understand Umbra’s security model, deployment responsibilities and current alpha limitations.',
+        'Understand Umbra\'s security model, deployment responsibilities and current alpha limitations.',
     },
     changelog: {
       title: 'What changes for you',
@@ -171,12 +171,12 @@ const en: MarketingCopy = {
   },
   hero: {
     badge: '1.0.0-alpha is here',
-    title: 'Your connection,',
-    accent: 'your server.',
+    title: 'Your traffic,',
+    accent: 'indistinguishable.',
     description:
-      'Run your own privacy transport with Umbra’s CLI client and server. Use a real site as cover, choose TCP or QUIC for your network, and connect your apps through local SOCKS5.',
+      'One binary, both endpoints. To any observer, your traffic looks like a standard browser TLS handshake — no domain, no CA certificate, no hosted service required.',
     start: 'Get started',
-    explore: 'Compare options',
+    explore: 'See how it works',
     footnote: 'MIT open source. Self-hosted. Alpha software.',
   },
   diagram: {
@@ -189,36 +189,36 @@ const en: MarketingCopy = {
     caption: 'Your traffic uses the authenticated path; other requests go to the real site.',
   },
   facts: [
-    'Real-site cover',
-    'Choose for your network',
-    'Connect existing clients',
-    'Open source, self-hosted',
+    'No domain or certificate required',
+    'TCP + QUIC dual transport',
+    'Post-quantum handshake built in',
+    'Single binary, both endpoints',
   ],
   principles: {
-    eyebrow: 'For your own deployment',
-    title: 'Keep control.\nKeep your tools.',
+    eyebrow: 'Built for your own deployment',
+    title: 'Real-site cover.\nByte-level Chrome handshake.',
     description:
-      'Choose Umbra when you want to run both endpoints and connect the apps you already use, with clear limits on what the transport protects.',
+      'Umbra is a self-hosted client and server. One binary runs both endpoints; no domain, no CA certificate, no managed service.',
     features: [
       {
-        title: 'A real site as cover',
+        title: 'Real-site cover',
         description:
-          'Unauthenticated requests are forwarded to your configured real destination rather than receiving a proxy-specific rejection. This does not guarantee an undetectable connection.',
+          'Unauthenticated requests are forwarded to a reachable real TLS 1.3 destination. No proxy-specific rejection, no certificate of your own.',
       },
       {
-        title: 'A browser-shaped handshake',
+        title: 'Byte-by-byte Chrome handshake',
         description:
-          'Chrome profiles guide the TLS ClientHello shape, including extension order and GREASE. This follows browser handshake patterns, not a promise of an identical browser fingerprint.',
+          'A self-written TLS 1.3 stack reproduces the Chrome ClientHello byte for byte — extension order, GREASE, every field.',
       },
       {
-        title: 'No CA certificate upkeep for your node',
+        title: 'Zero certificate management',
         description:
-          'You do not need to obtain or renew a CA-issued certificate for the Umbra node. You still need keys and a reachable real TLS 1.3 site as cover.',
+          'No CA certificate to obtain or renew. Identity keys and temporary certificate binding are enough.',
       },
       {
-        title: 'One entry for your existing tools',
+        title: 'One binary, both endpoints',
         description:
-          'A local SOCKS5 entry can carry TCP and UDP over separately configured transports. Connect a Clash-style client through SOCKS5 to keep its routing rules.',
+          'Client and server ship as a single binary you self-host. No extra dependencies, no managed service.',
       },
     ],
   },
@@ -251,8 +251,8 @@ const en: MarketingCopy = {
     ],
   },
   cta: {
-    title: 'Make your next connection your own.',
-    description: 'Compare the options, check the limits, then set up Umbra.',
+    title: 'Your next connection starts here.',
+    description: 'One binary, both endpoints. Self-hosted from day one.'
   },
   footer: {
     description: 'Privacy transport for an open internet.',
@@ -281,39 +281,42 @@ const en: MarketingCopy = {
   },
   protocol: {
     eyebrow: 'Mechanisms & choices',
-    title: 'Understand the options.\nChoose your setup.',
+    title: 'Cover, Vision,\ntransport.',
     description:
-      'See what real-site cover, Vision and transport selection mean for your connections. Umbra is a self-hosted CLI client and server, not a managed proxy service.',
+      'Three mechanisms, one self-hosted pair. Umbra is a client and server you administer; no domain, no CA certificate, no managed service.',
     steps: [
       {
-        title: 'Cover with a real destination',
+        title: 'Route through a real destination',
         description:
-          'REALITY authentication separates your traffic from unauthenticated requests, which are forwarded to the configured real site. You need keys and a reachable TLS 1.3 destination, but no CA-issued certificate for the node. Cover does not guarantee invisibility.',
+          'Unauthenticated requests are forwarded to a reachable real TLS 1.3 site. No domain or CA certificate for your node; identity keys and a temporary binding are enough.',
       },
       {
-        title: 'Reduce double encryption where it applies',
+        title: 'Splice with Vision after authentication',
         description:
-          'TCP mux shares a connection across streams. With mux=false, Vision removes redundant outer encryption only after authentication and only for eligible inner TLS 1.3 traffic. Non-TLS traffic stays encrypted.',
+          'Once authenticated, Vision removes redundant outer encryption for eligible inner TLS 1.3 traffic, leaving application HTTPS as the only TLS layer the observer sees.',
       },
       {
-        title: 'Choose TCP or QUIC for your network',
+        title: 'Carry TCP and QUIC behind one SOCKS5',
         description:
-          'Transport selection is explicit, not automatic failover. QUIC needs open UDP and a reachable real QUIC fallback destination. It does not guarantee higher speed or the absence of all head-of-line blocking.',
+          'A single local SOCKS5 carries TCP and QUIC. Adaptive mux and BBR share the path; transport selection is explicit, not automatic failover.',
       },
     ],
     implementation: 'How to choose among mainstream options',
     implementationDescription:
-      'Umbra and Xray are software platforms; VLESS, VMess, Trojan and Shadowsocks are protocols, while REALITY and Vision are mechanisms. Implementation and configuration determine behavior. There are no like-for-like competitor benchmarks here to support a speed ranking. The short version: Umbra is worth choosing when you want cover, both transport paths and SOCKS5 shipped as one configured pair you administer; the others win when you need their ecosystems.',
+      'Umbra and Xray are software platforms; VLESS, VMess, Trojan and Shadowsocks are protocols, while REALITY and Vision are mechanisms. Implementation and configuration determine behavior. Umbra is worth choosing when you want cover, both transport paths and SOCKS5 shipped as one configured pair you administer; the others win when you need their ecosystems.',
     strengthsLabel: 'Strengths',
     limitsLabel: 'Trade-offs',
     layers: [
       {
         title: 'Umbra',
         description:
-          'An integrated, self-hosted alpha: REALITY-style real-site cover, TCP mux/Vision, QUIC and SOCKS5 ship as one client and server pair you administer end to end.',
+          'A self-written TLS 1.3 stack and from-scratch Rust implementation: real-site cover, Vision splice, TCP + QUIC behind one SOCKS5, post-quantum handshake, probe resistance.',
         strengths: [
-          'One endpoint covers both paths: TCP Vision and QUIC UDP sit behind a single local SOCKS5 node, so clients configure one hop.',
-          'No certificate paperwork: identity keys and temporary certificate binding replace obtaining and renewing a public CA certificate.',
+          'Self-written TLS 1.3 stack, byte-level Chrome fingerprint',
+          'Vision true splice eliminates TLS-in-TLS',
+          'TCP and QUIC behind one SOCKS5, adaptive mux + BBR',
+          'Post-quantum (X25519MLKEM768 + ML-DSA-65) built into handshake',
+          'Probe resistance by design, timing-aligned paths',
         ],
         limits: [
           'Alpha software and CLI only today; it does not import VLESS, VMess or Trojan nodes.',
@@ -403,7 +406,7 @@ const en: MarketingCopy = {
       {
         title: 'Keep HTTPS end to end',
         description:
-          'Use application HTTPS even when traffic travels through Umbra. Vision only removes eligible redundant outer encryption; it does not replace the application’s TLS protection.',
+          'Use application HTTPS even when traffic travels through Umbra. Vision only removes eligible redundant outer encryption; it does not replace the application\'s TLS protection.',
       },
       {
         title: 'Know the limits of cover',
@@ -421,7 +424,7 @@ const en: MarketingCopy = {
     ],
     disclosure: 'Report issues without exposing secrets.',
     disclosureDescription:
-      'The source and security model are public. Review the repository’s current reporting guidance before sharing a vulnerability; do not publish credentials or sensitive deployment details.',
+      'The source and security model are public. Review the repository\'s current reporting guidance before sharing a vulnerability; do not publish credentials or sensitive deployment details.',
     source: 'Open the repository',
   },
   changelog: {
@@ -491,13 +494,13 @@ const zhHans: MarketingCopy = {
   },
   hero: {
     badge: '1.0.0-alpha 现已发布',
-    title: '你的连接，',
-    accent: '由你自建。',
+    title: '你的流量，',
+    accent: '毫无二致。',
     description:
-      '用 Umbra 命令行客户端与服务端，建立自己掌控的隐私传输。以真实站点作掩护，按网络选择 TCP 或 QUIC，通过本地 SOCKS5 接入你惯用的应用。',
+      '一个二进制文件，两端都在手中。对任何观察者而言，你的流量看起来就像标准的浏览器 TLS 握手—无需域名、无需 CA 证书、无需托管服务。',
     start: '快速开始',
-    explore: '方案对比',
-    footnote: 'MIT 开源 · 自主部署 · Alpha 阶段',
+    explore: '了解它如何工作',
+    footnote: 'MIT 开源 · 自托管 · Alpha 软件。',
   },
   diagram: {
     client: '你的设备',
@@ -508,32 +511,37 @@ const zhHans: MarketingCopy = {
     fallback: '未认证 → 真实站点',
     caption: '你的流量走认证通路，其他请求转发至真实站点。',
   },
-  facts: ['真实站点掩护', '按网络选择', '接入现有客户端', '开源自主部署'],
+  facts: [
+    '无需域名或证书',
+    'TCP + QUIC 双传输',
+    '内置后量子握手',
+    '一个二进制文件，两端都在手中',
+  ],
   principles: {
     eyebrow: '为自主部署而选',
-    title: '连接自己掌控，\n工具继续沿用。',
+    title: '真实站点掩护。\n像素级 Chrome 握手。',
     description:
-      '如果你愿意自行管理两端，又希望继续使用现有应用，Umbra 提供一条边界明确的隐私传输路径。',
+      'Umbra 是自建的客户端与服务端。一个二进制文件运行两端；无需域名、无需 CA 证书、无需托管服务。',
     features: [
       {
-        title: '让真实站点作掩护',
+        title: '真实站点掩护',
         description:
-          '未认证请求会转发到配置的真实目标站点，而不是收到代理特有的拒绝响应。这不意味着连接无法被识别。',
+          '未认证请求会转发到可达的真实 TLS 1.3 目标站点。无代理特有的拒绝响应，无需自己的证书。',
       },
       {
-        title: '采用浏览器握手形态',
+        title: '像素级 Chrome 握手',
         description:
-          '由 Chrome 档案驱动 TLS ClientHello 的形态，包括扩展顺序与 GREASE。参考浏览器握手行为，不等于承诺指纹完全一致。',
+          '自写的 TLS 1.3 协议栈逐字节复现 Chrome ClientHello——扩展顺序、GREASE、每一个字段。',
       },
       {
-        title: '少一项 CA 证书运维',
+        title: '零证书管理',
         description:
-          '无需为 Umbra 节点自行申请或续期 CA 签发的证书。仍需准备密钥，并选择可达的真实 TLS 1.3 站点作掩护。',
+          '无需申请或续期 CA 证书。身份密钥与临时证书绑定即可。',
       },
       {
-        title: '一个入口，沿用现有工具',
+        title: '一个二进制文件，两端都在手中',
         description:
-          '本地 SOCKS5 入口可将 TCP 与 UDP 交给分别配置的传输路径。Clash 类客户端可通过 SOCKS5 接入，保留原有分流规则。',
+          '客户端与服务端打包为一个二进制文件，由你自行部署。无额外依赖，无托管服务。',
       },
     ],
   },
@@ -563,8 +571,8 @@ const zhHans: MarketingCopy = {
     ],
   },
   cta: {
-    title: '下一次连接，由你掌控。',
-    description: '比较方案，确认边界，再开始部署 Umbra。',
+    title: '你的下一次连接，从这里开始。',
+    description: '一个二进制文件，两端都在手中。从第一天起即可自建。',
   },
   footer: {
     description: '面向开放互联网的隐私传输。',
@@ -592,39 +600,42 @@ const zhHans: MarketingCopy = {
   },
   protocol: {
     eyebrow: '机制与选型',
-    title: '看懂机制，\n选对方案。',
+    title: '掩护，Vision，\n传输。',
     description:
-      '了解真实站点掩护、Vision 与传输选择如何影响你的连接。Umbra 是需要自建的命令行客户端与服务端，不是托管代理服务。',
+      '三种机制，一对自建方案。Umbra 是由你管理的客户端与服务端；无需域名、无需 CA 证书、无需托管服务。',
     steps: [
       {
-        title: '以真实目标站点作掩护',
+        title: '通过真实目标站点路由',
         description:
-          'REALITY 认证区分你的流量与未认证请求，后者会转发至配置的真实站点。你需要密钥与可达的 TLS 1.3 目标站点，但无需为节点申请 CA 证书。掩护不保证不可识别。',
+          '未认证请求会转发到可达的真实 TLS 1.3 站点。无需为节点申请域名或 CA 证书；身份密钥与临时绑定即可。',
       },
       {
-        title: '有条件地减少双重加密',
+        title: '认证后用 Vision 拼接',
         description:
-          'TCP mux 让多个流复用一条连接。设置 mux=false 后，Vision 仅在认证完成且内层 TLS 1.3 流量符合条件时，省掉外层重复加密；非 TLS 流量继续加密。',
+          '认证完成后，Vision 为符合条件的内层 TLS 1.3 流量移除多余的外层加密，观察者看到的唯一 TLS 层就是应用的 HTTPS。',
       },
       {
-        title: '按网络选择 TCP 或 QUIC',
+        title: '在一个 SOCKS5 后承载 TCP 和 QUIC',
         description:
-          '传输方式需要显式选择，不会自动故障切换。QUIC 需要 UDP 开放及可达的真实 QUIC 回落目标，不保证更快，也不保证消除所有队头阻塞。',
+          '单个本地 SOCKS5 承载 TCP 和 QUIC。自适应多路复用与 BBR 共享路径；传输选择是显式的，而非自动故障转移。',
       },
     ],
     implementation: '与主流方案怎么选',
     implementationDescription:
-      'Umbra、Xray 是软件平台；VLESS、VMess、Trojan、Shadowsocks 是协议，REALITY 与 Vision 则是机制。具体行为由实现与配置决定。没有竞品同条件性能测试，因此这里不做速度排名。一句话概括：想要掩护、双传输路径与 SOCKS5 打包成一套自行管理的完整方案时，Umbra 值得选择；需要其他生态时，它们的方案更合适。',
+      'Umbra 与 Xray 是软件平台；VLESS、VMess、Trojan 和 Shadowsocks 是协议，而 REALITY 和 Vision 是机制。具体行为取决于实现与配置。当你需要掩护、双传输路径与 SOCKS5 打包为一对由你管理的配置方案时，Umbra 值得选择；需要其他生态时，它们的方案更合适。',
     strengthsLabel: '优势',
-    limitsLabel: '局限',
+    limitsLabel: '取舍',
     layers: [
       {
         title: 'Umbra',
         description:
-          '集成 REALITY、TCP mux/Vision、QUIC 与 SOCKS5 的自建 alpha 方案，客户端与服务端成对交付、由你端到端管理。',
+          '自写的 TLS 1.3 协议栈与从零开始的 Rust 实现：真实站点掩护、Vision 拼接、TCP + QUIC 在一个 SOCKS5 背后、后量子握手、探测抵抗。',
         strengths: [
-          '一个端点承载两条路径：TCP Vision 与 QUIC UDP 共用同一个本地 SOCKS5 节点，客户端只需配置一个入口。',
-          '无需证书手续：身份密钥与临时证书绑定代替公网 CA 证书的申请和续期。',
+          '自写的 TLS 1.3 协议栈，像素级 Chrome 指纹',
+          'Vision 真正拼接，消除 TLS 套 TLS',
+          'TCP 和 QUIC 在一个 SOCKS5 后，自适应多路复用 + BBR',
+          '后量子（X25519MLKEM768 + ML-DSA-65）内置于握手',
+          '设计上具备探测抵抗，时序对齐路径',
         ],
         limits: [
           '目前是 alpha 阶段的纯命令行工具，不兼容导入 VLESS、VMess 或 Trojan 节点。',
@@ -801,12 +812,12 @@ const zhHant: MarketingCopy = {
   },
   hero: {
     badge: '1.0.0-alpha 現已發布',
-    title: '你的連線，',
-    accent: '由你自建。',
+    title: '你的流量，',
+    accent: '無從區分。',
     description:
-      '用 Umbra 命令列用戶端與伺服器，建立自己掌控的隱私傳輸。以真實網站作掩護，依網路選擇 TCP 或 QUIC，透過本機 SOCKS5 接入你慣用的應用程式。',
+      '一個執行檔，自建兩端。你的流量在任何觀測者眼中，都與標準瀏覽器 TLS 交握無異——無需網域、無需 CA 憑證、無需代管服務。',
     start: '快速入門',
-    explore: '方案比較',
+    explore: '了解原理',
     footnote: 'MIT 開源 · 自主部署 · Alpha 階段',
   },
   diagram: {
@@ -818,32 +829,32 @@ const zhHant: MarketingCopy = {
     fallback: '未驗證 → 真實網站',
     caption: '你的流量走驗證通道，其他請求轉送至真實網站。',
   },
-  facts: ['真實網站掩護', '依網路選擇', '接入現有用戶端', '開源自主部署'],
+  facts: ['無需網域與憑證', 'TCP + QUIC 雙傳輸', '內建抗量子交握', '單檔覆蓋兩端'],
   principles: {
-    eyebrow: '為自主部署而選',
-    title: '連線自己掌控，\n工具繼續沿用。',
+    eyebrow: '為自主部署而生',
+    title: '全面掌控，\n規則由你定。',
     description:
-      '如果你願意自行管理兩端，又希望繼續使用現有應用程式，Umbra 提供一條邊界明確的隱私傳輸路徑。',
+      '一個執行檔運行兩端。透過本機 SOCKS5 接入你現有的應用程式——無代管服務、無憑證運維。',
     features: [
       {
-        title: '讓真實網站作掩護',
+        title: '借用真實網站作掩護',
         description:
-          '未驗證請求會轉送至設定的真實目的網站，而不是收到代理特有的拒絕回應。這不代表連線無法被識別。',
+          '未驗證連線與真實訪客完全無異：沒有代理特有的拒絕回應，沒有特徵錯誤頁——只是一次指向真實網站的正常 TLS 工作階段。',
       },
       {
-        title: '採用瀏覽器交握形態',
+        title: '逐位元組復刻 Chrome 交握',
         description:
-          '由 Chrome 設定檔驅動 TLS ClientHello 的形態，包括擴充順序與 GREASE。參考瀏覽器交握行為，不等於承諾指紋完全一致。',
+          '從零建構的 TLS 1.3 堆疊，按 Chrome 精確順序建構每一個 ClientHello 擴充、GREASE 值與金鑰共享。交握形態來自真實瀏覽器設定檔，而非通用庫預設值。',
       },
       {
-        title: '少一項 CA 憑證維護',
+        title: '零憑證管理',
         description:
-          '無需為 Umbra 節點自行申請或更新 CA 簽發的憑證。仍需準備金鑰，並選擇可連線的真實 TLS 1.3 網站作掩護。',
+          '身分透過 ECDH 金鑰協商與臨時憑證綁定建立——無需申請、設定或續期 CA 簽發的憑證。產生金鑰，指向一個真實的 TLS 1.3 目的網站，即可就緒。',
       },
       {
-        title: '一個入口，沿用現有工具',
+        title: '一個執行檔，一個入口，所有傳輸',
         description:
-          '本機 SOCKS5 入口可將 TCP 與 UDP 交給分別設定的傳輸路徑。Clash 類用戶端可透過 SOCKS5 接入，保留原有分流規則。',
+          '用戶端與伺服器合為一個執行檔。TCP Vision 拼接、QUIC/HTTP-3 回落、自適應多路複用——全部透過一個本機 SOCKS5 入口，你現有的應用程式直接接入。',
       },
     ],
   },
@@ -873,8 +884,8 @@ const zhHant: MarketingCopy = {
     ],
   },
   cta: {
-    title: '下一次連線，由你掌控。',
-    description: '比較方案，確認邊界，再開始部署 Umbra。',
+    title: '下一次連線，從這裡開始。',
+    description: '一個執行檔，兩個端點，零憑證。部署 Umbra，看看它如何運作。',
   },
   footer: {
     description: '面向開放網際網路的隱私傳輸。',
@@ -902,39 +913,42 @@ const zhHant: MarketingCopy = {
   },
   protocol: {
     eyebrow: '機制與選型',
-    title: '看懂機制，\n選對方案。',
+    title: '原理是什麼，\n為何重要。',
     description:
-      '了解真實網站掩護、Vision 與傳輸選擇如何影響你的連線。Umbra 是需要自建的命令列用戶端與伺服器，不是代管代理服務。',
+      '真實網站掩護、Vision 拼接與雙傳輸——了解每個機制如何影響你的連線，以及各自的取捨。',
     steps: [
       {
-        title: '以真實目的網站作掩護',
+        title: '藏身於真實目的網站',
         description:
-          'REALITY 驗證區分你的流量與未驗證請求，後者會轉送至設定的真實網站。你需要金鑰與可連線的 TLS 1.3 目的網站，但無需為節點申請 CA 憑證。掩護不保證無法被識別。',
+          'REALITY 驗證嵌入 TLS session_id——對任何觀測者不可見。未驗證探測只會看到與設定目的網站的真實 TLS 交握及真實憑證。無需註冊網域，無需管理 CA 憑證。',
       },
       {
-        title: '有條件地減少雙重加密',
+        title: '消除冗餘加密層',
         description:
-          'TCP mux 讓多個串流共用一條連線。設定 mux=false 後，Vision 僅在驗證完成且內層 TLS 1.3 流量符合條件時，省去外層重複加密；非 TLS 流量繼續加密。',
+          'Vision 真拼接在驗證後逐位元組透傳內層 TLS 記錄——無雙重加密，無 TLS-in-TLS 指紋。TCP mux 讓多串流複用一條連線，配合自適應填充打破長度模式偵測。',
       },
       {
-        title: '依網路選擇 TCP 或 QUIC',
+        title: '依網路選擇傳輸方式',
         description:
-          '傳輸方式需要明確選擇，不會自動容錯切換。QUIC 需要 UDP 開放及可連線的真實 QUIC 回退目標，不保證更快，也不保證消除所有隊頭阻塞。',
+          'TCP 搭配 Geneva 式分段，或 QUIC/HTTP-3 搭配 BBR 擁塞控制——共用同一個 SOCKS5 入口。明確選擇，非自動容錯切換。QUIC 需要 UDP 開放及可達的 QUIC 回落目標。',
       },
     ],
     implementation: '與主流方案怎麼選',
     implementationDescription:
-      'Umbra、Xray 是軟體平台；VLESS、VMess、Trojan、Shadowsocks 是協定，REALITY 與 Vision 則是機制。具體行為由實作與設定決定。沒有競品同條件效能測試，因此這裡不做速度排名。一句話概括：想要掩護、雙傳輸路徑與 SOCKS5 打包成一套自行管理的完整方案時，Umbra 值得選擇；需要其他生態系時，它們的方案更合適。',
+      'Umbra、Xray 是軟體平台；VLESS、VMess、Trojan、Shadowsocks 是協定，REALITY 與 Vision 是機制。具體行為由實作與設定決定。一句話概括：想要真實網站掩護、雙傳輸路徑與 SOCKS5 整合在一個自行管理的執行檔中時，Umbra 值得選擇。',
     strengthsLabel: '優勢',
     limitsLabel: '侷限',
     layers: [
       {
         title: 'Umbra',
         description:
-          '整合 REALITY、TCP mux/Vision、QUIC 與 SOCKS5 的自建 alpha 方案，用戶端與伺服器成對交付、由你端到端管理。',
+          '從零用 Rust 建構：自研 TLS 1.3 堆疊實現位元組級 Chrome 指紋控制，REALITY 式真實網站掩護，Vision 真拼接，自適應 mux，QUIC/HTTP-3 與抗量子金鑰協商——全部整合在一個用戶端與伺服器執行檔中。',
         strengths: [
-          '一個端點承載兩條路徑：TCP Vision 與 QUIC UDP 共用同一個本機 SOCKS5 節點，用戶端只需設定一個入口。',
-          '無需憑證手續：身分金鑰與臨時憑證綁定代替公網 CA 憑證的申請與續期。',
+          '自研 TLS 1.3 堆疊：每個 ClientHello 位元組精確匹配 Chrome——擴充順序、GREASE 位置、金鑰共享組。不是打補丁的通用庫。',
+          'Vision 真拼接消除驗證後的 TLS-in-TLS：內層 TLS 記錄逐位元組透傳，移除通用代理隧道留下的雙重加密指紋。',
+          'TCP 與 QUIC 共用一個 SOCKS5 入口：自適應 mux 跨串流複用連線，QUIC/HTTP-3 為高丟包網路提供 BBR 擁塞控制的 UDP 路徑。',
+          '抗量子混合金鑰協商（X25519MLKEM768）與憑證綁定（ML-DSA-65）內建於交握——不是外掛，不是事後補丁。',
+          '探測抵抗內建於設計：未驗證連線收到真實目的網站回應，而非代理拒絕。時序對齊的路徑防止回應時間分析偵測。',
         ],
         limits: [
           '目前是 alpha 階段的純命令列工具，不相容匯入 VLESS、VMess 或 Trojan 節點。',
@@ -1098,7 +1112,7 @@ const fr: MarketingCopy = {
     protocol: {
       title: 'Comprendre les options pour bien choisir',
       description:
-        'Découvrez la couverture par un site réel, Vision et les choix TCP/QUIC d’Umbra, puis comparez les compromis avec les autres solutions proxy.',
+        'Découvrez la couverture par un site réel, Vision et les choix TCP/QUIC d\'Umbra, puis comparez les compromis avec les autres solutions proxy.',
     },
     security: {
       title: 'La confiance commence par la clarté',
@@ -1108,17 +1122,17 @@ const fr: MarketingCopy = {
     changelog: {
       title: 'Ce qui change pour vous',
       description:
-        'Suivez les versions d’Umbra, les évolutions du traitement des connexions et les consignes de mise à niveau des deux extrémités.',
+        'Suivez les versions d\'Umbra, les évolutions du traitement des connexions et les consignes de mise à niveau des deux extrémités.',
     },
   },
   hero: {
     badge: 'La version 1.0.0-alpha est disponible',
-    title: 'Votre connexion,',
-    accent: 'votre serveur.',
+    title: 'Votre trafic,',
+    accent: 'indistinguable.',
     description:
-      'Hébergez votre propre transport confidentiel avec le client et le serveur en ligne de commande Umbra. Utilisez un site réel comme couverture, choisissez TCP ou QUIC selon votre réseau et connectez vos applications via SOCKS5 en local.',
+      'Un seul binaire, deux extrémités auto-hébergées. Votre trafic ressemble à une négociation TLS de navigateur standard pour tout observateur — pas de domaine, pas de certificat d\'AC, pas de service géré.',
     start: 'Bien démarrer',
-    explore: 'Comparer les solutions',
+    explore: 'Voir le fonctionnement',
     footnote: 'Code ouvert sous licence MIT. Auto-hébergé. Version alpha.',
   },
   diagram: {
@@ -1131,44 +1145,44 @@ const fr: MarketingCopy = {
     caption: 'Votre trafic emprunte le chemin authentifié ; les autres requêtes rejoignent le site réel.',
   },
   facts: [
-    'Couverture par un site réel',
-    'Au choix selon le réseau',
-    'Vos clients existants',
-    'Code ouvert, auto-hébergé',
+    'Aucun domaine ni certificat requis',
+    'Double transport TCP + QUIC',
+    'Négociation post-quantique intégrée',
+    'Un seul binaire, deux extrémités',
   ],
   principles: {
-    eyebrow: 'Pour votre propre déploiement',
-    title: 'Gardez le contrôle.\nGardez vos outils.',
+    eyebrow: 'Conçu pour votre déploiement',
+    title: 'Contrôle total.\nVos outils, vos règles.',
     description:
-      'Choisissez Umbra si vous souhaitez gérer les deux extrémités tout en conservant vos applications, avec des limites de protection clairement définies.',
+      'Exécutez les deux extrémités avec un seul binaire. Connectez vos applications existantes via une entrée SOCKS5 locale — pas de service géré, pas de gestion de certificats.',
     features: [
       {
-        title: 'Un site réel comme couverture',
+        title: 'Empruntez un site réel comme couverture',
         description:
-          'Les requêtes non authentifiées sont transmises à la destination réelle configurée, sans rejet propre à un proxy. Cela ne garantit pas une connexion indétectable.',
+          'Les connexions non authentifiées sont indiscernables de visiteurs légitimes vers votre destination configurée. Pas de rejet propre à un proxy, pas de page d\'erreur caractéristique — juste une session TLS normale vers un site réel.',
       },
       {
-        title: 'Une négociation inspirée du navigateur',
+        title: 'Une négociation construite octet par octet pour correspondre à Chrome',
         description:
-          'Les profils Chrome guident la forme du TLS ClientHello, notamment l’ordre des extensions et GREASE. Suivre ces modèles ne garantit pas une empreinte identique à celle du navigateur.',
+          'Une pile TLS 1.3 écrite from scratch construit chaque extension du ClientHello, chaque valeur GREASE et chaque partage de clé dans l\'ordre exact de Chrome. La forme de la négociation vient de profils de navigateurs réels, pas de valeurs par défaut de bibliothèque générique.',
       },
       {
-        title: 'Pas de certificat d’AC à renouveler pour le nœud',
+        title: 'Zéro gestion de certificats',
         description:
-          'Vous n’avez pas à obtenir ni à renouveler un certificat d’autorité de certification pour le nœud Umbra. Des clés et un site réel TLS 1.3 joignable restent nécessaires.',
+          'L\'identité est établie par accord de clés ECDH et liaison de certificat temporaire — pas de certificat d\'AC à obtenir, configurer ou renouveler. Vous générez des clés, pointez vers une destination TLS 1.3 réelle, et vous êtes prêt.',
       },
       {
-        title: 'Une entrée pour vos outils existants',
+        title: 'Un binaire, un point d\'entrée, tous les transports',
         description:
-          'Une entrée SOCKS5 locale peut acheminer TCP et UDP par des transports configurés séparément. Raccordez un client de type Clash via SOCKS5 pour conserver ses règles de routage.',
+          'Client et serveur en un seul exécutable. TCP avec Vision splice, QUIC avec repli HTTP/3 et mux adaptatif — le tout derrière une seule entrée SOCKS5 locale que vos applications existantes comprennent déjà.',
       },
     ],
   },
   start: {
-    eyebrow: 'De l’installation à la première connexion',
+    eyebrow: 'De l\'installation à la première connexion',
     title: 'Installez. Configurez.\nConnectez vos applications.',
     description:
-      'Téléchargez et installez un fichier adapté, ou compilez depuis les sources avec les commandes ci-dessous si vous le préférez. Générez les clés, configurez le serveur et le client en ligne de commande, puis raccordez vos applications à SOCKS5 sur l’interface de bouclage.',
+      'Téléchargez et installez un fichier adapté, ou compilez depuis les sources avec les commandes ci-dessous si vous le préférez. Générez les clés, configurez le serveur et le client en ligne de commande, puis raccordez vos applications à SOCKS5 sur l\'interface de bouclage.',
     link: 'Lire le guide de démarrage',
     terminal: 'Compiler depuis les sources',
   },
@@ -1194,16 +1208,15 @@ const fr: MarketingCopy = {
     ],
   },
   cta: {
-    title: 'Prenez en main votre prochaine connexion.',
-    description:
-      'Comparez les solutions, vérifiez leurs limites, puis installez Umbra.',
+    title: 'Votre prochaine connexion commence ici.',
+    description: 'Un binaire, deux extrémités, zéro certificat. Déployez Umbra et voyez comment ça marche.',
   },
   footer: {
     description: 'Un transport confidentiel pour un Internet ouvert.',
     project: 'Projet',
     resources: 'Ressources',
     legal:
-      'Pour la protection licite de la vie privée et l’accès à l’Internet ouvert.',
+      'Pour la protection licite de la vie privée et l\'accès à l\'Internet ouvert.',
     license: 'Publié sous licence MIT.',
   },
   download: {
@@ -1221,45 +1234,48 @@ const fr: MarketingCopy = {
       'La compilation est facultative si un fichier publié convient à votre plateforme. Utilisez la même version pour le client et le serveur.',
     verify: 'Vérifiez ce que vous téléchargez',
     verifyDescription:
-      'Utilisez la liste officielle des versions. Vérifiez les fichiers et les informations de validation de la version choisie ; cette page ne garantit pas la disponibilité d’un binaire pour chaque cible.',
+      'Utilisez la liste officielle des versions. Vérifiez les fichiers et les informations de validation de la version choisie ; cette page ne garantit pas la disponibilité d\'un binaire pour chaque cible.',
     requirements:
       'La compilation nécessite la version de Rust fixée par le dépôt (actuellement 1.96.1).',
   },
   protocol: {
     eyebrow: 'Mécanismes et choix',
-    title: 'Comprendre les options.\nChoisir sa configuration.',
+    title: 'Comment ça marche.\nPourquoi c\'est important.',
     description:
-      'Découvrez ce que la couverture par un site réel, Vision et le choix du transport changent pour vos connexions. Umbra est un client et un serveur en ligne de commande à héberger vous-même, pas un service proxy géré.',
+      'Couverture par site réel, splice Vision et double transport — comprenez ce que chaque mécanisme apporte à votre connexion et où se situent les compromis.',
     steps: [
       {
-        title: 'Un site réel comme couverture',
+        title: 'Se dissimuler derrière une destination réelle',
         description:
-          'L’authentification REALITY distingue votre trafic des requêtes non authentifiées, transmises au site réel configuré. Il faut des clés et une destination TLS 1.3 joignable, mais pas de certificat d’AC pour le nœud. Cette couverture ne garantit pas l’invisibilité.',
+          'L\'authentification REALITY est intégrée dans le session_id TLS — invisible pour tout observateur. Les sondes non authentifiées voient une vraie négociation TLS avec le certificat réel de votre destination configurée. Pas de domaine à enregistrer, pas de certificat d\'AC à gérer.',
       },
       {
-        title: 'Réduire le double chiffrement sous conditions',
+        title: 'Éliminer les couches de chiffrement redondantes',
         description:
-          'Le mux TCP partage une connexion entre plusieurs flux. Avec mux=false, Vision retire le chiffrement externe redondant uniquement après authentification et pour du trafic TLS 1.3 interne éligible. Le trafic non TLS reste chiffré.',
+          'Le vrai splice Vision fait passer les enregistrements TLS internes octet par octet après authentification — pas de double chiffrement, pas d\'empreinte TLS-in-TLS. Le mux TCP partage une connexion entre flux avec un remplissage adaptatif pour briser la détection par motif de longueur.',
       },
       {
-        title: 'Choisir TCP ou QUIC selon le réseau',
+        title: 'Choisir le bon transport pour votre réseau',
         description:
-          'Le transport se choisit explicitement, sans basculement automatique. QUIC exige un accès UDP ouvert et une destination de repli QUIC réelle et joignable. Il ne garantit ni plus de vitesse ni l’absence de tout blocage en tête de file.',
+          'TCP avec segmentation style Geneva ou QUIC/HTTP-3 avec contrôle de congestion BBR — les deux derrière la même entrée SOCKS5. Choix explicite, pas de basculement automatique. QUIC nécessite un accès UDP ouvert et une destination de repli QUIC réelle.',
       },
     ],
     implementation: 'Comment choisir parmi les principales solutions',
     implementationDescription:
-      'Umbra et Xray sont des plateformes logicielles ; VLESS, VMess, Trojan et Shadowsocks sont des protocoles, tandis que REALITY et Vision sont des mécanismes. Le comportement dépend de l’implémentation et de la configuration. Aucune mesure comparative à conditions égales ne justifie ici un classement de vitesse. En résumé : Umbra mérite votre choix quand vous voulez la couverture, les deux voies de transport et SOCKS5 livrés en un couple configuré que vous administrez ; les autres l’emportent quand vous avez besoin de leurs écosystèmes.',
+      'Umbra et Xray sont des plateformes logicielles ; VLESS, VMess, Trojan et Shadowsocks sont des protocoles, tandis que REALITY et Vision sont des mécanismes. Le comportement dépend de l\'implémentation et de la configuration. En résumé : Umbra mérite votre choix quand vous voulez une paire intégrée et auto-hébergée avec couverture par site réel, les deux voies de transport et SOCKS5 dans un seul binaire que vous administrez de bout en bout.',
     strengthsLabel: 'Points forts',
     limitsLabel: 'Limites',
     layers: [
       {
         title: 'Umbra',
         description:
-          'Une solution alpha auto-hébergée intégrant REALITY, TCP mux/Vision, QUIC et SOCKS5 : client et serveur livrés en couple, administrés de bout en bout par vos soins.',
+          'Une implémentation Rust écrite from scratch : pile TLS 1.3 auto-développée avec contrôle d\'empreinte Chrome au niveau octet, couverture par site réel style REALITY, vrai splice Vision, mux adaptatif, QUIC/HTTP-3 et négociation de clés post-quantique — le tout dans un seul binaire client et serveur.',
         strengths: [
-          'Un seul point d’accès pour les deux voies : TCP Vision et UDP QUIC passent par le même nœud SOCKS5 local ; les clients ne configurent qu’un seul point d’entrée.',
-          'Aucune démarche de certificat : les clés d’identité et la liaison au certificat temporaire remplacent la demande et le renouvellement d’un certificat CA public.',
+          'Pile TLS 1.3 auto-développée : chaque octet du ClientHello est construit pour correspondre exactement à Chrome — ordre des extensions, placement GREASE, groupes de partage de clés. Pas une bibliothèque avec des correctifs d\'empreinte.',
+          'Le vrai splice Vision élimine le TLS-in-TLS après authentification : les enregistrements TLS internes passent octet par octet, supprimant l\'empreinte de double chiffrement que laissent les tunnels proxy génériques.',
+          'TCP et QUIC derrière une seule entrée SOCKS5 : le mux adaptatif partage les connexions entre flux, tandis que QUIC/HTTP-3 offre un chemin UDP avec contrôle de congestion BBR pour les réseaux à pertes.',
+          'Négociation de clés hybride post-quantique (X25519MLKEM768) et liaison de certificat (ML-DSA-65) intégrées dans la négociation — pas un greffon, pas une réflexion après coup.',
+          'Résistance aux sondes intégrée dès la conception : les connexions non authentifiées reçoivent une réponse de la destination réelle, pas un rejet de proxy. Des chemins alignés temporellement empêchent la détection par analyse du temps de réponse.',
         ],
         limits: [
           'Alpha en ligne de commande uniquement ; aucun import de nœuds VLESS, VMess ou Trojan.',
@@ -1269,9 +1285,9 @@ const fr: MarketingCopy = {
       {
         title: 'Xray + VLESS + REALITY',
         description:
-          'L’alternative la plus proche : REALITY et Vision y sont aussi disponibles ; le choix porte sur l’emballage et le flux de travail, pas sur une technologie exclusive.',
+          'L\'alternative la plus proche : REALITY et Vision y sont aussi disponibles ; le choix porte sur l\'emballage et le flux de travail, pas sur une technologie exclusive.',
         strengths: [
-          'Plateforme multiprotocole mature : routage riche, nombreux clients prêts à l’emploi et documentation communautaire étendue.',
+          'Plateforme multiprotocole mature : routage riche, nombreux clients prêts à l\'emploi et documentation communautaire étendue.',
         ],
         limits: [
           'Vous assemblez et maintenez la pile vous-même : configuration centrale, couches de transport, règles de routage et clients assortis.',
@@ -1293,19 +1309,19 @@ const fr: MarketingCopy = {
       {
         title: 'Trojan',
         description:
-          'Un protocole proxy fondé sur TLS, pour ceux qui préfèrent un déploiement TLS classique ; le repli dépend de l’implémentation et de la configuration.',
+          'Un protocole proxy fondé sur TLS, pour ceux qui préfèrent un déploiement TLS classique ; le repli dépend de l\'implémentation et de la configuration.',
         strengths: [
           'Véritable poignée de main TLS, repli documenté, conception stable depuis des années.',
         ],
         limits: [
           'Les installations courantes demandent de gérer un domaine et de renouveler un certificat public de confiance.',
-          'L’UDP voyage dans TCP sous TLS : sa latence suit le chemin TCP.',
+          'L\'UDP voyage dans TCP sous TLS : sa latence suit le chemin TCP.',
         ],
       },
       {
         title: 'Shadowsocks',
         description:
-          'Un proxy chiffré léger pour les déploiements simples ; l’imitation d’un navigateur et la couverture par un site réel ne font pas partie des protocoles de base AEAD ou 2022.',
+          'Un proxy chiffré léger pour les déploiements simples ; l\'imitation d\'un navigateur et la couverture par un site réel ne font pas partie des protocoles de base AEAD ou 2022.',
         strengths: [
           'Composants minimaux : des clés et un client assorti, sans domaine ni certificat.',
         ],
@@ -1328,7 +1344,7 @@ const fr: MarketingCopy = {
       },
     ],
     caveat:
-      'Limites d’empreinte : chrome-latest suit toujours le profil historique de Chrome 150. Les captures de Chrome 153 ne démontrent pas une équivalence complète d’empreinte. ML-DSA lie la clé publique du certificat temporaire ; ML-KEM intervient dans la dérivation des clés uniquement si un groupe hybride est négocié. La sonde de destination du CLI standard utilise ring sans prise en charge de ML-KEM : aucune garantie post-quantique de bout en bout par défaut.',
+      'Limites d\'empreinte : chrome-latest suit toujours le profil historique de Chrome 150. Les captures de Chrome 153 ne démontrent pas une équivalence complète d\'empreinte. ML-DSA lie la clé publique du certificat temporaire ; ML-KEM intervient dans la dérivation des clés uniquement si un groupe hybride est négocié. La sonde de destination du CLI standard utilise ring sans prise en charge de ML-KEM : aucune garantie post-quantique de bout en bout par défaut.',
   },
   security: {
     eyebrow: 'Sécurité et responsabilités',
@@ -1339,30 +1355,30 @@ const fr: MarketingCopy = {
       {
         title: 'Protéger les clés et les identifiants',
         description:
-          'Ne placez pas les clés privées du serveur ni les identifiants clients dans des configurations partagées, des journaux ou des rapports publics. Limitez l’accès aux fichiers qui les contiennent.',
+          'Ne placez pas les clés privées du serveur ni les identifiants clients dans des configurations partagées, des journaux ou des rapports publics. Limitez l\'accès aux fichiers qui les contiennent.',
       },
       {
-        title: 'Réserver l’accès local à votre appareil',
+        title: 'Réserver l\'accès local à votre appareil',
         description:
-          'L’écoute SOCKS5 locale n’a pas d’authentification. Liez-la à l’interface de bouclage ; l’ouvrir à d’autres appareils exige des contrôles d’accès distincts.',
+          'L\'écoute SOCKS5 locale n\'a pas d\'authentification. Liez-la à l\'interface de bouclage ; l\'ouvrir à d\'autres appareils exige des contrôles d\'accès distincts.',
       },
       {
         title: 'Conserver HTTPS de bout en bout',
         description:
-          'Gardez HTTPS dans vos applications, même avec Umbra. Vision ne retire que le chiffrement externe redondant lorsque les conditions sont réunies ; il ne remplace pas le TLS de l’application.',
+          'Gardez HTTPS dans vos applications, même avec Umbra. Vision ne retire que le chiffrement externe redondant lorsque les conditions sont réunies ; il ne remplace pas le TLS de l\'application.',
       },
       {
         title: 'Connaître les limites de la couverture',
         description:
-          'Les requêtes non authentifiées rejoignent le site réel, sans rejet propre à un proxy. Cela ne rend pas tout le trafic indiscernable et n’exclut pas sa détection par un observateur.',
+          'Les requêtes non authentifiées rejoignent le site réel, sans rejet propre à un proxy. Cela ne rend pas tout le trafic indiscernable et n\'exclut pas sa détection par un observateur.',
       },
     ],
     limitsTitle: 'Comprendre les limites',
     limits: [
-      'Umbra est un logiciel alpha ; cette page n’atteste pas d’un audit de sécurité indépendant.',
+      'Umbra est un logiciel alpha ; cette page n\'atteste pas d\'un audit de sécurité indépendant.',
       'Conservez HTTPS dans les applications. Un transport confidentiel ne rend pas fiables les appareils, navigateurs ou services de destination.',
-      'L’écoute SOCKS5 locale ne propose pas d’authentification. Gardez-la sur l’interface de bouclage sans autre contrôle d’accès explicite.',
-      'L’équivalence complète avec les empreintes Chrome n’est pas établie. La détectabilité dépend du réseau et de l’observateur.',
+      'L\'écoute SOCKS5 locale ne propose pas d\'authentification. Gardez-la sur l\'interface de bouclage sans autre contrôle d\'accès explicite.',
+      'L\'équivalence complète avec les empreintes Chrome n\'est pas établie. La détectabilité dépend du réseau et de l\'observateur.',
       'Protégez les clés privées du serveur et les identifiants clients. Déploiement, mises à jour et sécurité des terminaux restent à votre charge.',
     ],
     disclosure: 'Signaler les problèmes sans exposer les secrets.',
@@ -1439,13 +1455,13 @@ const es: MarketingCopy = {
   },
   hero: {
     badge: '1.0.0-alpha ya está disponible',
-    title: 'Tu conexión,',
-    accent: 'tu servidor.',
+    title: 'Tu tráfico,',
+    accent: 'indistinguible.',
     description:
-      'Aloja tu propio transporte privado con el cliente y el servidor de línea de comandos de Umbra. Usa un sitio real como cobertura, elige TCP o QUIC según tu red y conecta tus aplicaciones mediante SOCKS5 local.',
+      'Un solo binario, ambos extremos. Para cualquier observador, tu tráfico parece un saludo TLS estándar de navegador — sin dominio, sin certificado CA, sin servicio gestionado.',
     start: 'Primeros pasos',
-    explore: 'Comparar soluciones',
-    footnote: 'Código abierto con licencia MIT. Alojamiento propio. Versión alpha.',
+    explore: 'Ver cómo funciona',
+    footnote: 'Código abierto MIT. Autoalojado. Software alpha.',
   },
   diagram: {
     client: 'Tu dispositivo',
@@ -1457,36 +1473,36 @@ const es: MarketingCopy = {
     caption: 'Tu tráfico usa la ruta autenticada; las demás solicitudes van al sitio real.',
   },
   facts: [
-    'Cobertura con un sitio real',
-    'Elige según tu red',
-    'Conecta tus clientes actuales',
-    'Código abierto, alojamiento propio',
+    'Sin dominio ni certificado',
+    'TCP + QUIC doble transporte',
+    'Handshake poscuántico integrado',
+    'Un solo binario, ambos extremos',
   ],
   principles: {
-    eyebrow: 'Para tu propio despliegue',
-    title: 'Conserva el control.\nY tus herramientas.',
+    eyebrow: 'Construido para tu propio despliegue',
+    title: 'Cobertura con sitio real.\nHandshake Chrome byte a byte.',
     description:
-      'Elige Umbra si quieres gestionar ambos extremos sin dejar tus aplicaciones habituales, con límites claros sobre lo que protege el transporte.',
+      'Umbra es un cliente y servidor autoalojados. Un solo binario ejecuta ambos extremos; sin dominio, sin certificado CA, sin servicio gestionado.',
     features: [
       {
-        title: 'Un sitio real como cobertura',
+        title: 'Cobertura con un sitio real',
         description:
-          'Las solicitudes sin autenticar se reenvían al destino real configurado, sin un rechazo propio de un proxy. Esto no garantiza que la conexión sea indetectable.',
+          'Las solicitudes sin autenticar se reenvían a un destino TLS 1.3 real y accesible. Sin rechazo específico de proxy, sin certificado propio.',
       },
       {
-        title: 'Un saludo inspirado en el navegador',
+        title: 'Handshake Chrome byte a byte',
         description:
-          'Los perfiles de Chrome guían la forma del TLS ClientHello, incluido el orden de extensiones y GREASE. Seguir esos patrones no garantiza una huella idéntica a la del navegador.',
+          'Una pila TLS 1.3 escrita desde cero reproduce el ClientHello de Chrome byte a byte — orden de extensiones, GREASE, cada campo.',
       },
       {
-        title: 'Sin renovar certificados de CA para el nodo',
+        title: 'Cero gestión de certificados',
         description:
-          'No necesitas obtener ni renovar un certificado emitido por una CA para el nodo Umbra. Sigues necesitando claves y un sitio real TLS 1.3 accesible como cobertura.',
+          'No necesitas obtener ni renovar un certificado CA. Las claves de identidad y la vinculación al certificado temporal son suficientes.',
       },
       {
-        title: 'Una entrada para tus herramientas',
+        title: 'Un binario, ambos extremos',
         description:
-          'Una entrada SOCKS5 local puede llevar TCP y UDP por transportes configurados por separado. Conecta un cliente de tipo Clash mediante SOCKS5 para conservar sus reglas de enrutamiento.',
+          'Cliente y servidor se entregan en un solo binario que autoalojas. Sin dependencias adicionales, sin servicio gestionado.',
       },
     ],
   },
@@ -1520,8 +1536,8 @@ const es: MarketingCopy = {
     ],
   },
   cta: {
-    title: 'Toma el control de tu próxima conexión.',
-    description: 'Compara las opciones, revisa los límites y configura Umbra.',
+    title: 'Tu próxima conexión empieza aquí.',
+    description: 'Un solo binario, ambos extremos. Autoalojado desde el primer día.'
   },
   footer: {
     description: 'Transporte de privacidad para una internet abierta.',
@@ -1551,40 +1567,43 @@ const es: MarketingCopy = {
       'La compilación requiere la versión de Rust fijada por el repositorio (actualmente 1.96.1).',
   },
   protocol: {
-    eyebrow: 'Mecanismos y elección',
-    title: 'Entiende las opciones.\nElige tu configuración.',
+    eyebrow: 'Mecanismos y decisiones',
+    title: 'Cobertura, Vision,\ntransporte.',
     description:
-      'Descubre qué aportan la cobertura con un sitio real, Vision y la elección del transporte a tus conexiones. Umbra es un cliente y un servidor de línea de comandos que alojas tú, no un servicio proxy gestionado.',
+      'Tres mecanismos, un par autoalojado. Umbra es un cliente y servidor que administras tú; sin dominio, sin certificado CA, sin servicio gestionado.',
     steps: [
       {
-        title: 'Usa un destino real como cobertura',
+        title: 'Enruta a través de un destino real',
         description:
-          'La autenticación REALITY distingue tu tráfico de las solicitudes sin autenticar, que se reenvían al sitio real configurado. Necesitas claves y un destino TLS 1.3 accesible, pero no un certificado de CA para el nodo. La cobertura no garantiza invisibilidad.',
+          'Las solicitudes sin autenticar se reenvían a un sitio TLS 1.3 real y accesible. No necesitas dominio ni certificado CA para tu nodo; las claves de identidad y la vinculación temporal son suficientes.',
       },
       {
-        title: 'Reduce el doble cifrado cuando corresponde',
+        title: 'Empalma con Vision tras la autenticación',
         description:
-          'El mux TCP comparte una conexión entre varios flujos. Con mux=false, Vision retira el cifrado externo redundante solo tras la autenticación y para tráfico TLS 1.3 interno que cumpla las condiciones. El tráfico no TLS sigue cifrado.',
+          'Una vez autenticado, Vision elimina el cifrado externo redundante para el tráfico TLS 1.3 interno elegible, dejando el HTTPS de la aplicación como la única capa TLS visible para el observador.',
       },
       {
-        title: 'Elige TCP o QUIC según tu red',
+        title: 'Transporta TCP y QUIC tras un solo SOCKS5',
         description:
-          'El transporte se elige explícitamente, sin conmutación automática ante fallos. QUIC necesita UDP abierto y un destino QUIC real y accesible para el tráfico de cobertura. No garantiza más velocidad ni la ausencia de todo bloqueo de cabecera de línea.',
+          'Un único SOCKS5 local transporta TCP y QUIC. El mux adaptativo y BBR comparten el camino; la selección de transporte es explícita, no conmutación automática.',
       },
     ],
     implementation: 'Cómo elegir entre las principales soluciones',
     implementationDescription:
-      'Umbra y Xray son plataformas de software; VLESS, VMess, Trojan y Shadowsocks son protocolos, mientras que REALITY y Vision son mecanismos. El comportamiento depende de la implementación y la configuración. Sin pruebas comparativas en igualdad de condiciones, aquí no hay una clasificación por velocidad. En resumen: Umbra merece tu elección cuando quieres cobertura, ambas vías de transporte y SOCKS5 entregados como un par configurado que administras tú; las demás ganan cuando necesitas sus ecosistemas.',
+      'Umbra y Xray son plataformas de software; VLESS, VMess, Trojan y Shadowsocks son protocolos, mientras que REALITY y Vision son mecanismos. La implementación y la configuración determinan el comportamiento. Umbra merece tu elección cuando quieres cobertura, ambas vías de transporte y SOCKS5 entregados como un par configurado que administras; las demás ganan cuando necesitas sus ecosistemas.',
     strengthsLabel: 'Ventajas',
-    limitsLabel: 'Limitaciones',
+    limitsLabel: 'Compromisos',
     layers: [
       {
         title: 'Umbra',
         description:
-          'Una solución alpha de alojamiento propio que integra REALITY, TCP mux/Vision, QUIC y SOCKS5: cliente y servidor se entregan como par y los administras de extremo a extremo.',
+          'Una pila TLS 1.3 escrita desde cero y una implementación en Rust desde cero: cobertura con sitio real, empalme Vision, TCP + QUIC tras un SOCKS5, handshake poscuántico, resistencia a sondas.',
         strengths: [
-          'Un único extremo cubre ambas vías: TCP Vision y UDP QUIC comparten el mismo nodo SOCKS5 local, de modo que los clientes solo configuran un punto de entrada.',
-          'Sin trámites de certificados: las claves de identidad y el enlace al certificado temporal sustituyen a solicitar y renovar un certificado de CA público.',
+          'Pila TLS 1.3 propia, huella Chrome a nivel de byte',
+          'El empalme Vision real elimina TLS-en-TLS',
+          'TCP y QUIC tras un solo SOCKS5, mux adaptativo + BBR',
+          'Poscuántico (X25519MLKEM768 + ML-DSA-65) integrado en el handshake',
+          'Resistencia a sondas por diseño, caminos con temporización alineada',
         ],
         limits: [
           'Alpha y solo de línea de comandos por ahora; no importa nodos VLESS, VMess ni Trojan.',
@@ -1764,12 +1783,12 @@ const ja: MarketingCopy = {
   },
   hero: {
     badge: '1.0.0-alpha を公開しました',
-    title: '自分の接続を、',
-    accent: '自分のサーバーで。',
+    title: 'あなたのトラフィック、',
+    accent: '見分けがつかない。',
     description:
-      'Umbra の CLI クライアントとサーバーで、プライバシー通信を自分で運用。実在サイトをカバーに使い、ネットワークに合わせて TCP または QUIC を選び、ローカル SOCKS5 からいつものアプリを接続できます。',
+      'ひとつのバイナリで両端を。どの観測者から見ても、あなたのトラフィックは標準的なブラウザーの TLS ハンドシェイクに見えます — ドメインなし、CA 証明書なし、管理サービスなし。',
     start: 'はじめる',
-    explore: '方式を比較する',
+    explore: '仕組みを見る',
     footnote: 'MIT オープンソース · セルフホスト · Alpha 版',
   },
   diagram: {
@@ -1782,36 +1801,36 @@ const ja: MarketingCopy = {
     caption: '自分の通信は認証済みの経路へ。それ以外のリクエストは実在サイトへ転送します。',
   },
   facts: [
-    '実在サイトによるカバー',
-    'ネットワークに合わせて選択',
-    '既存クライアントと接続',
-    'オープンソースで自分で運用',
+    'ドメインも証明書も不要',
+    'TCP + QUIC デュアルトランスポート',
+    '耐量子ハンドシェイク標準搭載',
+    'ひとつのバイナリで両端を',
   ],
   principles: {
-    eyebrow: '自分で運用するための選択',
-    title: '接続は自分で管理。\nツールはそのまま。',
+    eyebrow: '自分の運用のために',
+    title: '実在サイトによるカバー。\nChrome とバイト単位のハンドシェイク。',
     description:
-      '両端を自分で管理しながら、使い慣れたアプリを利用したい方に。Umbra が保護できる範囲を理解したうえで選べます。',
+      'Umbra はセルフホストのクライアントとサーバーです。ひとつのバイナリで両端を動かします。ドメインなし、CA 証明書なし、管理サービスなし。',
     features: [
       {
-        title: '実在サイトをカバーに',
+        title: '実在サイトによるカバー',
         description:
-          '未認証のリクエストは、プロキシ特有の拒否応答ではなく、設定した実在の接続先へ転送します。接続が検知されないことを保証するものではありません。',
+          '未認証のリクエストは、到達可能な実在の TLS 1.3 接続先へ転送されます。プロキシ特有の拒否応答なし、自分自身の証明書も不要。',
       },
       {
-        title: 'ブラウザーに倣ったハンドシェイク',
+        title: 'Chrome とバイト単位のハンドシェイク',
         description:
-          'Chrome プロファイルに基づき、拡張の順序や GREASE を含む TLS ClientHello を構成します。ブラウザーのパターンを参考にしますが、指紋の完全一致は保証しません。',
+          'ゼロから書いた TLS 1.3 スタックが、Chrome の ClientHello をバイト単位で再現します — 拡張の順序、GREASE、すべてのフィールド。',
       },
       {
-        title: 'ノード用 CA 証明書の管理は不要',
+        title: '証明書の管理はゼロ',
         description:
-          'Umbra ノード用に CA 発行証明書を取得・更新する必要はありません。ただし、鍵と、カバーに使う到達可能な実在 TLS 1.3 サイトは必要です。',
+          'CA 証明書の取得も更新も不要です。アイデンティティ鍵と一時証明書のバインドだけで十分です。',
       },
       {
-        title: 'ひとつの入口で、いつものツールを',
+        title: 'ひとつのバイナリで両端を',
         description:
-          'ローカル SOCKS5 から TCP と UDP を、それぞれ設定した通信経路へ振り分けられます。Clash 系クライアントを SOCKS5 経由で接続すれば、そのルーティングルールを維持できます。',
+          'クライアントとサーバーをひとつのバイナリで提供し、自分でホストします。追加の依存も管理サービスもありません。',
       },
     ],
   },
@@ -1844,8 +1863,8 @@ const ja: MarketingCopy = {
     ],
   },
   cta: {
-    title: '次の接続は、自分で管理。',
-    description: '方式を比較し、制限を確認してから、Umbra を導入しましょう。',
+    title: '次の接続は、ここから。',
+    description: 'ひとつのバイナリで両端を。初日からセルフホスト。'
   },
   footer: {
     description: 'オープンなインターネットのためのプライバシー通信。',
@@ -1875,40 +1894,43 @@ const ja: MarketingCopy = {
       'ビルドにはリポジトリで固定された Rust ツールチェーン（現在 1.96.1）が必要です。',
   },
   protocol: {
-    eyebrow: '仕組みと選び方',
-    title: '仕組みを知り、\n自分に合う構成を。',
+    eyebrow: '仕組みと選択',
+    title: 'カバー、Vision、\nトランスポート。',
     description:
-      '実在サイトによるカバー、Vision、通信方式の選択が接続にどう関わるかを確認できます。Umbra は自分で運用する CLI クライアントとサーバーであり、運用代行型のプロキシサービスではありません。',
+      '3 つの仕組み、1 つのセルフホストペア。Umbra はあなたが管理するクライアントとサーバーです。ドメインなし、CA 証明書なし、管理サービスなし。',
     steps: [
       {
-        title: '実在の接続先をカバーにする',
+        title: '実在の接続先を経路にする',
         description:
-          'REALITY 認証で自分の通信を区別し、未認証のリクエストは設定した実在サイトへ転送します。鍵と到達可能な TLS 1.3 サイトは必要ですが、ノード用 CA 証明書は不要です。カバーは検知されないことを保証しません。',
+          '未認証のリクエストは、到達可能な実在の TLS 1.3 サイトへ転送されます。ノード用のドメインも CA 証明書も不要です。アイデンティティ鍵と一時バインドだけで十分です。',
       },
       {
-        title: '条件を満たす通信の二重暗号化を減らす',
+        title: '認証後に Vision で継ぎ接ぐ',
         description:
-          'TCP mux は複数のストリームで接続を共有します。mux=false の場合、Vision は認証後、条件を満たす内側の TLS 1.3 通信に限り、重複する外側の暗号化を省きます。非 TLS 通信の暗号化は継続します。',
+          '認証後、Vision は条件を満たす内側の TLS 1.3 トラフィックの冗長な外側暗号化を除去し、観測者に見える TLS 層はアプリケーションの HTTPS だけになります。',
       },
       {
-        title: 'ネットワークに合わせて TCP か QUIC を選ぶ',
+        title: 'ひとつの SOCKS5 の背後に TCP と QUIC を載せる',
         description:
-          '通信方式は明示的に選択し、自動フェイルオーバーは行いません。QUIC には UDP の疎通と、到達可能な実在の QUIC フォールバック先が必要です。高速化や、あらゆるヘッドオブラインブロッキングの解消を保証するものではありません。',
+          '単一のローカル SOCKS5 が TCP と QUIC を運びます。適応型 mux と BBR が経路を共有し、トランスポートの選択は明示的で、自動フェイルオーバーではありません。',
       },
     ],
     implementation: '主な方式と、どう選び分けるか',
     implementationDescription:
-      'Umbra と Xray はソフトウェアプラットフォーム、VLESS・VMess・Trojan・Shadowsocks はプロトコル、REALITY と Vision は仕組みです。実際の動作は実装と設定で変わります。同条件の競合比較測定がないため、速度の順位付けはしません。ひとことで言えば、カバーと二つの転送経路と SOCKS5 を、自分で管理する一組の構成としてまとめて受け取りたいなら Umbra が向いており、各種エコシステムが必要なら他の選択肢が向いています。',
-    strengthsLabel: '長所',
-    limitsLabel: '制約',
+      'Umbra と Xray はソフトウェアプラットフォーム、VLESS・VMess・Trojan・Shadowsocks はプロトコル、REALITY と Vision は仕組みです。実際の動作は実装と設定で変わります。カバーと二つの転送経路と SOCKS5 を、自分で管理する一組の構成としてまとめて受け取りたいなら Umbra が向いており、各種エコシステムが必要なら他の選択肢が向いています。',
+    strengthsLabel: '強み',
+    limitsLabel: 'トレードオフ',
     layers: [
       {
         title: 'Umbra',
         description:
-          'REALITY、TCP mux/Vision、QUIC、SOCKS5 を統合したセルフホスト型の alpha です。クライアントとサーバーが一組として提供され、両端を自分で管理します。',
+          'ゼロから書いた TLS 1.3 スタックと Rust によるゼロからの実装：実在サイトによるカバー、Vision 継ぎ接ぎ、ひとつの SOCKS5 の背後に TCP + QUIC、耐量子ハンドシェイク、プローブ耐性。',
         strengths: [
-          '一つのエンドポイントで両経路を賄えます。TCP Vision と QUIC UDP が同一のローカル SOCKS5 ノードの背後にあり、クライアントの設定は一箇所だけで済みます。',
-          '証明書の手続きが不要です。アイデンティティ鍵と一時証明書のバインドにより、公開 CA 証明書の取得と更新が不要になります。',
+          '自作の TLS 1.3 スタック、バイトレベルの Chrome 指紋',
+          'Vision の真の継ぎ接ぎが TLS-in-TLS を排除',
+          'ひとつの SOCKS5 の背後に TCP と QUIC、適応型 mux + BBR',
+          '耐量子（X25519MLKEM768 + ML-DSA-65）をハンドシェイクに組み込み',
+          '設計によるプローブ耐性、タイミング整合パス',
         ],
         limits: [
           '現時点では alpha の CUI 専用で、VLESS・VMess・Trojan ノードの取り込みには対応していません。',
@@ -2062,7 +2084,7 @@ const ca: MarketingCopy = {
     home: {
       title: 'La teva connexió. El teu servidor.',
       description:
-        'Allotja el teu transport privat amb el client i el servidor de línia d’ordres d’Umbra. Cobertura amb un lloc real, TCP o QUIC i SOCKS5 local per a les teves aplicacions.',
+        'Allotja el teu transport privat amb el client i el servidor de línia d\'ordres d\'Umbra. Cobertura amb un lloc real, TCP o QUIC i SOCKS5 local per a les teves aplicacions.',
     },
     download: {
       title: 'Aconsegueix Umbra',
@@ -2072,7 +2094,7 @@ const ca: MarketingCopy = {
     protocol: {
       title: 'Entén les opcions. Tria la configuració.',
       description:
-        'Coneix la cobertura amb un lloc real, Vision i les opcions TCP/QUIC d’Umbra, i compara’n els avantatges i els límits amb altres solucions de servidor intermediari.',
+        'Coneix la cobertura amb un lloc real, Vision i les opcions TCP/QUIC d\'Umbra, i compara\'n els avantatges i els límits amb altres solucions de servidor intermediari.',
     },
     security: {
       title: 'La confiança comença amb claredat',
@@ -2082,18 +2104,18 @@ const ca: MarketingCopy = {
     changelog: {
       title: 'Què canvia per a tu',
       description:
-        'Segueix les versions d’Umbra, els canvis en la gestió de connexions i les indicacions per actualitzar tots dos extrems.',
+        'Segueix les versions d\'Umbra, els canvis en la gestió de connexions i les indicacions per actualitzar tots dos extrems.',
     },
   },
   hero: {
     badge: 'Ja és aquí la versió 1.0.0-alpha',
-    title: 'La teva connexió,',
-    accent: 'el teu servidor.',
+    title: 'El teu trànsit,',
+    accent: 'indistingible.',
     description:
-      'Allotja el teu transport privat amb el client i el servidor de línia d’ordres d’Umbra. Fes servir un lloc real com a cobertura, tria TCP o QUIC segons la xarxa i connecta les teves aplicacions mitjançant SOCKS5 local.',
+      'Un sol binari, tots dos extrems. Per a qualsevol observador, el teu trànsit sembla una negociació TLS estàndard de navegador — sense domini, sense certificat CA, sense servei gestionat.',
     start: 'Primers passos',
-    explore: 'Compara les solucions',
-    footnote: 'Codi obert amb llicència MIT. Allotjament propi. Versió alfa.',
+    explore: 'Veure com funciona',
+    footnote: 'Codi obert MIT. Allotjament propi. Programari alfa.',
   },
   diagram: {
     client: 'El teu dispositiu',
@@ -2105,36 +2127,36 @@ const ca: MarketingCopy = {
     caption: 'El teu trànsit segueix el camí autenticat; la resta de peticions van al lloc real.',
   },
   facts: [
-    'Cobertura amb un lloc real',
-    'Tria segons la xarxa',
-    'Connecta els clients actuals',
-    'Codi obert, allotjament propi',
+    'Sense domini ni certificat',
+    'TCP + QUIC doble transport',
+    'Negociació postquàntica integrada',
+    'Un sol binari, tots dos extrems',
   ],
   principles: {
-    eyebrow: 'Per al teu propi desplegament',
-    title: 'Conserva el control.\nI les teves eines.',
+    eyebrow: 'Construït per al teu propi desplegament',
+    title: 'Cobertura amb lloc real.\nNegociació Chrome byte a byte.',
     description:
-      'Tria Umbra si vols gestionar tots dos extrems sense deixar les aplicacions habituals, amb límits clars sobre què protegeix el transport.',
+      'Umbra és un client i servidor autoallotjats. Un sol binari executa tots dos extrems; sense domini, sense certificat CA, sense servei gestionat.',
     features: [
       {
-        title: 'Un lloc real com a cobertura',
+        title: 'Cobertura amb un lloc real',
         description:
-          'Les peticions no autenticades es reenvien a la destinació real configurada, sense un rebuig propi d’un intermediari. Això no garanteix que la connexió sigui indetectable.',
+          'Les peticions no autenticades es reenvien a una destinació TLS 1.3 real i accessible. Sense rebuig específic d\'intermediari, sense certificat propi.',
       },
       {
-        title: 'Una negociació inspirada en el navegador',
+        title: 'Negociació Chrome byte a byte',
         description:
-          'Els perfils de Chrome guien la forma del TLS ClientHello, inclosos l’ordre d’extensions i GREASE. Seguir aquests patrons no garanteix una empremta idèntica a la del navegador.',
+          'Una pila TLS 1.3 escrita des de zero reprodueix el ClientHello de Chrome byte a byte — ordre d\'extensions, GREASE, cada camp.',
       },
       {
-        title: 'Sense renovar certificats d’AC per al node',
+        title: 'Zero gestió de certificats',
         description:
-          'No cal obtenir ni renovar un certificat emès per una autoritat de certificació per al node Umbra. Encara necessites claus i un lloc real TLS 1.3 accessible com a cobertura.',
+          'No cal obtenir ni renovar cap certificat CA. Les claus d\'identitat i la vinculació al certificat temporal són suficients.',
       },
       {
-        title: 'Una entrada per a les teves eines',
+        title: 'Un sol binari, tots dos extrems',
         description:
-          'Una entrada SOCKS5 local pot portar TCP i UDP per transports configurats per separat. Connecta un client de tipus Clash mitjançant SOCKS5 per conservar-ne les regles d’encaminament.',
+          'Client i servidor es lliuren en un sol binari que allotges tu. Sense dependències addicionals, sense servei gestionat.',
       },
     ],
   },
@@ -2142,7 +2164,7 @@ const ca: MarketingCopy = {
     eyebrow: 'De la instal·lació a la primera connexió',
     title: 'Instal·la. Configura.\nConnecta les aplicacions.',
     description:
-      'Baixa i instal·la un fitxer publicat per a la teva plataforma, o compila opcionalment amb les ordres de sota. Genera les claus, configura el servidor i el client de línia d’ordres, i dirigeix les aplicacions al SOCKS5 local vinculat a la interfície de bucle local.',
+      'Baixa i instal·la un fitxer publicat per a la teva plataforma, o compila opcionalment amb les ordres de sota. Genera les claus, configura el servidor i el client de línia d\'ordres, i dirigeix les aplicacions al SOCKS5 local vinculat a la interfície de bucle local.',
     link: 'Llegeix la guia ràpida',
     terminal: 'Compila des del codi font',
   },
@@ -2157,7 +2179,7 @@ const ca: MarketingCopy = {
         description: 'Instal·la Umbra i connecta el primer client.',
       },
       {
-        title: 'Configura’l al teu gust',
+        title: 'Configura\'l al teu gust',
         description:
           'Entén els paràmetres del servidor, del client i del transport.',
       },
@@ -2168,24 +2190,24 @@ const ca: MarketingCopy = {
     ],
   },
   cta: {
-    title: 'Pren el control de la pròxima connexió.',
-    description: 'Compara les opcions, revisa els límits i configura Umbra.',
+    title: 'La teva pròxima connexió comença aquí.',
+    description: 'Un sol binari, tots dos extrems. Autoallotjat des del primer dia.'
   },
   footer: {
     description: 'Transport de privacitat per a una internet oberta.',
     project: 'Projecte',
     resources: 'Recursos',
     legal:
-      'Per a la protecció legal de la privacitat i l’accés a la internet oberta.',
+      'Per a la protecció legal de la privacitat i l\'accés a la internet oberta.',
     license: 'Publicat sota la llicència MIT.',
   },
   download: {
     eyebrow: 'La pròxima connexió comença aquí',
     title: 'Aconsegueix Umbra.',
     description:
-      'Un programa de línia d’ordres inclou els modes client i servidor. Tria un fitxer publicat per a la teva plataforma o compila’l tu mateix.',
+      'Un programa de línia d\'ordres inclou els modes client i servidor. Tria un fitxer publicat per a la teva plataforma o compila\'l tu mateix.',
     alpha:
-      'Versió alfa · consulta la configuració i les notes de seguretat abans d’utilitzar-la.',
+      'Versió alfa · consulta la configuració i les notes de seguretat abans d\'utilitzar-la.',
     platform: 'Plataforma',
     architecture: 'Arquitectura',
     releases: 'Veure els fitxers publicats',
@@ -2194,67 +2216,70 @@ const ca: MarketingCopy = {
       'Compilar és opcional si hi ha un fitxer publicat adequat per a la teva plataforma. Fes servir la mateixa versió al client i al servidor.',
     verify: 'Coneix el que baixes',
     verifyDescription:
-      'Baixa’l des de la llista oficial de versions. Comprova els fitxers i la informació de verificació de la versió; aquesta pàgina no garanteix binaris publicats per a totes les plataformes.',
+      'Baixa\'l des de la llista oficial de versions. Comprova els fitxers i la informació de verificació de la versió; aquesta pàgina no garanteix binaris publicats per a totes les plataformes.',
     requirements:
       'La compilació requereix la versió de Rust fixada pel repositori (actualment 1.96.1).',
   },
   protocol: {
-    eyebrow: 'Mecanismes i elecció',
-    title: 'Entén les opcions.\nTria la configuració.',
+    eyebrow: 'Mecanismes i decisions',
+    title: 'Cobertura, Vision,\ntransport.',
     description:
-      'Descobreix què aporten la cobertura amb un lloc real, Vision i l’elecció del transport a les teves connexions. Umbra és un client i un servidor de línia d’ordres que allotges tu, no un servei de proxy gestionat.',
+      'Tres mecanismes, un parell autoallotjat. Umbra és un client i servidor que administres tu; sense domini, sense certificat CA, sense servei gestionat.',
     steps: [
       {
-        title: 'Fes servir una destinació real com a cobertura',
+        title: 'Encamina a través d\'una destinació real',
         description:
-          'L’autenticació REALITY distingeix el teu trànsit de les peticions no autenticades, que es reenvien al lloc real configurat. Calen claus i una destinació TLS 1.3 accessible, però no un certificat d’AC per al node. La cobertura no garanteix invisibilitat.',
+          'Les peticions no autenticades es reenvien a un lloc TLS 1.3 real i accessible. No cal domini ni certificat CA per al teu node; les claus d\'identitat i la vinculació temporal són suficients.',
       },
       {
-        title: 'Redueix el doble xifratge quan correspon',
+        title: 'Empalma amb Vision després de l\'autenticació',
         description:
-          'El mux TCP comparteix una connexió entre diversos fluxos. Amb mux=false, Vision retira el xifratge extern redundant només després de l’autenticació i per a trànsit TLS 1.3 intern que compleixi les condicions. El trànsit no TLS continua xifrat.',
+          'Un cop autenticat, Vision elimina el xifratge extern redundant per al trànsit TLS 1.3 intern elegible, deixant l\'HTTPS de l\'aplicació com a l\'única capa TLS visible per a l\'observador.',
       },
       {
-        title: 'Tria TCP o QUIC segons la xarxa',
+        title: 'Transporta TCP i QUIC darrere d\'un sol SOCKS5',
         description:
-          'El transport es tria explícitament, sense commutació automàtica en cas de fallada. QUIC necessita UDP obert i una destinació QUIC real i accessible per al trànsit de cobertura. No garanteix més velocitat ni l’absència de tot bloqueig de cap de línia.',
+          'Un únic SOCKS5 local transporta TCP i QUIC. El mux adaptatiu i BBR comparteixen el camí; la selecció de transport és explícita, no commutació automàtica.',
       },
     ],
     implementation: 'Com triar entre les solucions principals',
     implementationDescription:
-      'Umbra i Xray són plataformes de programari; VLESS, VMess, Trojan i Shadowsocks són protocols, mentre que REALITY i Vision són mecanismes. El comportament depèn de la implementació i la configuració. Sense proves comparatives en igualtat de condicions, aquí no hi ha cap classificació per velocitat. En resum: Umbra val la pena quan vols la cobertura, les dues vies de transport i SOCKS5 lliurats com a parella configurada que administres tu; les altres guanyen quan necessites els seus ecosistemes.',
+      'Umbra i Xray són plataformes de programari; VLESS, VMess, Trojan i Shadowsocks són protocols, mentre que REALITY i Vision són mecanismes. La implementació i la configuració determinen el comportament. Umbra val la pena quan vols la cobertura, les dues vies de transport i SOCKS5 lliurats com a parella configurada que administres; les altres guanyen quan necessites els seus ecosistemes.',
     strengthsLabel: 'Avantatges',
-    limitsLabel: 'Limitacions',
+    limitsLabel: 'Compromisos',
     layers: [
       {
         title: 'Umbra',
         description:
-          'Una solució alfa d’allotjament propi que integra REALITY, TCP mux/Vision, QUIC i SOCKS5: client i servidor es lliuren com a parella i els administres d’extrem a extrem.',
+          'Una pila TLS 1.3 escrita des de zero i una implementació en Rust des de zero: cobertura amb lloc real, empalmament Vision, TCP + QUIC darrere d\'un SOCKS5, negociació postquàntica, resistència a sondes.',
         strengths: [
-          'Un sol extrem cobreix les dues vies: TCP Vision i UDP QUIC comparteixen el mateix node SOCKS5 local, de manera que els clients només configuren un punt d’entrada.',
-          'Sense tràmits de certificats: les claus d’identitat i la vinculació al certificat temporal substitueixen sol·licitar i renovar un certificat de CA públic.',
+          'Pila TLS 1.3 pròpia, empremta Chrome a nivell de byte',
+          'L\'empalmament Vision real elimina TLS-en-TLS',
+          'TCP i QUIC darrere d\'un sol SOCKS5, mux adaptatiu + BBR',
+          'Postquàntic (X25519MLKEM768 + ML-DSA-65) integrat a la negociació',
+          'Resistència a sondes per disseny, camins amb temporització alineada',
         ],
         limits: [
-          'Alfa i només de línia d’ordres per ara; no importa nodes VLESS, VMess ni Trojan.',
+          'Alfa i només de línia d\'ordres per ara; no importa nodes VLESS, VMess ni Trojan.',
           'El protocol pot canviar entre versions: actualitza tots dos extrems alhora.',
         ],
       },
       {
         title: 'Xray + VLESS + REALITY',
         description:
-          'L’alternativa més propera: REALITY i Vision també hi són disponibles, així que l’elecció tracta de l’empaquetatge i el flux de treball, no d’una tecnologia exclusiva.',
+          'L\'alternativa més propera: REALITY i Vision també hi són disponibles, així que l\'elecció tracta de l\'empaquetatge i el flux de treball, no d\'una tecnologia exclusiva.',
         strengths: [
           'Plataforma multiprotocol madura, amb encaminament ric, molts clients llestos per usar i documentació comunitària extensa.',
         ],
         limits: [
-          'Tu mateix muntes i mantens la pila: configuració principal, capes de transport, regles d’encaminament i clients a joc.',
+          'Tu mateix muntes i mantens la pila: configuració principal, capes de transport, regles d\'encaminament i clients a joc.',
           'Compartir mecanismes no permet la interoperabilitat amb Umbra.',
         ],
       },
       {
         title: 'VMess',
         description:
-          'Un protocol de proxy AEAD que convé considerar si els teus clients ja l’admeten. TLS i WebSocket són opcions addicionals de desplegament, no requisits per tenir xifratge.',
+          'Un protocol de proxy AEAD que convé considerar si els teus clients ja l\'admeten. TLS i WebSocket són opcions addicionals de desplegament, no requisits per tenir xifratge.',
         strengths: [
           'Compatibilitat amb clients molt àmplia i multiplataforma, inclosos equips antics o modestos.',
         ],
@@ -2272,19 +2297,19 @@ const ca: MarketingCopy = {
         ],
         limits: [
           'Les instal·lacions habituals requereixen mantenir un domini i renovar un certificat públic de confiança.',
-          'L’UDP viatja dins de TCP sota TLS, així que la seva latència segueix la ruta TCP.',
+          'L\'UDP viatja dins de TCP sota TLS, així que la seva latència segueix la ruta TCP.',
         ],
       },
       {
         title: 'Shadowsocks',
         description:
-          'Un intermediari xifrat lleuger per a desplegaments senzills; la imitació d’un navegador i la cobertura amb un lloc real no venen incloses en els protocols base AEAD o 2022.',
+          'Un intermediari xifrat lleuger per a desplegaments senzills; la imitació d\'un navegador i la cobertura amb un lloc real no venen incloses en els protocols base AEAD o 2022.',
         strengths: [
           'Components mínims: claus i un client a joc, sense domini ni certificat.',
         ],
         limits: [
           'Els protocols base xifren, no camuflen; avalua els connectors per separat si necessites cobertura.',
-          'Un connector SIP003 només per a TCP no s’ha de prendre per camuflatge d’UDP.',
+          'Un connector SIP003 només per a TCP no s\'ha de prendre per camuflatge d\'UDP.',
         ],
       },
       {
@@ -2295,47 +2320,47 @@ const ca: MarketingCopy = {
           'Via UDP amb datagrames no fiables, dissenyada per a xarxes amb moltes pèrdues i un control de congestió afinat per a condicions dures.',
         ],
         limits: [
-          'Si UDP està bloquejat o restringit perd l’avantatge principal, i el disseny no garanteix més velocitat a la teva xarxa.',
+          'Si UDP està bloquejat o restringit perd l\'avantatge principal, i el disseny no garanteix més velocitat a la teva xarxa.',
           'El TCP encara viatja com a fluxos QUIC, així que les pèrdues poden bloquejar els fluxos com en qualsevol transport fiable.',
         ],
       },
     ],
     caveat:
-      'Límits de l’empremta: chrome-latest segueix el perfil històric de Chrome 150. Les captures de Chrome 153 no demostren una equivalència completa d’empremta. ML-DSA vincula la clau pública del certificat temporal; ML-KEM només intervé en la derivació de claus si es negocia un grup híbrid. La sonda de destinació del CLI estàndard fa servir ring sense suport per a ML-KEM, de manera que no hi ha cap garantia postquàntica d’extrem a extrem per defecte.',
+      'Límits de l\'empremta: chrome-latest segueix el perfil històric de Chrome 150. Les captures de Chrome 153 no demostren una equivalència completa d\'empremta. ML-DSA vincula la clau pública del certificat temporal; ML-KEM només intervé en la derivació de claus si es negocia un grup híbrid. La sonda de destinació del CLI estàndard fa servir ring sense suport per a ML-KEM, de manera que no hi ha cap garantia postquàntica d\'extrem a extrem per defecte.',
   },
   security: {
     eyebrow: 'Seguretat i responsabilitat',
     title: 'La confiança comença\namb claredat.',
     description:
-      'Allotjar el transport et dona el control de tots dos extrems. També exigeix protegir les credencials, restringir l’accés i entendre què no pot amagar la cobertura.',
+      'Allotjar el transport et dona el control de tots dos extrems. També exigeix protegir les credencials, restringir l\'accés i entendre què no pot amagar la cobertura.',
     principles: [
       {
         title: 'Protegeix les claus i les credencials',
         description:
-          'No incloguis claus privades del servidor ni credencials del client en configuracions compartides, registres o informes públics. Restringeix l’accés als fitxers que les contenen.',
+          'No incloguis claus privades del servidor ni credencials del client en configuracions compartides, registres o informes públics. Restringeix l\'accés als fitxers que les contenen.',
       },
       {
-        title: 'Limita l’accés local al teu dispositiu',
+        title: 'Limita l\'accés local al teu dispositiu',
         description:
-          'El servei SOCKS5 local no té autenticació. Vincula’l a la interfície de bucle local; exposar-lo a altres dispositius requereix controls d’accés addicionals.',
+          'El servei SOCKS5 local no té autenticació. Vincula\'l a la interfície de bucle local; exposar-lo a altres dispositius requereix controls d\'accés addicionals.',
       },
       {
-        title: 'Mantén HTTPS d’extrem a extrem',
+        title: 'Mantén HTTPS d\'extrem a extrem',
         description:
-          'Fes servir HTTPS a les aplicacions encara que el trànsit passi per Umbra. Vision només retira el xifratge extern redundant quan es compleixen les condicions; no substitueix el TLS de l’aplicació.',
+          'Fes servir HTTPS a les aplicacions encara que el trànsit passi per Umbra. Vision només retira el xifratge extern redundant quan es compleixen les condicions; no substitueix el TLS de l\'aplicació.',
       },
       {
         title: 'Coneix els límits de la cobertura',
         description:
-          'Les peticions no autenticades van a la destinació real, sense un rebuig propi d’un intermediari. Això no fa indistingible tot el trànsit ni impedeix que un observador el pugui detectar.',
+          'Les peticions no autenticades van a la destinació real, sense un rebuig propi d\'un intermediari. Això no fa indistingible tot el trànsit ni impedeix que un observador el pugui detectar.',
       },
     ],
     limitsTitle: 'Entén els límits',
     limits: [
       'Umbra és programari alfa; aquesta pàgina no acredita cap auditoria de seguretat independent.',
       'Mantén HTTPS a les aplicacions. Un transport privat no fa fiables els dispositius, navegadors ni serveis de destinació.',
-      'El servei SOCKS5 local no té autenticació. Fes servir la interfície de bucle local si no controles l’accés d’una altra manera.',
-      'No s’ha demostrat equivalència completa amb Chrome. La detectabilitat depèn de la xarxa i de les capacitats de l’observador.',
+      'El servei SOCKS5 local no té autenticació. Fes servir la interfície de bucle local si no controles l\'accés d\'una altra manera.',
+      'No s\'ha demostrat equivalència completa amb Chrome. La detectabilitat depèn de la xarxa i de les capacitats de l\'observador.',
       'Protegeix les claus privades del servidor i les credencials del client. El desplegament, les actualitzacions i els dispositius continuen sent responsabilitat teva.',
     ],
     disclosure: 'Comunica problemes sense exposar secrets.',

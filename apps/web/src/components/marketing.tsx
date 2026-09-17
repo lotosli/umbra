@@ -203,11 +203,10 @@ function HomePage({ locale }: { locale: Locale }) {
             </a>
           </div>
           <p className="hero-footnote">
-            <Code2 size={14} aria-hidden="true" />
+            <Code2 size={15} aria-hidden="true" />
             {copy.hero.footnote}
           </p>
         </div>
-        <ProtocolDiagram copy={copy} />
       </section>
       <div className="facts-strip">
         <div className="container facts-inner">
@@ -225,15 +224,13 @@ function HomePage({ locale }: { locale: Locale }) {
           {copy.principles.features.map((feature, index) => {
             const Icon = featureIcons[index]!;
             return (
-              <article
-                className={`feature-card feature-${index}`}
-                key={feature.title}
-              >
-                <span className="feature-icon">
-                  <Icon size={22} strokeWidth={1.5} />
-                </span>
-                <span className="feature-number">0{index + 1}</span>
-                <h3>{feature.title}</h3>
+              <article className="feature-card" key={feature.title}>
+                <h3>
+                  <span className="feature-icon">
+                    <Icon size={21} strokeWidth={1.6} />
+                  </span>
+                  {feature.title}
+                </h3>
                 <p>{feature.description}</p>
                 {index === 0 && (
                   <div className="fallback-flow">

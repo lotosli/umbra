@@ -10,9 +10,9 @@
 
 - [x] 2.1 Run build, check and tests; retain website line coverage >= 90%.
 - [x] 2.2 Run seven-language responsive and functional browser tests; inspect representative pages.
-- [ ] 2.3 Review diff, validate OpenSpec, submit PR and verify remote CI before merge.
+- [x] 2.3 Review diff, validate OpenSpec, submit PR and verify remote CI before merge.
 
 ## 3. Publication
 
-- [ ] 3.1 Deploy the verified build with local Wrangler; record version and rollback target.
-- [ ] 3.2 Run production browser acceptance and archive the completed change with verification evidence.
+- [x] 3.1 Deploy the verified build with local Wrangler; record version and rollback target.
+- [x] 3.2 Run production browser acceptance and archive the completed change with verification evidence.

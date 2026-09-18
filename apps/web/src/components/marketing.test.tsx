@@ -90,7 +90,9 @@ describe('Seven-language presentation', () => {
         'href',
         localePath(locale, 'docs/getting-started/quick-start'),
       );
-      expect(screen.getByRole('figure')).toHaveAccessibleName(copy.diagram.caption);
+      expect(container.querySelector('.hero-code pre')).toHaveTextContent('cargo build --release');
+      expect(container.querySelector('.hero-code')).toHaveTextContent('macOS · Linux · Windows');
+      expect(screen.getByRole('button', { name: copy.ui.copy })).toBeInTheDocument();
     });
 
     it(`compares named deployments rather than conflating platforms and protocols in ${locale}`, () => {

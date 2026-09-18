@@ -28,4 +28,14 @@ Initial browser run lacked Playwright Chromium; installed the pinned test browse
 
 ## Release status
 
-User explicitly authorized Cloudflare deployment. Local checks are complete. Wrangler authentication is pending; the GitHub repository/environment currently has no deployment secrets. No production publication is claimed until deployment and live checks complete. Existing source includes a manually triggered website workflow; local authenticated Wrangler deployment is also documented in `docs/website-development.md`.
+- User explicitly authorized deployment and completed Cloudflare CLI authorization. Wrangler login succeeded; credentials use encrypted local storage with a macOS Keychain key.
+- Implementation commit: `75eb77ce4b43c4dd4292bfc00b0ba820636bd08c`.
+- PR https://github.com/lotosli/umbra/pull/10 merged as `7d9475a9774f6c320c8c4d788347c498a2a64a86`. The merge tree exactly matches the locally verified implementation tree.
+- Remote Website checks https://github.com/lotosli/umbra/actions/runs/35300504996 passed, including content, build, licenses, types, lint, coverage and browser tests.
+- Remote CI https://github.com/lotosli/umbra/actions/runs/35300504989 passed: OpenSpec, Rust fmt/clippy, nextest/fingerprint, cargo-deny and >=90% Rust line coverage.
+- Published with the documented local `pnpm --filter @umbra/web exec wrangler deploy` path to the existing `umbra-web` Worker, after local and remote gates passed.
+- Cloudflare production version: `b0291722-974f-4cb4-9aad-e67bfd7d26f8`; domains `umbra.cat` and `www.umbra.cat`.
+- Previous version, available for rollback: `112bb8be-40b1-46a5-8f14-486dcd11bda0`.
+- Production validation: `PLAYWRIGHT_BASE_URL=https://umbra.cat pnpm test:e2e` — **35 passed (48.0s)**. Includes all seven languages, published routes, 404/redirect/metadata, search, theme/language controls and the responsive matrix.
+- Live browser inspection confirmed the new Chinese homepage; direct HTTPS inspection confirmed the new hero markup and matching CSS asset.
+- Public entry: https://umbra.cat/zh-hans/ . No Rust runtime, user proxy configuration or external DNS changes were made.

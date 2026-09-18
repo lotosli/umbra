@@ -4,10 +4,46 @@
   "publishedUrls": 175,
   "articles": 126,
   "languages": 7,
-  "google": {"ownership": "verified", "evidence": "User confirmation and Umbra domain property observed in Search Console", "dataState": "processing", "organicClicks": null, "indexedPages": null, "aiImpressions": null, "sitemap": "submission initiated; receipt pending verification"},
-  "bing": {"ownership": "pending verification", "citations": null, "groundingQueries": null},
-  "cloudflare": {"realBotAccess": "not yet verified from security events", "ordinaryHttpAccess": "confirmed in research audit; some user agents receive 403"},
-  "measurement": {"collector": "none", "conversionCounts": null, "reason": "Local event interface only; no outbound collection configured"},
-  "coreWebVitals": {"fieldLCP": null, "fieldINP": null, "fieldCLS": null, "reason": "No authenticated field-data baseline available"},
-  "geo": {"consumerProductSamples": null, "reason": "Prompt set prepared; no consumer AI search results fabricated"}
+  "google": {
+    "ownership": "verified",
+    "evidence": "User confirmation and Umbra domain property observed in Search Console",
+    "dataState": "processing",
+    "organicClicks": null,
+    "indexedPages": null,
+    "aiImpressions": null,
+    "sitemap": "submission initiated; receipt pending verification"
+  },
+  "bing": {
+    "ownership": "pending verification",
+    "citations": null,
+    "groundingQueries": null
+  },
+  "cloudflare": {
+    "realBotAccess": "not yet verified from security events",
+    "ordinaryHttpAccess": "confirmed in research audit; some user agents receive 403"
+  },
+  "measurement": {
+    "collector": "none",
+    "conversionCounts": null,
+    "reason": "Local event interface only; no outbound collection configured"
+  },
+  "coreWebVitals": {
+    "fieldLCP": null,
+    "fieldINP": null,
+    "fieldCLS": null,
+    "reason": "No authenticated field-data baseline available"
+  },
+  "geo": {
+    "consumerProductSamples": null,
+    "reason": "Prompt set prepared; no consumer AI search results fabricated"
+  },
+  "publication": {
+    "source": "eda45fc8d445cbbdc8fec2677abaa244d4067c7e",
+    "workerVersion": "58a83d85-1e79-4d7f-9418-c56c37be181f",
+    "productionAudit": {
+      "pages": 175,
+      "failed": 0
+    },
+    "browserTests": 35
+  }
 }

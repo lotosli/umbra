@@ -7,9 +7,16 @@ order: 3
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Empieza con TCP. Instala la misma versión en el servidor y en el dispositivo cliente. El cliente debe llegar al servidor, y este al sitio web de cobertura.
+
+
+## Cómo comprobar el resultado
+
+Ambos procesos deben seguir ejecutándose y curl debe recibir la página de destino a través del proxy SOCKS5 local. Que el cliente arranque no demuestra que la conexión remota funcione. Si falla la solicitud, revisa el puerto TCP del servidor y los campos de identidad antes de revisar la aplicación.
 
 ## 1. Generar las claves
 

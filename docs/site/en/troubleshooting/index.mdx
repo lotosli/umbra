@@ -7,9 +7,16 @@ order: 17
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Record endpoint versions, platform and the error. Reproduce with one simple request and change one setting at a time.
+
+
+## How to check the result
+
+Locate the failing step first: a refused connection to 127.0.0.1:1080 points to the local client; a remote timeout calls for checking the server process, address and port; a failed handshake calls for checking keys, short_id, server_name and both clocks. Rerun curl after the fix before returning to your app.
 
 ## Start with a direct test
 

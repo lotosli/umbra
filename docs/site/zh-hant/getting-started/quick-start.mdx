@@ -7,9 +7,16 @@ order: 3
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 本指南先建立 TCP 連線。準備一部伺服器、一部用戶端裝置，並在兩端安裝同一版本的 Umbra。用戶端需要能存取伺服器，伺服器需要能存取用於掩護的實際網站。
+
+
+## 完成這一步後，如何確認成功
+
+成功的判斷方式是：兩端程序持續執行，curl 透過本機 SOCKS5 收到目標網頁。用戶端成功啟動不代表已連上遠端。若請求失敗，先檢查伺服器 TCP 連接埠與兩端驗證欄位，再檢查應用程式設定。
 
 ## 1. 產生金鑰
 

@@ -7,9 +7,16 @@ order: 6
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Valida una connexió en primer pla abans de crear el servei. Al Linux, systemd gestiona el procés i journald recull els registres.
+
+
+## Com pots comprovar el resultat
+
+Després del desplegament, executa l’ordre curl de la guia d’inici des d’un altre client i comprova que reps una pàgina. Reinicia el servei i repeteix la prova. Així verifiques l’accés remot, la lectura de la configuració i la recuperació després del reinici.
 
 ## Preparar fitxers i usuari
 

@@ -7,9 +7,16 @@ order: 6
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Validez une connexion au premier plan avant de créer le service. Sous Linux, systemd gère le processus et journald collecte les journaux.
+
+
+## Comment vérifier le résultat
+
+Après le déploiement, exécutez la commande curl du guide de démarrage depuis un autre client et vérifiez qu’une page s’affiche. Redémarrez le service, puis recommencez. Vous vérifiez ainsi l’accès distant, la lecture de la configuration et la reprise après redémarrage.
 
 ## Préparer les fichiers
 

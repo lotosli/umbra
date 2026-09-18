@@ -7,9 +7,16 @@ order: 12
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 `transport` choisit le transport des requêtes TCP. `udp_transport` peut définir un trajet distinct pour UDP ; sinon UDP reprend `transport`.
+
+
+## Comment vérifier le résultat
+
+Choisissez TCP pour la première connexion. Une fois les deux extrémités opérationnelles, essayez QUIC ou des chemins TCP/UDP distincts. Modifiez un seul paramètre à la fois et retestez avec la même application ; Umbra ne change pas automatiquement de transport.
 
 ## Par où commencer ?
 

@@ -6,6 +6,8 @@
 
 [简体中文](README.zh-CN.md)
 
+[Website](https://umbra.cat/en/) · [Quick start](https://umbra.cat/en/docs/getting-started/quick-start/) · [Downloads](https://umbra.cat/en/download/) · [Documentation](https://umbra.cat/en/docs/)
+
 Umbra is a Rust implementation of a censorship-resistant privacy transport whose outer connection is designed to look like, and behave like, a real TLS 1.3 or QUIC connection to a real destination site.
 
 Umbra combines protocol camouflage, pre-response authentication, browser-grade fingerprint discipline, post-quantum-aware primitives, and strict engineering gates in a client/server transport monorepo.
@@ -72,7 +74,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-The local website is served at `http://127.0.0.1:3000`. Run `pnpm build`, `pnpm check`, `pnpm test` and `pnpm test:e2e` before publishing. Public pages and documentation use seven language directories on the planned canonical origin `https://umbra.cat`. Deployment is manually triggered and does not change the Rust release workflow. See [website development and deployment](docs/website-development.md).
+The local website is served at `http://127.0.0.1:3000`. Run `pnpm build`, `pnpm check`, `pnpm test` and `pnpm test:e2e` before publishing. Public pages and documentation use seven language directories on the canonical origin `https://umbra.cat`. Deployment is manually triggered and does not change the Rust release workflow. See [website development and deployment](docs/website-development.md).
 
 ## Quick Start
 

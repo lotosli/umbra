@@ -60,7 +60,8 @@ describe('Seven-language presentation', () => {
           links.every(
             (link) =>
               link.getAttribute('href')!.startsWith(`/${locale}/`) ||
-              link.href.startsWith('https://github.com/lotosli/umbra'),
+              link.href.startsWith('https://github.com/lotosli/umbra') ||
+              ['xtls.github.io', 'www.v2fly.org', 'trojan-gfw.github.io', 'shadowsocks.org', 'v2.hysteria.network'].includes(new URL(link.href).hostname),
           ),
         ).toBe(true);
       });

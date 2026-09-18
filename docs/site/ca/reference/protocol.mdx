@@ -7,20 +7,25 @@ order: 16
 version: "1.0.0-alpha"
 source: ["README.md", "docs/usage.md", "docs/performance.md", "crates/umbra-core/src/runtime.rs", "crates/umbra-reality/src/prebuild.rs", "crates/umbra-reality/src/cert.rs", "crates/umbra-tls/src/server.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Parteix de la xarxa, del manteniment que vols assumir i de les aplicacions. Umbra reuneix cobertura web, TCP/Vision, QUIC i SOCKS5. Es compara Umbra 1.0.0-alpha; Xray es refereix a VLESS + REALITY + Vision per TCP.
+
+
+Contingut revisat：2026-09-18.
 
 ## Desplegament i transport
 
 | Solució | Característiques | Desplegament | TCP i UDP |
 | --- | --- | --- | --- |
-| Umbra | Cobertura web i una entrada local | Dos extrems, claus i lloc; sense certificat CA del node | Mux TCP o Vision; QUIC separat per a UDP |
-| Xray + VLESS + REALITY + Vision | REALITY i Vision per TCP | Configurar Xray, identitat, lloc i client compatible | Exterior TCP aquí; UDP segons flow i client |
-| VMess AEAD | Protocol xifrat amb transports a triar | Client i transport compatibles; identitat TLS si s’afegeix | Peticions TCP/UDP; transport segons configuració |
-| Trojan | TLS amb retorn a un lloc | Habitualment domini, certificat i clau privada | TCP i UDP dins de TLS/TCP |
-| Shadowsocks AEAD / 2022 | Intermediari xifrat amb claus | Claus i clients compatibles; connectors a part | TCP/UDP natius; verificar cada connector |
-| Hysteria 2 | QUIC; lloc HTTP/3 abans d’autenticar | UDP accessible i configuració TLS | TCP en fluxos fiables; UDP en datagrames no fiables |
+| Umbra | Cobertura web i una entrada local | Instal·la la mateixa versió d’Umbra als dos extrems i inicia-la des del terminal. QUIC requereix un port UDP obert i un web de cobertura compatible amb QUIC. | Mux TCP o Vision; QUIC separat per a UDP |
+| Xray + VLESS + REALITY + Vision | REALITY i Vision per TCP | Fes servir el mateix identificador d’usuari als dos extrems. Introdueix al client els paràmetres d’identitat REALITY del servidor i estableix flow a xtls-rprx-vision. | Exterior TCP aquí; UDP segons flow i client |
+| VMess AEAD | Protocol xifrat amb transports a triar | Fes coincidir l’identificador d’usuari i el transport. Amb WebSocket, utilitza el mateix camí; si actives TLS, configura el domini i el certificat. | Peticions TCP/UDP; transport segons configuració |
+| Trojan | TLS amb retorn a un lloc | Configura el domini del servidor, un certificat vàlid i una contrasenya; introdueix la mateixa contrasenya al client. Trojan estàndard també transporta les peticions UDP dins d’una connexió TCP. | TCP i UDP dins de TLS/TCP |
+| Shadowsocks AEAD / 2022 | Intermediari xifrat amb claus | Utilitza el mateix mètode de xifratge i la mateixa clau als dos extrems; obre el port UDP si cal. Configura els complements addicionals seguint-ne les instruccions. | TCP/UDP natius; verificar cada connector |
+| Hysteria 2 | QUIC; lloc HTTP/3 abans d’autenticar | Obre el port UDP del servidor i configura el certificat TLS i l’autenticació. Si la xarxa bloqueja UDP, tria un altre mètode de connexió. | TCP en fluxos fiables; UDP en datagrames no fiables |
 
 ## Què simplifica Umbra
 

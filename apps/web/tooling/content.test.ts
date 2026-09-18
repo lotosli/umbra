@@ -20,7 +20,7 @@ The server and client must agree on the selected transport. Read the configurati
 `;
 
 function raw(id = 'getting-started/introduction', extra = body): string {
-  return `---\nid: ${id}\ntitle: Introduction\ndescription: Read the public Umbra introduction and configuration guide.\nsection: getting-started\norder: 1\nversion: ${version}\nsource:\n  - README.md\ntranslation: complete\n---\n${extra}`;
+  return `---\nid: ${id}\ntitle: Introduction\ndescription: Read the public Umbra introduction and configuration guide.\nsection: getting-started\norder: 1\nversion: ${version}\nsource:\n  - README.md\ntranslation: complete\nupdatedAt: "2026-09-18"\nreviewedAt: "2026-09-18"\n---\n${extra}`;
 }
 
 function article(locale: ContentLocale = 'en', id = 'getting-started/introduction'): Article {

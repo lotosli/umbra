@@ -7,20 +7,25 @@ order: 16
 version: "1.0.0-alpha"
 source: ["README.md", "docs/usage.md", "docs/performance.md", "crates/umbra-core/src/runtime.rs", "crates/umbra-reality/src/prebuild.rs", "crates/umbra-reality/src/cert.rs", "crates/umbra-tls/src/server.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Partez du réseau disponible, de l'entretien souhaité et de vos applications. Umbra regroupe couverture web, TCP/Vision, QUIC et SOCKS5 dans une paire client/serveur. Cette comparaison porte sur Umbra 1.0.0-alpha ; Xray désigne ici VLESS + REALITY + Vision sur TCP.
+
+
+Contenu vérifié：2026-09-18.
 
 ## Déploiement et transport
 
 | Solution | Caractéristiques | Déploiement | TCP et UDP |
 | --- | --- | --- | --- |
-| Umbra | Couverture web ; une entrée locale | Deux extrémités, clés et site ; pas de certificat CA pour le nœud | Mux TCP ou Vision ; QUIC distinct possible pour UDP |
-| Xray + VLESS + REALITY + Vision | REALITY et Vision sur TCP | Configurer Xray, identité, site et client compatible | TCP externe ici ; UDP selon flow et client |
-| VMess AEAD | Protocole chiffré, transports au choix | Client et transport compatibles ; identité TLS si ajouté | Requêtes TCP/UDP ; transport selon configuration |
-| Trojan | TLS avec repli vers un site | Généralement domaine, certificat et clé privée | TCP et UDP dans TLS/TCP |
-| Shadowsocks AEAD / 2022 | Proxy chiffré par clés | Clés et clients compatibles ; plugins séparés | TCP/UDP natifs ; vérifier les plugins |
-| Hysteria 2 | QUIC ; site HTTP/3 avant authentification | UDP accessible et configuration TLS | TCP en flux fiables ; UDP en datagrammes non fiables |
+| Umbra | Couverture web ; une entrée locale | Installez la même version d’Umbra aux deux extrémités et lancez-la en ligne de commande. QUIC nécessite un port UDP ouvert et un site de couverture compatible QUIC. | Mux TCP ou Vision ; QUIC distinct possible pour UDP |
+| Xray + VLESS + REALITY + Vision | REALITY et Vision sur TCP | Utilisez le même identifiant utilisateur aux deux extrémités. Dans le client, renseignez les paramètres d’identité REALITY du serveur et réglez flow sur xtls-rprx-vision. | TCP externe ici ; UDP selon flow et client |
+| VMess AEAD | Protocole chiffré, transports au choix | Utilisez le même identifiant et le même transport des deux côtés. Avec WebSocket, alignez le chemin ; avec TLS, configurez le domaine et le certificat. | Requêtes TCP/UDP ; transport selon configuration |
+| Trojan | TLS avec repli vers un site | Configurez le domaine du serveur, un certificat valide et un mot de passe, puis saisissez ce mot de passe dans le client. Le protocole Trojan standard transporte aussi les requêtes UDP dans une connexion TCP. | TCP et UDP dans TLS/TCP |
+| Shadowsocks AEAD / 2022 | Proxy chiffré par clés | Utilisez la même méthode de chiffrement et la même clé des deux côtés ; ouvrez le port UDP si nécessaire. Configurez les éventuels modules complémentaires selon leurs instructions. | TCP/UDP natifs ; vérifier les plugins |
+| Hysteria 2 | QUIC ; site HTTP/3 avant authentification | Ouvrez le port UDP du serveur et configurez le certificat TLS et l’authentification. Si le réseau bloque UDP, choisissez une autre méthode de connexion. | TCP en flux fiables ; UDP en datagrammes non fiables |
 
 ## Ce qu'Umbra simplifie
 

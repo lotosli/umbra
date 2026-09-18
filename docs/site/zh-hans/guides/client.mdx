@@ -7,9 +7,16 @@ order: 5
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Umbra 客户端在设备上提供一个本地 SOCKS5 代理。应用把请求交给这个入口，再由 Umbra 连接远端服务端。你可以直接设置应用，也可以通过现有代理客户端统一管理规则。
+
+
+## 这一步完成后，你应该看到什么
+
+先在客户端所在电脑上运行本文的 curl 命令，再给一个应用设置 SOCKS5。两步都成功后再接入规则客户端。TCP 网页打开成功不能代替 UDP 检查；需要 UDP 的应用应单独验证。
 
 ## 1. 启动 Umbra 客户端
 

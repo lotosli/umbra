@@ -7,9 +7,16 @@ order: 5
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Umbra ofereix un punt d'accés SOCKS5 local. Connecta-hi una aplicació directament o deixa que el client habitual gestioni les regles i hi enviï les peticions seleccionades.
+
+
+## Com pots comprovar el resultat
+
+Executa primer l’ordre curl a l’ordinador client i configura després SOCKS5 en una aplicació. Afegeix el client de regles quan funcionin totes dues proves. Obrir una pàgina per TCP no verifica UDP; prova per separat una aplicació que utilitzi UDP.
 
 ## 1. Iniciar Umbra
 

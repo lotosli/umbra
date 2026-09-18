@@ -45,7 +45,7 @@ describe('public document reading', () => {
     const data = { toc: [{ title: 'Install', url: '#install', depth: 2 }] };
     const loaded = Object.assign(Promise.resolve(data), { status: 'fulfilled', value: data });
     mocks.getPage.mockReturnValue({ load: () => loaded, body: () => <><h2 id="install">Install</h2><pre>cargo build --release</pre></> });
-    render(<Suspense><DocumentationArticle locale="en" path="en/getting-started/installation.mdx" metadata={{ id: 'getting-started/installation', locale: 'en', title: 'Install Umbra', description: 'Build and install.', version: '1.0.0-alpha', source: ['README.md', 'Cargo.toml'], translation: 'complete' }} /></Suspense>);
+    render(<Suspense><DocumentationArticle locale="en" path="en/getting-started/installation.mdx" metadata={{ id: 'getting-started/installation', locale: 'en', title: 'Install Umbra', description: 'Build and install.', version: '1.0.0-alpha', source: ['README.md', 'Cargo.toml'], translation: 'complete', updatedAt: '2026-09-18', reviewedAt: '2026-09-18' }} /></Suspense>);
     expect(await screen.findByRole('heading', { name: 'Install Umbra' })).toBeVisible();
     expect(screen.getByText('cargo build --release')).toBeVisible();
     expect(screen.getByText(/Applies to 1.0.0-alpha/)).toBeVisible();
@@ -55,6 +55,6 @@ describe('public document reading', () => {
 
   it('fails explicitly when a compiled document module is missing', () => {
     mocks.getPage.mockReturnValue(undefined);
-    expect(() => render(<DocumentationArticle locale="en" path="missing" metadata={{ id: 'missing', locale: 'en', title: '', description: '', version: '', source: [], translation: 'complete' }} />)).toThrow('Document module is unavailable');
+    expect(() => render(<DocumentationArticle locale="en" path="missing" metadata={{ id: 'missing', locale: 'en', title: '', description: '', version: '', source: [], translation: 'complete', updatedAt: '2026-09-18', reviewedAt: '2026-09-18' }} />)).toThrow('Document module is unavailable');
   });
 });

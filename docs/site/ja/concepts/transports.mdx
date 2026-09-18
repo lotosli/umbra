@@ -7,9 +7,16 @@ order: 12
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 `transport` は TCP 要求の伝送方式です。`udp_transport` で UDP だけ別経路を選べます。省略時は `transport` を継承します。
+
+
+## 結果を確認するには
+
+最初の接続には TCP を選びます。両端で動作を確認してから QUIC や TCP/UDP の別経路を試してください。設定は 1 項目ずつ変更し、同じアプリで再確認します。Umbra は伝送方式を自動では切り替えません。
 
 ## 最初に選ぶモード
 

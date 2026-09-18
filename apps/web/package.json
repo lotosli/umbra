@@ -11,7 +11,8 @@
     "test": "vitest run --coverage",
     "test:e2e": "playwright test",
     "preview": "vite preview --host 127.0.0.1",
-    "deploy": "pnpm build && wrangler deploy"
+    "deploy": "pnpm build && wrangler deploy",
+    "audit:discovery": "tsx tooling/discovery-audit.ts"
   },
   "dependencies": {
     "@fontsource-variable/roboto": "catalog:",
@@ -60,6 +61,7 @@
     "vite": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:",
-    "yaml": "catalog:"
+    "yaml": "catalog:",
+    "@types/jsdom": "catalog:"
   }
 }

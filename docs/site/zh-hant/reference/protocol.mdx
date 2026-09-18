@@ -7,22 +7,27 @@ order: 16
 version: "1.0.0-alpha"
 source: ["README.md", "docs/usage.md", "docs/performance.md", "crates/umbra-core/src/runtime.rs", "crates/umbra-reality/src/prebuild.rs", "crates/umbra-reality/src/cert.rs", "crates/umbra-tls/src/server.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 選型時先看三件事：網路允許哪些連線、準備如何維護伺服器，以及現有應用程式如何連接。Umbra 將網站掩護、TCP/Vision、QUIC 和 SOCKS5 入口放在一套用戶端與伺服器端中，適合希望自行管理這套連線的使用者。
 
 以下按 Umbra 1.0.0-alpha 和列出的官方資料說明功能差異。Xray 一欄限定為 VLESS + REALITY + Vision 的 TCP 組合，便於與具體部署方式對照。
 
+
+內容複核：2026-09-18.
+
 ## 部署與傳輸對照
 
 | 方案 | 主要特點 | 部署要點 | TCP 與 UDP |
 | --- | --- | --- | --- |
-| Umbra | 實際網站掩護；一個本機入口可設定兩條傳輸路徑 | 自建兩端，管理金鑰和掩護網站；不必申請節點 CA 憑證 | TCP 可選連線重複使用或 Vision；UDP 可單獨使用 QUIC |
-| Xray + VLESS + REALITY + Vision | 在 Xray 中組合 REALITY 與 Vision | 設定核心、金鑰和目標網站，配合支援相應設定的用戶端 | 此處為 TCP 外層；UDP 請求按 flow 和用戶端設定處理 |
-| VMess AEAD | 協議提供加密，可搭配不同傳輸 | 使用支援對應協議與傳輸的用戶端；疊加 TLS 時設定相應認證 | 支援 TCP、UDP 請求，外層由設定決定 |
-| Trojan | 使用 TLS，並支援未認證請求轉送到網站服務 | 常見部署維護網域名稱、憑證和私密金鑰 | TCP 與 UDP 請求通過 TLS/TCP 承載 |
-| Shadowsocks AEAD / 2022 | 基於金鑰的加密代理 | 設定金鑰與匹配用戶端；額外插件依需求設定 | 基礎協議支援 TCP、UDP；插件支援範圍單獨確認 |
-| Hysteria 2 | 基於 QUIC；未認證時提供 HTTP/3 網站行為 | 需要可用的 UDP 路徑與 TLS 設定 | TCP 使用可靠 QUIC 流，UDP 使用不可靠資料報 |
+| Umbra | 實際網站掩護；一個本機入口可設定兩條傳輸路徑 | 伺服器與用戶端安裝相同版本的 Umbra，以命令列啟動。使用 QUIC 時須開放 UDP 連接埠，並選擇支援 QUIC 的掩護網站。 | TCP 可選連線重複使用或 Vision；UDP 可單獨使用 QUIC |
+| Xray + VLESS + REALITY + Vision | 在 Xray 中組合 REALITY 與 Vision | 兩端設定相同的使用者 ID；用戶端填入伺服器對應的 REALITY 身分參數，並將 flow 設為 xtls-rprx-vision。 | 此處為 TCP 外層；UDP 請求按 flow 和用戶端設定處理 |
+| VMess AEAD | 協議提供加密，可搭配不同傳輸 | 兩端使用相同的使用者 ID 和傳輸方式；選用 WebSocket 時對齊路徑，啟用 TLS 時設定網域名稱與憑證。 | 支援 TCP、UDP 請求，外層由設定決定 |
+| Trojan | 使用 TLS，並支援未認證請求轉送到網站服務 | 設定伺服器網域名稱、有效憑證和密碼，用戶端填入相同密碼。標準 Trojan 的 UDP 請求也透過 TCP 連線傳送。 | TCP 與 UDP 請求通過 TLS/TCP 承載 |
+| Shadowsocks AEAD / 2022 | 基於金鑰的加密代理 | 兩端使用相同的加密方式與金鑰；需要 UDP 時開放對應連接埠。額外外掛須依其說明在兩端設定。 | 基礎協議支援 TCP、UDP；插件支援範圍單獨確認 |
+| Hysteria 2 | 基於 QUIC；未認證時提供 HTTP/3 網站行為 | 開放伺服器 UDP 連接埠，設定 TLS 憑證與驗證資訊。若網路封鎖 UDP，須改用其他可行的連線方案。 | TCP 使用可靠 QUIC 流，UDP 使用不可靠資料報 |
 
 對應的官方資料：[Xray VLESS/Vision](https://xtls.github.io/config/outbounds/vless.html)、[VMess](https://www.v2fly.org/developer/protocols/vmess.html)、[Trojan](https://trojan-gfw.github.io/trojan/protocol)、[Shadowsocks 2022](https://shadowsocks.org/doc/sip022.html)、[Hysteria 2](https://v2.hysteria.network/docs/developers/Protocol/)。
 

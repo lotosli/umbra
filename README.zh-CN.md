@@ -6,6 +6,8 @@
 
 [English](README.md)
 
+[官网](https://umbra.cat/zh-hans/) · [快速开始](https://umbra.cat/zh-hans/docs/getting-started/quick-start/) · [下载](https://umbra.cat/zh-hans/download/) · [使用文档](https://umbra.cat/zh-hans/docs/)
+
 Umbra 是一个 Rust 实现的抗审查隐私传输。它的外层连接不是伪装成随机噪声，而是设计成一条真实的、通往真实目标站点的 TLS 1.3 或 QUIC 连接。
 
 Umbra 把协议伪装、响应前认证、浏览器级指纹保真、抗量子感知密码学原语和严格工程闸门组织在一个 client/server 隐私传输 monorepo 中。
@@ -72,7 +74,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-本地地址为 `http://127.0.0.1:3000`。发布前运行 `pnpm build`、`pnpm check`、`pnpm test` 和 `pnpm test:e2e`。官网与文档使用规划主域名 `https://umbra.cat` 下的七种语言目录；网站发布由手动工作流触发，Rust 二进制仍独立发布。详见[官网开发与部署](docs/website-development.md)。
+本地地址为 `http://127.0.0.1:3000`。发布前运行 `pnpm build`、`pnpm check`、`pnpm test` 和 `pnpm test:e2e`。官网与文档使用主域名 `https://umbra.cat` 下的七种语言目录；网站发布由手动工作流触发，Rust 二进制仍独立发布。详见[官网开发与部署](docs/website-development.md)。
 
 ## 快速开始
 

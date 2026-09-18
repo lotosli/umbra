@@ -7,9 +7,16 @@ order: 5
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Umbra fournit un proxy SOCKS5 local. Une application peut s'y connecter directement ; votre client habituel peut aussi gérer les règles et lui transmettre les requêtes sélectionnées.
+
+
+## Comment vérifier le résultat
+
+Exécutez d’abord la commande curl sur l’ordinateur client, puis configurez SOCKS5 dans une application. Ajoutez le client de routage une fois ces deux étapes réussies. Une page chargée en TCP ne valide pas UDP : testez séparément une application qui utilise UDP.
 
 ## 1. Lancer Umbra
 

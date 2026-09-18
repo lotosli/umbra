@@ -7,9 +7,16 @@ order: 6
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 前面での接続確認後にサービス化します。Linux では systemd でプロセスを管理し、journald でログを確認できます。
+
+
+## 結果を確認するには
+
+デプロイ後、別のクライアントからクイックスタートの curl コマンドを実行し、ページが返ることを確認します。続いてサービスを再起動し、同じ確認を繰り返します。これでリモート接続、設定ファイルの読み取り、再起動後の復旧を確認できます。
 
 ## ユーザーとファイルを準備
 

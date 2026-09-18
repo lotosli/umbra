@@ -7,9 +7,16 @@ order: 17
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Anota versions, plataforma i error. Reprodueix una petició i canvia un ajust cada vegada.
+
+
+## Com pots comprovar el resultat
+
+Localitza primer on es produeix l’error: si es rebutja la connexió a 127.0.0.1:1080, revisa el client local; si s’esgota el temps de connexió remota, revisa el procés del servidor, l’adreça i el port; si falla la negociació, comprova les claus, short_id, server_name i els rellotges. Després de corregir-ho, repeteix curl abans de tornar a l’aplicació.
 
 ## Prova directa
 

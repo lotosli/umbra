@@ -30,6 +30,8 @@ import { localePath, repositoryUrl, type Locale } from '../lib/locales';
 import { releaseVersion, releaseUrl, platforms } from '../lib/releases';
 import { EclipseMark } from './site-shell';
 
+const comparisonSetupLinks = ['docs/getting-started/quick-start', 'https://xtls.github.io/config/outbounds/vless.html', 'https://www.v2fly.org/config/protocols/vmess.html', 'https://trojan-gfw.github.io/trojan/config', 'https://shadowsocks.org/doc/configs.html', 'https://v2.hysteria.network/docs/getting-started/Server/'];
+
 const sourceCommands =
   'git clone https://github.com/lotosli/umbra.git\ncd umbra\ncargo build --release\n./target/release/umbra keygen';
 
@@ -451,6 +453,7 @@ function ProtocolPage({ locale }: { locale: Locale }) {
                   </ul>
                 </div>
               </div>
+              <a className="text-link" href={index === 0 ? localePath(locale, comparisonSetupLinks[0]) : comparisonSetupLinks[index]}>{copy.protocol.setupLabel}<ArrowUpRight size={16} /></a>
             </div>
           ))}
         </div>

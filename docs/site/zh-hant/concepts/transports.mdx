@@ -7,9 +7,16 @@ order: 12
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 應用程式發出的請求可以是 TCP 或 UDP。Umbra 再按設定選擇如何把請求送到伺服器：`transport` 決定 TCP 請求的傳輸，`udp_transport` 可單獨指定 UDP 請求的傳輸；省略後者時，兩者使用同一種方式。
+
+
+## 完成這一步後，如何確認成功
+
+初次使用先選 TCP。確認兩端 TCP 設定可用後，再啟用 QUIC 或分開設定 TCP/UDP 路徑。每次只修改一個選項，並以同一個應用程式重新測試；目前不會自動切換傳輸方式。
 
 ## 從哪種模式開始
 

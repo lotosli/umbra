@@ -14,4 +14,4 @@
 ## 3. 测试与覆盖率 >= 90%
 - [x] 3.1 Run build, content/types/lint and unit tests with line coverage >=90%.
 - [x] 3.2 Run browser and discovery audits, inspect representative responsive pages and performance baseline.
-- [ ] 3.3 Complete remote CI and merge, deploy with Wrangler and verify production; archive with evidence.
+- [x] 3.3 Complete remote CI and merge, deploy with Wrangler and verify production; archive with evidence.

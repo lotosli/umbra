@@ -19,6 +19,14 @@ Google domain ownership is verified (user confirmation and property observed). T
 
 ## Publication
 
-Remote CI, merged source and production verification will be recorded after the release. Rollback worker version before publication: `1e4bda6f-2ea4-4b2c-a37d-86661f7531b0`.
+Implementation PR #14 merged as `eda45fc8d445cbbdc8fec2677abaa244d4067c7e` after Website checks #17 and Rust CI #70 both passed. Cloudflare version `58a83d85-1e79-4d7f-9418-c56c37be181f` was deployed and passed all 175 URL audits and all 35 browser tests on the production domain. The www root returned one 307 directly to the negotiated canonical language, with Vary and no-store. Rollback worker version before publication: `1e4bda6f-2ea4-4b2c-a37d-86661f7531b0`.
 
 Performance results distinguish local preview (uncompressed, intentional noindex) from production and do not establish field Core Web Vitals. Search clicks, indexing and AI citations remain unavailable while account data is being processed; no outcome improvement is claimed from engineering checks alone.
+
+## Lab baseline and follow-ups
+
+`performance-lab.json` records three production mobile simulations before and after publication (Lighthouse 13.4.1). Median LCP was 3,208 ms before and 3,177 ms after; all CLS and TBT samples were zero. SEO lab score was 100 in all six samples. These small, host-dependent samples do not demonstrate a speed improvement or field CWV compliance. Prioritize the render-blocking stylesheet and unused first-page JavaScript in a separately measured performance change.
+
+The GitHub About homepage field is currently empty; README links are now present. Updating About, final Google sitemap receipt, Bing ownership and verified-bot security review need a working authenticated browser connection. No broad bot bypass, training-policy change or analytics collector was enabled.
+
+Post-publication user correction: shorten the English documentation search button from “Search documentation” to “Search” to avoid redundant wording and wrapping. The existing search behavior, shortcut and localized labels remain intact. This editorial correction is tracked in the publication follow-up.

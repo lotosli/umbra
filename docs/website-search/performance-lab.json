@@ -1,0 +1,187 @@
+{
+  "date": "2026-09-18",
+  "environment": "Local macOS Chromium; Lighthouse simulated mobile Slow 4G, sequential samples; other checks may share host resources",
+  "scope": "Provisional lab baseline, not real-user p75 or statistical evidence of a speed improvement",
+  "samples": [
+    {
+      "phase": "before",
+      "sample": "umbra-seo-lighthouse-before-2",
+      "lighthouseVersion": "13.4.1",
+      "url": "https://umbra.cat/zh-hans/",
+      "settings": {
+        "formFactor": "mobile",
+        "throttlingMethod": "simulate",
+        "throttling": {
+          "rttMs": 150,
+          "throughputKbps": 1638.4,
+          "requestLatencyMs": 562.5,
+          "downloadThroughputKbps": 1474.5600000000002,
+          "uploadThroughputKbps": 675,
+          "cpuSlowdownMultiplier": 4
+        },
+        "screenEmulation": {
+          "mobile": true,
+          "width": 412,
+          "height": 823,
+          "deviceScaleFactor": 1.75,
+          "disabled": false
+        }
+      },
+      "performanceScore": 0.88,
+      "seoScore": 1,
+      "lcpMs": 3065,
+      "cls": 0,
+      "tbtMs": 0
+    },
+    {
+      "phase": "before",
+      "sample": "umbra-seo-lighthouse-before-3",
+      "lighthouseVersion": "13.4.1",
+      "url": "https://umbra.cat/zh-hans/",
+      "settings": {
+        "formFactor": "mobile",
+        "throttlingMethod": "simulate",
+        "throttling": {
+          "rttMs": 150,
+          "throughputKbps": 1638.4,
+          "requestLatencyMs": 562.5,
+          "downloadThroughputKbps": 1474.5600000000002,
+          "uploadThroughputKbps": 675,
+          "cpuSlowdownMultiplier": 4
+        },
+        "screenEmulation": {
+          "mobile": true,
+          "width": 412,
+          "height": 823,
+          "deviceScaleFactor": 1.75,
+          "disabled": false
+        }
+      },
+      "performanceScore": 0.85,
+      "seoScore": 1,
+      "lcpMs": 3208,
+      "cls": 0,
+      "tbtMs": 0
+    },
+    {
+      "phase": "before",
+      "sample": "umbra-seo-lighthouse-before",
+      "lighthouseVersion": "13.4.1",
+      "url": "https://umbra.cat/zh-hans/",
+      "settings": {
+        "formFactor": "mobile",
+        "throttlingMethod": "simulate",
+        "throttling": {
+          "rttMs": 150,
+          "throughputKbps": 1638.4,
+          "requestLatencyMs": 562.5,
+          "downloadThroughputKbps": 1474.5600000000002,
+          "uploadThroughputKbps": 675,
+          "cpuSlowdownMultiplier": 4
+        },
+        "screenEmulation": {
+          "mobile": true,
+          "width": 412,
+          "height": 823,
+          "deviceScaleFactor": 1.75,
+          "disabled": false
+        }
+      },
+      "performanceScore": 0.84,
+      "seoScore": 1,
+      "lcpMs": 3253,
+      "cls": 0,
+      "tbtMs": 0
+    },
+    {
+      "phase": "after",
+      "sample": "umbra-seo-lighthouse-after-1",
+      "lighthouseVersion": "13.4.1",
+      "url": "https://umbra.cat/zh-hans/",
+      "settings": {
+        "formFactor": "mobile",
+        "throttlingMethod": "simulate",
+        "throttling": {
+          "rttMs": 150,
+          "throughputKbps": 1638.4,
+          "requestLatencyMs": 562.5,
+          "downloadThroughputKbps": 1474.5600000000002,
+          "uploadThroughputKbps": 675,
+          "cpuSlowdownMultiplier": 4
+        },
+        "screenEmulation": {
+          "mobile": true,
+          "width": 412,
+          "height": 823,
+          "deviceScaleFactor": 1.75,
+          "disabled": false
+        }
+      },
+      "performanceScore": 0.87,
+      "seoScore": 1,
+      "lcpMs": 3177,
+      "cls": 0,
+      "tbtMs": 0
+    },
+    {
+      "phase": "after",
+      "sample": "umbra-seo-lighthouse-after-2",
+      "lighthouseVersion": "13.4.1",
+      "url": "https://umbra.cat/zh-hans/",
+      "settings": {
+        "formFactor": "mobile",
+        "throttlingMethod": "simulate",
+        "throttling": {
+          "rttMs": 150,
+          "throughputKbps": 1638.4,
+          "requestLatencyMs": 562.5,
+          "downloadThroughputKbps": 1474.5600000000002,
+          "uploadThroughputKbps": 675,
+          "cpuSlowdownMultiplier": 4
+        },
+        "screenEmulation": {
+          "mobile": true,
+          "width": 412,
+          "height": 823,
+          "deviceScaleFactor": 1.75,
+          "disabled": false
+        }
+      },
+      "performanceScore": 0.86,
+      "seoScore": 1,
+      "lcpMs": 3248,
+      "cls": 0,
+      "tbtMs": 0
+    },
+    {
+      "phase": "after",
+      "sample": "umbra-seo-lighthouse-after-3",
+      "lighthouseVersion": "13.4.1",
+      "url": "https://umbra.cat/zh-hans/",
+      "settings": {
+        "formFactor": "mobile",
+        "throttlingMethod": "simulate",
+        "throttling": {
+          "rttMs": 150,
+          "throughputKbps": 1638.4,
+          "requestLatencyMs": 562.5,
+          "downloadThroughputKbps": 1474.5600000000002,
+          "uploadThroughputKbps": 675,
+          "cpuSlowdownMultiplier": 4
+        },
+        "screenEmulation": {
+          "mobile": true,
+          "width": 412,
+          "height": 823,
+          "deviceScaleFactor": 1.75,
+          "disabled": false
+        }
+      },
+      "performanceScore": 0.96,
+      "seoScore": 1,
+      "lcpMs": 2209,
+      "cls": 0,
+      "tbtMs": 0
+    }
+  ]
+}

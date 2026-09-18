@@ -62,7 +62,7 @@ export const docsCopy: Record<Locale, DocsCopy> = {
   "en": {
     "title": "Documentation",
     "description": "Install both ends, connect your apps and tune your setup. Find the guide for your next step.",
-    "search": "Search documentation",
+    "search": "Search",
     "searchPlaceholder": "Search settings, commands or how-to guides…",
     "noResults": "No matching documents. Try another search.",
     "loading": "Preparing search…",

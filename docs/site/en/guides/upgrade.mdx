@@ -1,7 +1,7 @@
 ---
 id: "guides/upgrade"
 title: "Upgrade Umbra"
-description: "Plan compatible upgrades for the current alpha release."
+description: "Update both endpoints and keep a working version available for rollback."
 section: "guides"
 order: 7
 version: "1.0.0-alpha"
@@ -9,15 +9,11 @@ source: ["docs/performance.md", "README.md"]
 translation: "complete"
 ---
 
-## Overview
+Read the target release notes, record both installed versions, back up configuration and keep the working binaries. Schedule compatible updates for both ends.
 
-The current source release is 1.0.0-alpha. Treat it as a prerelease and read the selected release notes before replacing binaries. Record the version at both endpoints, keep a protected backup of configuration and retain a known working binary. Upgrades should be planned as a client/server pair when wire behavior changes; a fresh website build is not proof that a remote installation has been upgraded.
+## Upgrade to 1.0.0-alpha
 
-## Details
-
-Version 0.0.8 corrected X25519MLKEM768 share and shared-secret ordering. The earlier reversed format is not supported; both endpoints must be upgraded. The alpha introduces accelerated reusable TLS ciphers, ready-stream mux scheduling, funded startup windows and batched QUIC ingress. New TCP mux sessions use adaptive_mux=true by default and need an upgraded server. Setting adaptive_mux=false explicitly selects legacy mux; business payloads are not automatically replayed or downgraded.
-
-### Optional performance table
+This release improves encryption processing, shared-connection scheduling and QUIC reception. Adaptive mux adjusts receive windows using consumption and round-trip time, within the memory budget. Update both ends to use it.
 
 ```toml
 [performance]
@@ -25,13 +21,24 @@ adaptive_mux = true
 quic_congestion = "bbr"
 ```
 
+Set `adaptive_mux = false` to select legacy mux explicitly. This controls TCP multiplexing; `mux = false` still selects dedicated Vision, and `udp_transport` still selects the UDP path independently.
 
-## Verify
+## Coming from an older release
 
-Existing identity keys, short IDs and SNI can remain when a release does not require their rotation. mux=false keeps dedicated Vision behavior, and udp_transport remains independent. After upgrading, verify a normal TCP request, UDP if configured, and shutdown/restart behavior. Compare performance only under comparable path and workload conditions. QUIC defaults to Quinn BBR, which is separate from Linux TCP congestion control and does not guarantee a throughput increase.
+Version 0.0.8 corrected X25519MLKEM768 key-share and shared-secret ordering. Both ends need updating across that change. Check intermediate release notes for other protocol or configuration changes. Unless rotation is required, keep existing keys, `short_id` and website names.
+
+## Verify after updating
+
+1. Confirm both processes use the newly installed binaries.
+2. Make an HTTPS request through local SOCKS5.
+3. Test UDP if configured.
+4. Restart and check that connections recover.
+5. Compare performance using the same path and workload.
+
+QUIC defaults to BBR, configured separately from OS TCP congestion control. If needed, roll back both ends according to the releases' compatibility requirements.
 
 ## Next steps
 
-- [Transports and traffic modes](/en/docs/concepts/transports/)
-- [Performance and policy reference](/en/docs/reference/configuration/)
+- [Choose TCP, Vision or QUIC](/en/docs/concepts/transports/)
+- [Performance and transport settings](/en/docs/reference/configuration/)
 - [Troubleshooting](/en/docs/troubleshooting/)

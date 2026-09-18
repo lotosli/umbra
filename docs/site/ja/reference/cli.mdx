@@ -1,7 +1,7 @@
 ---
 id: "reference/cli"
-title: "CLI リファレンス"
-description: "server、client、keygen のサブコマンドとオプションです。"
+title: "コマンドラインリファレンス"
+description: "server、client、keygen のオプションを確認します。"
 section: "reference"
 order: 14
 version: "1.0.0-alpha"
@@ -9,15 +9,9 @@ source: ["crates/umbra/src/main.rs", "README.md"]
 translation: "complete"
 ---
 
-## 概要
+`server` はサーバー、`client` はローカル SOCKS5 を起動し、`keygen` は鍵を生成します。
 
-CLI のサブコマンドは三つです。server は待ち受けと実行処理、client はローカル SOCKS、keygen は標準出力への鍵生成です。umbra --help と各サブコマンドの --help でインストール済みバイナリを確認します。別バージョンの文書より、その版が実際に受け付けるオプションを優先してください。
-
-## 詳細
-
--c または --config で TOML を読み込みます。CLI は対応する項目を上書きし、省略した値はファイルを維持します。short ID と server name はカンマ区切りを使えます。--mux や --prebuild は明示的な真偽値を取ります。performance は TOML の表に置き、すべての内部項目に CLI フラグが存在するわけではありません。
-
-### ヘルプと識別鍵の生成
+## ヘルプを表示
 
 ```sh
 umbra --help
@@ -26,8 +20,13 @@ umbra client --help
 umbra keygen
 ```
 
+インストールした版の `--help` を確認してください。
 
-### umbra server
+## 設定の読み込みと上書き
+
+`-c` または `--config` で TOML を読み込みます。指定したオプションだけ対応値を上書きします。サーバーの ID と名前のリストはコンマ区切りです。`--mux` と `--prebuild` は `true` または `false` が必要です。性能設定は `[performance]` に置きます。
+
+## サーバーのオプション
 
 | コマンド / オプション | 役割 |
 |---|---|
@@ -44,8 +43,7 @@ umbra keygen
 | `--padding-scheme` | 内部パディング方式 |
 | `--tcp-evasion` | ClientHello の順序付き分割 write |
 
-
-### umbra client
+## クライアントのオプション
 
 | コマンド / オプション | 役割 |
 |---|---|
@@ -64,13 +62,12 @@ umbra keygen
 | `--padding-scheme` | 内部パディング方式 |
 | `--tcp-evasion` | ClientHello の順序付き分割 write |
 
+## 鍵を生成
 
-## 確認と制約
-
-keygen に追加オプションはなく、x25519_private、x25519_public、mldsa_seed、mldsa_verify の base64 値を出力します。秘密を含むので私的なターミナルと保護されたファイルを使います。シェル履歴やプロセス一覧に現れる引数は避けてください。設定オプションは下表のとおりで、クラウドアカウント、DB 移行、自動サービスインストール用コマンドはありません。起動後は実際の要求を確認します。
+`umbra keygen` は追加オプションなしで `x25519_private`、`x25519_public`、`mldsa_seed`、`mldsa_verify` を Base64 で出力します。クイックスタートに従って割り当ててください。秘密を含むため保護されたファイルに保存し、履歴やプロセス一覧に出る引数は避けます。
 
 ## 次のステップ
 
-- [サーバー設定](/ja/docs/configuration/server/)
-- [クライアント設定](/ja/docs/configuration/client/)
-- [性能とポリシー](/ja/docs/reference/configuration/)
+- [サーバー設定リファレンス](/ja/docs/configuration/server/)
+- [クライアント設定リファレンス](/ja/docs/configuration/client/)
+- [性能と通信パラメーター](/ja/docs/reference/configuration/)

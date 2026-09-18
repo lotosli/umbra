@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Umbra",
+  "short_name": "Umbra",
+  "description": "Umbra est un proxy open source à héberger vous-même. Connectez-vous par votre serveur, utilisez un véritable site web comme couverture et reliez vos applications à un seul proxy local.",
+  "lang": "fr",
+  "start_url": "/fr/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fafafa",
+  "theme_color": "#fafafa",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

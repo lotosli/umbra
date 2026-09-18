@@ -1,7 +1,7 @@
 ---
 id: "guides/deployment"
 title: "デプロイと運用"
-description: "サーバーをサービスとして管理し、リソースを配分します。"
+description: "サービス、ポート、設定ファイル、リソースを管理します。"
 section: "guides"
 order: 6
 version: "1.0.0-alpha"
@@ -9,17 +9,19 @@ source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
 ---
 
-## 概要
+前面での接続確認後にサービス化します。Linux では systemd でプロセスを管理し、journald でログを確認できます。
 
-同じ版の両端をフォアグラウンドで確認してからサービス化します。Linux では systemd がサーバーを監視し、journald で stderr を収集できます。バイナリと server.toml は絶対パスで指定します。設定はサービス実行ユーザーと管理者だけが読めるようにし、実行ユーザーや低番号ポートの権限はホストに合わせて用意します。
+## ユーザーとファイルを準備
 
-## 詳細
+専用ユーザー `umbra` を作り、プログラムを `/usr/local/bin/umbra`、設定を `/etc/umbra/server.toml` に配置します。読み取りはサービスユーザーと管理者に限定します。絶対パスとユーザー名は環境に合わせて変更してください。
 
-設定した公開 TCP ポートを開きます。UDP は udp_listen を有効にして QUIC を使用する場合だけ開きます。別のレイヤー4入口が公開ポートを所有する場合、Umbra をループバックにバインドし、透明な TCP/QUIC 転送を構成します。内部ポートを外部に開ける必要はありません。通常の HTTP リバースプロキシはこの転送の代わりにはなりません。
+## ネットワークを設定
 
-### サービスユニット例
+`listen` の TCP ポートを開きます。QUIC では `udp_listen` と UDP ポートも必要です。公開ポートを L4 フロントエンドが使う場合は Umbra をループバックにバインドし、TCP/QUIC を透過転送します。内部ポートは非公開に保ちます。通常の HTTP リバースプロキシ設定とは異なり、該当トランスポートの転送が必要です。
 
-ユニットを `/etc/systemd/system/umbra-server.service` に保存します。この例は専用 Linux ユーザー `umbra` が存在し、バイナリが `/usr/local/bin/umbra` にあり、そのユーザーが `/etc/umbra/server.toml` を読めることを前提にしています。有効化する前にホストの管理ツールでユーザーを作成してファイルを配置し、異なる構成ではパスとユーザー名を変更してください。
+## サービスを作成
+
+`/etc/systemd/system/umbra-server.service` に保存します。
 
 ```ini
 [Unit]
@@ -41,8 +43,9 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 ```
 
+`CAP_NET_BIND_SERVICE` は 443 などの低位ポートを利用するための権限です。起動前にユーザー、パス、権限を確認します。
 
-### サービス管理
+## 起動とログ確認
 
 ```sh
 sudo systemctl daemon-reload
@@ -50,13 +53,14 @@ sudo systemctl enable --now umbra-server
 sudo journalctl -u umbra-server -f
 ```
 
+その後、クライアントからリクエストを送って確認します。
 
-## 確認と制約
+## リソースと保守
 
-OS 用のメモリ余裕を確保してください。スループット重視の設計は最低 1 GiB の物理 RAM を想定し、performance.memory_mib は論理的な使用予約の上限であって RSS 制限ではありません。診断は既定で無効です。調査時にだけ有効にし、受け付けた書き込み量を遠端への配送完了と解釈しないでください。変更後は計画的に再起動し、検証済み旧バイナリを残します。
+現在のスループット最適化は、サーバーに少なくとも 1 GiB の物理メモリがあることを前提とします。OS、カーネルバッファー、他のサービス用にも余裕を残してください。診断は通常無効で、問題を調べる際に有効化します。設定変更後は再起動して確認し、戻せるよう以前のプログラムと設定を保管します。
 
 ## 次のステップ
 
-- [性能とポリシー](/ja/docs/reference/configuration/)
+- [性能と通信パラメーター](/ja/docs/reference/configuration/)
 - [トラブルシューティング](/ja/docs/troubleshooting/)
-- [Umbra の更新](/ja/docs/guides/upgrade/)
+- [Umbra を更新する](/ja/docs/guides/upgrade/)

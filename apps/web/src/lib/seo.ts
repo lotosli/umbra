@@ -1,8 +1,9 @@
+import { marketingCopy } from '../i18n/marketing';
 import { canonicalUrl, languageTag, localeDefinitions, defaultLocale } from './locales';
 import type { Locale } from './locales';
 
 export function pageHead(locale: Locale, path: string, title: string, description: string) {
-  const fullTitle = title === 'Umbra' ? 'Umbra — Privacy, in plain sight.' : `${title} · Umbra`;
+  const fullTitle = title === 'Umbra' ? `Umbra — ${marketingCopy[locale].hero.title} ${marketingCopy[locale].hero.accent}` : `${title} · Umbra`;
   const url = canonicalUrl(locale, path);
   return {
     meta: [
@@ -14,11 +15,13 @@ export function pageHead(locale: Locale, path: string, title: string, descriptio
       { property: 'og:url', content: url },
       { property: 'og:locale', content: languageTag(locale).replace('-', '_') },
       { property: 'og:site_name', content: 'Umbra' },
-      { property: 'og:image', content: 'https://umbra.cat/social-card.png' },
+      { property: 'og:image', content: `https://umbra.cat/social/${locale}.png` },
+      { property: 'og:image:alt', content: marketingCopy[locale].hero.description },
       { name: 'twitter:card', content: 'summary_large_image' },
     ],
     links: [
       { rel: 'canonical', href: url },
+      { rel: 'manifest', href: `/manifests/${locale}.webmanifest` },
       ...localeDefinitions.map(({ id, tag }) => ({ rel: 'alternate', hrefLang: tag, href: canonicalUrl(id, path) })),
       { rel: 'alternate', hrefLang: 'x-default', href: canonicalUrl(defaultLocale, path) },
     ],

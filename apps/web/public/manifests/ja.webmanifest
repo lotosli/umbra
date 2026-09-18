@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Umbra",
+  "short_name": "Umbra",
+  "description": "Umbra は、自分のサーバーで運用するオープンソースのプロキシです。実在するサイトをカバーとして使い、一つのローカルプロキシから、いつものアプリをインターネットにつなげます。",
+  "lang": "ja",
+  "start_url": "/ja/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fafafa",
+  "theme_color": "#fafafa",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

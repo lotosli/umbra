@@ -1,7 +1,7 @@
 ---
 id: "guides/upgrade"
 title: "Actualitzar Umbra"
-description: "Planifica una actualització compatible dels dos extrems."
+description: "Actualitza els dos extrems i conserva una versió de reserva."
 section: "guides"
 order: 7
 version: "1.0.0-alpha"
@@ -9,15 +9,11 @@ source: ["docs/performance.md", "README.md"]
 translation: "complete"
 ---
 
-## Visió general
+Llegeix les notes, anota les versions instal·lades i desa configuracions i programes que funcionin. Planifica actualitzacions compatibles als dos extrems.
 
-La versió de les fonts és 1.0.0-alpha. Llegeix les notes de la publicació triada abans de substituir binaris. Registra totes dues versions, desa una còpia protegida de la configuració i conserva un executable funcional. Els canvis de format demanen coordinar client i servidor; que el lloc publiqui una versió nova no demostra que la instal·lació remota ja l’executi.
+## Passar a 1.0.0-alpha
 
-## Detalls
-
-La versió 0.0.8 va corregir l’ordre de les parts i del secret compartit X25519MLKEM768. L’ordre invertit anterior ja no s’admet: actualitza tots dos extrems. L’alpha afegeix contextos TLS accelerats reutilitzables, planificació mux per fluxos preparats i recepció QUIC per lots. Els clients nous habiliten adaptive_mux=true per defecte i necessiten un servidor compatible. false selecciona explícitament el mux antic, sense repetir automàticament dades d’aplicació.
-
-### Taula de rendiment opcional
+Aquesta versió millora el xifratge, la planificació de connexions compartides i la recepció QUIC. El mux adaptatiu ajusta finestres segons consum i temps d'anada i tornada, dins del pressupost de memòria. Actualitza els dos extrems per utilitzar-lo.
 
 ```toml
 [performance]
@@ -25,13 +21,18 @@ adaptive_mux = true
 quic_congestion = "bbr"
 ```
 
+`adaptive_mux = false` selecciona el mux anterior. `mux = false` continua triant Vision dedicat; `udp_transport` es configura per separat.
 
-## Verificació i límits
+## Des de versions anteriors
 
-Les claus d’identitat, els short IDs i el SNI es poden conservar si la publicació no n’exigeix la rotació. mux=false manté Vision i udp_transport continua independent. Comprova TCP, UDP si està configurat, i l’aturada i reinici. Compara rendiments en recorreguts equivalents. BBR de Quinn afecta QUIC separadament del control TCP de Linux i no promet cap augment de velocitat.
+La versió 0.0.8 va corregir l'ordre de les parts de clau i dels secrets compartits X25519MLKEM768; cal actualitzar tots dos extrems. Revisa també les notes intermèdies. Si no cal renovar-los, conserva claus, `short_id` i noms de lloc.
+
+## Verificar l'actualització
+
+Comprova els programes en execució, una petició HTTPS per SOCKS5, UDP si està configurat i la recuperació després de reiniciar. Compara rendiment amb la mateixa ruta i càrrega. BBR de QUIC es gestiona a part del control de congestió TCP del sistema. Per tornar enrere, respecta la compatibilitat dels dos extrems.
 
 ## Passos següents
 
-- [Transports i modes de trànsit](/ca/docs/concepts/transports/)
-- [Rendiment i polítiques](/ca/docs/reference/configuration/)
-- [Resolució de problemes](/ca/docs/troubleshooting/)
+- [Triar TCP, Vision o QUIC](/ca/docs/concepts/transports/)
+- [Paràmetres de rendiment i transport](/ca/docs/reference/configuration/)
+- [Resoldre problemes](/ca/docs/troubleshooting/)

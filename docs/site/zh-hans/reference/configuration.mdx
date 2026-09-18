@@ -1,7 +1,7 @@
 ---
 id: "reference/configuration"
-title: "性能与策略参考"
-description: "内存预算、自适应 mux、填充和拥塞控制。"
+title: "性能与传输参数"
+description: "调整内存预算、接收窗口、流量填充和诊断输出。"
 section: "reference"
 order: 15
 version: "1.0.0-alpha"
@@ -9,15 +9,9 @@ source: ["crates/umbra-core/src/resources.rs", "README.md", "docs/performance.md
 translation: "complete"
 ---
 
-## 概览
+建议先使用默认值完成连接，再根据实际负载调整。客户端与服务端都接受可选的 `[performance]` 表。
 
-客户端和服务端都接受可选 performance 表。默认值表示有界的逻辑资源承诺，不是启动时一次性分配的全部内存。应为操作系统、内核缓冲、分配器及握手保留空间。共享同一凭据的连接共享组预算，不会自动变成独立用户账户，也不保证每个人获得相同带宽。
-
-## 详细说明
-
-memory_mib 范围为 16–16384 MiB，group_memory_mib 至少 16 MiB 且不超过进程预算。窗口字段接受 1–64 MiB，实际 QUIC 窗口和发送存储还会受预算裁剪。adaptive_mux 控制客户端新的 TCP CONNECT mux 会话，mux=false 仍然选择独立 Vision，不受这个模式开关替代。
-
-### 可选性能配置表
+## 默认性能配置
 
 ```toml
 [performance]
@@ -33,34 +27,70 @@ quic_congestion = "bbr"
 
 | 字段 | 默认值 / 要求 | 含义 |
 |---|---|---|
-| `memory_mib` | `512` | 进程逻辑内存承诺，16–16384 MiB |
-| `group_memory_mib` | `256` | 凭据组上限，至少16 MiB且不超过进程预算 |
+| `memory_mib` | `512` | 进程逻辑内存预算，16–16384 MiB |
+| `group_memory_mib` | `256` | 凭据组预算，至少 16 MiB，且不超过进程预算 |
 | `max_window_mib` | `64` | 自适应总接收窗口上限，1–64 MiB |
 | `quic_stream_window_mib` | `6` | QUIC 单流接收窗口，1–64 MiB |
 | `quic_send_window_mib` | `32` | QUIC 保留发送存储，1–64 MiB |
 | `adaptive_mux` | `true` | 客户端新 TCP mux 会话的自适应开关 |
-| `diagnostics_interval_secs` | `0` | 服务端诊断周期：0关闭，1–3600秒 |
-| `quic_congestion` | `"bbr"` | 发送 QUIC 算法：bbr、cubic、new-reno |
+| `diagnostics_interval_secs` | `0` | 服务端诊断周期：0 为关闭，范围 1–3600 秒 |
+| `quic_congestion` | `"bbr"` | 本端 QUIC 发送拥塞控制算法：bbr、cubic、new-reno |
 
+## 设置内存和窗口
 
-### 填充与 TCP 写入
+内存预算约束应用承诺给连接的资源。共享同一凭据的连接共用组预算；按进程和凭据组管理资源，便于控制并发连接的占用。
 
-default：每个方向前16次业务写入的前后各加一个100–1400字节的随机 PADDING 帧，之后每32次业务写入加一个填充帧。none 关闭填充。自定义形式：early=N,min=N,max=N,later=N；early 为初期写入次数，min/max 为填充字节范围，later 为后期周期，0关闭后期填充。min 不得超过 max，max 不得超过65535；开启初期填充时 max 必须非零。
+`memory_mib` 接受 16–16384 MiB；`group_memory_mib` 至少为 16 MiB，并且不超过进程预算。窗口字段接受 1–64 MiB，实际窗口还会根据预算裁剪。
 
-segment：有序分块写入，默认阈值64字节、首块32字节。off：普通写入。自定义形式：segment:threshold=N,first=M。Geneva 策略会被拒绝。
+这些值用于逻辑资源管理，并非启动时一次性分配的内存，也不是操作系统显示的 RSS 上限。为内核缓冲、分配器、握手和其他服务留出空间。共享预算以凭据为单位，多个用户共用凭据时归入同一组。
+
+## 使用自适应 mux
+
+`adaptive_mux` 控制客户端新建 TCP 多路复用会话的流控方式。接收窗口根据实际数据消耗和往返时间增长，增长前先申请相应预算。
+
+这一设置在 `mux = true` 时使用。`mux = false` 继续选择独立 Vision 连接。升级自适应 mux 时，两端使用兼容版本。
+
+## 选择 QUIC 拥塞控制
+
+`quic_congestion` 支持 `bbr`、`cubic` 和 `new-reno`，默认 `bbr`。配置影响本端发出的 QUIC 流量；客户端与服务端可分别设置。系统 TCP 拥塞控制仍由操作系统管理。
+
+## 设置流量填充
+
+默认策略在每个方向前 16 次业务写入的前后，各加入一个 100–1400 字节的随机填充帧；此后每 32 次业务写入加入一个填充帧。
+
+- `default`：使用上述默认策略。
+- `none`：关闭填充。
+- `early=N,min=N,max=N,later=N`：自定义早期写入次数、填充字节范围和后续间隔。`later=0` 关闭后续填充。
+
+`min` 不得大于 `max`，`max` 不得超过 65535。启用早期填充时，`max` 必须大于零。填充增加额外带宽消耗，调整后应验证实际连接。
+
+## 设置 TCP 握手分块
+
+`segment` 按顺序分块写入 ClientHello，默认阈值为 64 字节、首块为 32 字节。`off` 使用普通写入，也可用 `segment:threshold=N,first=M` 自定义。当前不接受 Geneva 策略。
 
 ```toml
 padding_scheme = "default"
 tcp_evasion = "segment"
 ```
 
+这两个字段属于顶层配置，请放在 `[performance]` 表之前或文件中的顶层字段区域。
 
-## 验证与边界
+## 启用诊断
 
-diagnostics_interval_secs=0 关闭收集与报告，1–3600 表示服务端输出周期秒数。数值观察区分外层与目标字节，并省略地址、凭据、SNI 和负载。逻辑承诺不是 RSS，写入接收不是远端投递证明，调度 poll 时间不是 CPU 使用率。quic_congestion 仅改变本端发送 QUIC 的行为。先使用默认值，以相同负载对比后再调整，不能假定更大的窗口必然更快。
+服务端将 `diagnostics_interval_secs` 设为 1–3600，可按指定秒数输出数值诊断；设为 `0` 时关闭收集与报告。诊断区分外层传输与目标连接的字节数，并省略地址、SNI、凭据和数据内容。
+
+阅读指标时按下列含义判断：
+
+| 指标 | 如何理解 |
+| --- | --- |
+| 逻辑内存承诺 | 应用为连接保留的资源预算；实际内存占用另看操作系统指标 |
+| 写入接受计数 | 本地写入接口接受的数据量；目标应用收到多少需在目标端确认 |
+| 调度 poll 时间 | 任务推进过程中的墙钟耗时；CPU 使用率另看系统指标 |
+
+每次只改一组相关参数，在相同负载下比较，再决定是否保留。
 
 ## 下一步
 
-- [传输与流量模式](/zh-hans/docs/concepts/transports/)
+- [选择 TCP、Vision 与 QUIC](/zh-hans/docs/concepts/transports/)
 - [部署与运维](/zh-hans/docs/guides/deployment/)
 - [故障排查](/zh-hans/docs/troubleshooting/)

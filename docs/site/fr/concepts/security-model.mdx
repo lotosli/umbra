@@ -1,30 +1,46 @@
 ---
 id: "concepts/security-model"
 title: "Modèle de sécurité"
-description: "Comprendre l’authentification, les secrets et les limites de protection."
+description: "Comprenez l'authentification, la couverture web et les éléments à protéger."
 section: "concepts"
 order: 13
 version: "1.0.0-alpha"
-source: ["README.md", "crates/umbra-core/src/socks.rs"]
+source: ["README.md", "crates/umbra-core/src/socks.rs", "crates/umbra-core/src/runtime.rs", "crates/umbra-reality/src/cert.rs", "crates/umbra-tls/src/server.rs"]
 translation: "complete"
 ---
 
-## Vue d’ensemble
+Umbra vérifie l'identité, protège le transport et transmet les connexions non authentifiées à un site réel. Vous gérez les clés, les appareils et le serveur.
 
-Umbra associe une authentification avant la première réponse et un repli vers un site réel. Les connexions non authentifiées sont transmises à cette destination au lieu d’obtenir une erreur de proxy reconnaissable. Les clients authentifiés vérifient les éléments d’identité attendus. Le cache anti-rejeu est borné en taille et en temps ; il ne constitue pas une défense illimitée contre l’épuisement des ressources.
+## Authentification et couverture
 
-## Détails
+Le serveur vérifie l'identité avant sa première réponse. Le client vérifie la liaison du certificat temporaire à l'identité attendue. Les autres connexions vont au site de couverture. Un cache limité en taille et en durée vérifie le rejeu. Les contrôles cryptographiques utilisent des comparaisons en temps constant et des mécanismes dédiés de stockage et d'effacement des secrets.
 
-Le code centralise les vérifications en temps constant et l’effacement des secrets. Gardez private_key et mldsa_seed sur le serveur, distribuez la configuration client avec soin et excluez clés, destinations et contenus des rapports publics. SOCKS local n’authentifie pas l’utilisateur : liez-le au bouclage. Les applications doivent continuer à utiliser HTTPS ou leur propre chiffrement authentifié de bout en bout.
+## Clés et accès local
 
-[GitHub Security](https://github.com/lotosli/umbra/security)
+Gardez `private_key` et `mldsa_seed` sur le serveur. Transmettez la configuration client par un canal de confiance, limitez les droits des fichiers et retirez les identifiants des journaux publics. SOCKS5 n'a pas de mot de passe : écoutez sur `127.0.0.1:1080`. Définissez un contrôle d'accès réseau avant d'ouvrir aux autres appareils.
 
-## Vérification et limites
+## Chiffrement des applications
 
-Un transport privé ne répare pas un terminal compromis et ne fournit pas l’anonymat d’un réseau à plusieurs sauts. Cette alpha ne revendique ni audit indépendant ni équivalence complète avec Chrome actuel. chrome-latest reste basé sur Chrome 150 ; une capture Chrome 153 ne prouve pas la conformité. Consultez les informations de sécurité publiées par le projet avant de signaler un problème sensible, sans divulguer de secrets dans un ticket public.
+Conservez HTTPS. Vision transmet, lorsqu'elles sont admissibles, les données déjà protégées par l'application. La sécurité des appareils, des comptes et du service distant reste à gérer.
+
+## Portée de la couverture
+
+Les visites ordinaires et les sondes non authentifiées reçoivent des réponses de site web. Adresses, horaires et volumes restent observables ; l'IP du serveur peut être bloquée. Umbra est un proxy auto-hébergé, sans l'isolation d'identité d'un réseau d'anonymat à plusieurs relais.
+
+## Profils de navigateur
+
+`chrome-latest` utilise Chrome 150. Le dépôt contient aussi des captures TCP/QUIC Chrome 153. Profils, captures et contrôles JA3/JA4 couvrent des caractéristiques précises ; l'équivalence complète avec le comportement réseau du Chrome actuel n'a pas été vérifiée.
+
+## Algorithmes post-quantiques
+
+ML-DSA-65 lie la clé publique du certificat temporaire. X25519 + ML-KEM-768 n'est utilisé que si ce groupe est négocié. La sonde de destination de la CLI utilise actuellement ring, sans ML-KEM, et le serveur suit le groupe observé. Évaluez donc la négociation effective du déploiement.
+
+## Version et signalement
+
+La version **1.0.0-alpha** ne dispose pas de preuve publique d'un audit indépendant achevé. Pour un usage sensible, examinez l'implémentation, les versions et le déploiement. Consultez [GitHub Security](https://github.com/lotosli/umbra/security) avant de signaler une faille ; gardez détails exploitables, identifiants et informations sensibles hors des discussions publiques.
 
 ## Pour continuer
 
-- [Référence du protocole](/fr/docs/reference/protocol/)
-- [Dépannage](/fr/docs/troubleshooting/)
-- [Contribuer](/fr/docs/contributing/)
+- [Comparer les solutions proxy](/fr/docs/reference/protocol/)
+- [Résoudre un problème](/fr/docs/troubleshooting/)
+- [Contribuer à Umbra](/fr/docs/contributing/)

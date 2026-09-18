@@ -1,7 +1,7 @@
 ---
 id: "guides/upgrade"
 title: "Actualizar Umbra"
-description: "Planifica una actualización compatible de ambos extremos."
+description: "Actualiza ambos extremos y conserva una versión de respaldo."
 section: "guides"
 order: 7
 version: "1.0.0-alpha"
@@ -9,15 +9,11 @@ source: ["docs/performance.md", "README.md"]
 translation: "complete"
 ---
 
-## Descripción general
+Lee las notas de la versión, anota las instaladas y guarda configuraciones y programas que funcionen. Planifica actualizaciones compatibles en ambos extremos.
 
-La versión de las fuentes es 1.0.0-alpha. Lee las notas de la publicación elegida antes de sustituir binarios. Registra ambas versiones, guarda una copia protegida de la configuración y conserva un ejecutable funcional. Los cambios en el formato requieren coordinar cliente y servidor; que el sitio publique una versión nueva no prueba que tu instalación remota ya la ejecute.
+## Pasar a 1.0.0-alpha
 
-## Detalles
-
-La versión 0.0.8 corrigió el orden de las partes y del secreto compartido X25519MLKEM768. El orden invertido anterior ya no se admite: actualiza ambos extremos. La alpha añade contextos TLS acelerados reutilizables, planificación mux por flujos listos y recepción QUIC por lotes. Los nuevos clientes habilitan adaptive_mux=true por defecto y necesitan un servidor compatible. false selecciona explícitamente mux antiguo; no se repiten automáticamente los datos de negocio.
-
-### Tabla de rendimiento opcional
+Esta versión mejora el cifrado, la planificación de conexiones compartidas y la recepción QUIC. El mux adaptativo ajusta ventanas según consumo y tiempo de ida y vuelta, dentro del presupuesto de memoria. Actualiza ambos extremos para usarlo.
 
 ```toml
 [performance]
@@ -25,13 +21,18 @@ adaptive_mux = true
 quic_congestion = "bbr"
 ```
 
+`adaptive_mux = false` selecciona explícitamente el mux anterior. `mux = false` sigue eligiendo Vision dedicado; `udp_transport` se configura por separado.
 
-## Verificación y límites
+## Desde versiones anteriores
 
-Las claves de identidad, short IDs y SNI pueden conservarse si la publicación no exige rotación. mux=false mantiene Vision y udp_transport continúa independiente. Comprueba TCP, UDP si está configurado, y el cierre y reinicio. Compara rendimiento en rutas equivalentes. BBR de Quinn afecta QUIC de forma separada al control TCP de Linux, sin prometer una mejora de velocidad.
+La versión 0.0.8 corrigió el orden de las partes de clave y secretos compartidos X25519MLKEM768; requiere actualizar ambos extremos. Revisa también las notas intermedias. Si no hace falta rotarlos, conserva claves, `short_id` y nombres de sitio.
+
+## Verificar la actualización
+
+Comprueba los programas que se ejecutan, una solicitud HTTPS por SOCKS5, UDP si está configurado y la recuperación tras reiniciar. Compara rendimiento con la misma ruta y carga. BBR de QUIC se gestiona aparte del control de congestión TCP del sistema. Para volver atrás, respeta la compatibilidad de ambos extremos.
 
 ## Siguientes pasos
 
-- [Transportes y modos de tráfico](/es/docs/concepts/transports/)
-- [Rendimiento y políticas](/es/docs/reference/configuration/)
-- [Resolución de problemas](/es/docs/troubleshooting/)
+- [Elegir TCP, Vision o QUIC](/es/docs/concepts/transports/)
+- [Parámetros de rendimiento y transporte](/es/docs/reference/configuration/)
+- [Resolver problemas](/es/docs/troubleshooting/)

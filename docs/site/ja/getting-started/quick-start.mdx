@@ -1,7 +1,7 @@
 ---
 id: "getting-started/quick-start"
 title: "クイックスタート"
-description: "識別用の鍵を生成し、最初のクライアントとサーバーを接続します。"
+description: "鍵を生成し、両端を設定して最初の接続を試します。"
 section: "getting-started"
 order: 3
 version: "1.0.0-alpha"
@@ -9,24 +9,23 @@ source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crate
 translation: "complete"
 ---
 
-## 概要
+最初は TCP を使います。サーバーとクライアントに同じバージョンをインストールしてください。クライアントからサーバーへ、サーバーからカバーサイトへ接続できる必要があります。
 
-同じバージョンのサーバーとクライアントを用意します。クライアントからサーバーへ、サーバーから実在するフォールバック先へ到達できる必要があります。例はプレースホルダーです。cover.example を適切で到達可能な TLS 1.3 サイトに置き換え、識別情報は自分の keygen 出力で埋めてください。
+## 1. 鍵を生成
 
-## 詳細
-
-第三者に見られないターミナルで umbra keygen を実行します。x25519_private と mldsa_seed はサーバーだけに保持し、x25519_public、mldsa_verify、選んだ short_id を信頼できる経路でクライアントへ渡します。server.toml を作成して先に起動し、接続先の初期検査を成功させます。クライアントの server_name と short_id はサーバーの許可リストに一致させます。
-
-### 識別鍵の生成
+サーバーで実行します。
 
 ```sh
 umbra keygen
 ```
 
-`umbra keygen` は `short_id` を生成しません。0〜16文字の偶数桁の16進文字列（0〜8バイト）を選び、両端で同じ値を指定します。文書用アドレス `198.51.100.10` はクライアントから到達可能な実際のサーバーアドレスに置き換え、ポートをサーバーの待ち受けと一致させてください。
+`x25519_private` と `mldsa_seed` はサーバーだけで保管し、`private_key` と `mldsa_seed` に設定します。`x25519_public` と `mldsa_verify` は信頼できる経路でクライアントへ渡し、`public_key` と `mldsa_verify` に設定します。
 
+`short_id` は別途選びます。16 文字以内で、文字数が偶数の 16 進数文字列を両端に同じ値で設定してください。`keygen` はこの値を生成しません。
 
-### サーバーテンプレート
+## 2. サーバーを起動
+
+`server.toml` を作成します。鍵のプレースホルダーをすべて置き換え、`dest` と `server_names` の `cover.example` を到達可能な TLS 1.3 サイトに変更します。ファイルを読めるのはサービス実行ユーザーと管理者だけにしてください。
 
 ```toml
 listen = "0.0.0.0:443"
@@ -38,15 +37,15 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
-
-### サーバーの起動
-
 ```sh
 umbra server -c server.toml
 ```
 
+起動時にサイトが検査されます。起動の成功を確認し、設定した TCP ポートをファイアウォールで許可します。
 
-### クライアントテンプレート
+## 3. クライアントを起動
+
+`client.toml` を作成し、`198.51.100.10:443` を実際のアドレスに変更します。対応する鍵、`short_id`、サイト名を入力してください。
 
 ```toml
 server = "198.51.100.10:443"
@@ -59,27 +58,24 @@ mldsa_verify = "<MLDSA_VERIFY_BASE64>"
 socks_listen = "127.0.0.1:1080"
 ```
 
-
-### クライアントの起動
+パスワードのないローカルプロキシをこの端末だけで使うため、`127.0.0.1:1080` を維持します。
 
 ```sh
 umbra client -c client.toml
 ```
 
+## 4. リクエストを試す
 
-### 接続の確認
+別のターミナルで実行します。
 
 ```sh
 curl --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
-
-## 確認と制約
-
-client.toml を作って起動し、アプリを SOCKS5 の 127.0.0.1:1080 に接続します。SOCKS はパスワード認証を行わないのでローカルのまま使用します。curl の --socks5-hostname はホスト名を SOCKS 経由で渡し、全経路を確認できます。終了は Ctrl-C です。TCP が動作した後で、同じインスタンスへ QUIC UDP を追加できます。
+応答を受け取れたら、アプリのプロキシを SOCKS5、アドレス `127.0.0.1`、ポート `1080` に設定します。`--socks5-hostname` は宛先名をプロキシに渡します。前面で動くプロセスは `Ctrl-C` で終了できます。TCP の動作を確認してから QUIC を追加してください。
 
 ## 次のステップ
 
-- [サーバーの設定](/ja/docs/guides/server/)
-- [クライアントの接続](/ja/docs/guides/client/)
+- [サーバーを設定する](/ja/docs/guides/server/)
+- [アプリや Clash 系クライアントを接続する](/ja/docs/guides/client/)
 - [設定例](/ja/docs/configuration/examples/)

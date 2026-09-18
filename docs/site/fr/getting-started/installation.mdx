@@ -1,7 +1,7 @@
 ---
 id: "getting-started/installation"
-title: "Installation"
-description: "Choisir une version pour votre plateforme ou compiler le binaire Rust."
+title: "Installer Umbra"
+description: "Téléchargez le programme adapté à votre appareil ou compilez-le à partir des sources Rust."
 section: "getting-started"
 order: 2
 version: "1.0.0-alpha"
@@ -9,17 +9,11 @@ source: ["docs/usage.md", "README.md", ".github/workflows/dist.yml"]
 translation: "complete"
 ---
 
-## Vue d’ensemble
+Le même programme fonctionne en mode client ou serveur. Choisissez la même version aux deux extrémités, puis le système et l'architecture de chaque appareil.
 
-Le processus de publication cible macOS, Linux et Windows. Choisissez l’architecture de la machine qui exécutera Umbra. Le tableau indique les cibles de compilation ; vérifiez les pièces jointes de la version GitHub choisie pour connaître les fichiers effectivement disponibles. Une cible ne garantit pas qu’une préversion donnée comporte cet artefact, et aucune signature ou somme de contrôle n’est inventée ici.
+## Télécharger
 
-## Détails
-
-Téléchargez depuis la page officielle des versions du projet. Sur macOS ou Linux, rendez le fichier téléchargé exécutable puis placez-le dans un répertoire du PATH, éventuellement sous le nom umbra. Sous Windows, utilisez le fichier .exe depuis un terminal. Lisez les notes et contrôlez les sommes de vérification lorsqu’elles accompagnent réellement cette version.
-
-### Téléchargement des versions
-
-[Téléchargement des versions](https://github.com/lotosli/umbra/releases)
+Consultez les [versions GitHub](https://github.com/lotosli/umbra/releases). Le tableau permet d'identifier les cibles de compilation ; les fichiers disponibles dépendent de la version choisie.
 
 | Plateforme | Architecture | Cible de compilation |
 |---|---|---|
@@ -29,7 +23,13 @@ Téléchargez depuis la page officielle des versions du projet. Sur macOS ou Lin
 | Linux | aarch64 | `umbra-aarch64-unknown-linux-gnu` |
 | Windows | x86_64 | `umbra-x86_64-pc-windows-msvc.exe` |
 
-### Compilation des sources
+## Installer le programme
+
+Sur macOS ou Linux, décompressez l'archive si nécessaire et rendez le programme exécutable. Vous pouvez le renommer `umbra` et le placer dans un répertoire du `PATH`. Sous Windows, lancez le fichier `.exe` dans un terminal ou ajoutez son dossier au `PATH`. Lisez les notes de version et utilisez les informations de vérification fournies avec le téléchargement.
+
+## Compiler les sources
+
+Utilisez la chaîne Rust 1.96.1 fixée par le dépôt :
 
 ```sh
 git clone https://github.com/lotosli/umbra.git
@@ -38,12 +38,13 @@ cargo build --release
 ./target/release/umbra --help
 ```
 
+Le programme se trouve dans `target/release`, avec le suffixe `.exe` sous Windows.
 
-## Vérification et limites
+## Vérifier l'installation
 
-La compilation utilise la chaîne Rust 1.96.1 épinglée dans le dépôt. Clonez le dépôt public puis exécutez cargo build --release ; le programme se trouve dans target/release. Vérifiez que umbra --help affiche server, client et keygen. Les deux rôles utilisent le même binaire. Installer un fichier ne démarre aucun service et ne configure aucun écouteur : poursuivez avec votre propre identité.
+Lancez `umbra --help`, avec le chemin complet si nécessaire. Les commandes `server`, `client` et `keygen` doivent apparaître. Passez ensuite à la génération des clés et à la configuration. Le guide de déploiement explique comment créer un service en arrière-plan.
 
 ## Pour continuer
 
 - [Démarrage rapide](/fr/docs/getting-started/quick-start/)
-- [Contribuer](/fr/docs/contributing/)
+- [Contribuer à Umbra](/fr/docs/contributing/)

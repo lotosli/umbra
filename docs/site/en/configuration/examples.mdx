@@ -1,7 +1,7 @@
 ---
 id: "configuration/examples"
 title: "Configuration examples"
-description: "Starting templates for TCP mux, Vision and QUIC UDP."
+description: "Choose connection reuse, Vision or QUIC and connect an existing client."
 section: "configuration"
 order: 10
 version: "1.0.0-alpha"
@@ -9,31 +9,29 @@ source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crate
 translation: "complete"
 ---
 
-## Overview
+Merge these fragments into a complete configuration after setting addresses, keys and the cover website in the quick start.
 
-These templates show mode selection after you have filled the identity and endpoint fields from the quick start. Replace all placeholders with your own configuration. They are not complete credentials and must not be copied into a public issue with real values. Server and client use the same binary; you do not need two client instances simply to choose a different outer transport for UDP.
-
-## Details
-
-For encrypted TCP multiplexing, set transport=tcp and mux=true. New alpha clients use adaptive mux by default. For dedicated TCP/Vision, use transport=tcp and mux=false. Eligible inner TLS 1.3 traffic can splice after the authenticated boundary exchange; other traffic remains encrypted. No separate vision flag is required.
-
-### TCP mux
+## Share TCP connections
 
 ```toml
 transport = "tcp"
 mux = true
 ```
 
+Reuse connections across requests. Adaptive flow control is enabled by default and needs a compatible server.
 
-### Dedicated TCP / Vision
+## Dedicated TCP / Vision
 
 ```toml
 transport = "tcp"
 mux = false
 ```
 
+Vision forwards eligible encrypted TLS 1.3 records after authenticated negotiation, reducing repeated encryption. Other traffic stays on the encrypted channel. No extra Vision switch is needed.
 
-### TCP / Vision + QUIC UDP
+## Vision for TCP, QUIC for UDP
+
+Client:
 
 ```toml
 transport = "tcp"
@@ -42,23 +40,24 @@ mux = false
 socks_listen = "127.0.0.1:1080"
 ```
 
-
-### Server template
+Server:
 
 ```toml
 listen = "0.0.0.0:443"
 udp_listen = "0.0.0.0:443"
 ```
 
+Allow both firewall protocols and choose a reachable QUIC/HTTP/3 cover website. One client and one server handle both paths.
 
-### Native QUIC
+## QUIC for both request types
 
 ```toml
 transport = "quic"
 ```
 
+Omit `udp_transport` so UDP inherits QUIC. Remove an existing override or change it to `quic`.
 
-### Clash SOCKS5 node
+## A local node for Clash-compatible clients
 
 ```yaml
 proxies:
@@ -69,13 +68,10 @@ proxies:
     udp: true
 ```
 
-
-## Verify
-
-For one instance with TCP/Vision and QUIC UDP, add udp_transport=quic and enable both listen and udp_listen on the server. For native QUIC on all supported request paths, select transport=quic and omit udp_transport so it inherits quic. The fallback destination must support real QUIC/HTTP3. A Clash node with udp: true allows UDP ASSOCIATE while ordinary TCP still follows transport. Validate one change at a time; padding and evasion defaults are a sound starting point until a measured compatibility issue justifies adjustment.
+Add it to the existing node list and group. `udp: true` enables UDP requests; TCP still follows `transport`. Route the Umbra server directly to avoid a proxy loop. Change one mode at a time and test TCP and UDP separately before tuning performance options.
 
 ## Next steps
 
 - [Server configuration](/en/docs/configuration/server/)
 - [Client configuration](/en/docs/configuration/client/)
-- [Transports and traffic modes](/en/docs/concepts/transports/)
+- [Choose TCP, Vision or QUIC](/en/docs/concepts/transports/)

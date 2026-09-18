@@ -1,7 +1,7 @@
 ---
 id: "getting-started/quick-start"
 title: "Quick start"
-description: "Generate an identity and connect your first client and server."
+description: "Generate keys, configure both ends and make your first proxy connection."
 section: "getting-started"
 order: 3
 version: "1.0.0-alpha"
@@ -9,24 +9,23 @@ source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crate
 translation: "complete"
 ---
 
-## Overview
+Start with TCP. Install the same Umbra version on your server and client device. The client must reach the server, and the server must reach the real cover website.
 
-Start with one server, one client and the same Umbra version at both endpoints. You need a server address reachable by the client and a real fallback destination reachable by the server. The examples below contain placeholders, not usable credentials. Replace cover.example with a suitable actual TLS 1.3 destination and replace every identity placeholder using your own keygen output.
+## 1. Generate keys
 
-## Details
-
-Run umbra keygen in a private terminal. Keep x25519_private and mldsa_seed on the server; distribute x25519_public, mldsa_verify and a selected short_id securely to the client. Create server.toml, then start the server. Its startup probe must reach the configured destination. The client's server_name must belong to the server_names list and short_id must match an accepted short_ids entry.
-
-### Generate an identity
+Run on the server:
 
 ```sh
 umbra keygen
 ```
 
-`umbra keygen` does not generate `short_id`. Choose an even-length hexadecimal string of 0–16 characters (0–8 bytes) and use the same value on both endpoints. Replace the documentation address `198.51.100.10` with your reachable server address; keep the port consistent with the server listener.
+Keep `x25519_private` and `mldsa_seed` on the server, as `private_key` and `mldsa_seed`. Send `x25519_public` and `mldsa_verify` to the client through a trusted channel, as `public_key` and `mldsa_verify`.
 
+Choose a separate `short_id`: an even-length hexadecimal string of up to 16 characters. Use the same value at both ends. `keygen` does not generate it.
 
-### Server template
+## 2. Start the server
+
+Create `server.toml`. Replace every identity placeholder and replace `cover.example` in both `dest` and `server_names` with a reachable TLS 1.3 website. Restrict access to the configuration file to the service user and administrators.
 
 ```toml
 listen = "0.0.0.0:443"
@@ -38,15 +37,15 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
-
-### Start the server
-
 ```sh
 umbra server -c server.toml
 ```
 
+Umbra probes the cover website at startup. Confirm startup succeeds and allow the configured TCP port through the firewall.
 
-### Client template
+## 3. Start the client
+
+Create `client.toml`. Replace `198.51.100.10:443` with the actual server address and enter the matching keys, `short_id` and website name.
 
 ```toml
 server = "198.51.100.10:443"
@@ -59,27 +58,24 @@ mldsa_verify = "<MLDSA_VERIFY_BASE64>"
 socks_listen = "127.0.0.1:1080"
 ```
 
-
-### Start the client
+Keep `127.0.0.1:1080` so the local proxy, which has no password authentication, is available only on this device.
 
 ```sh
 umbra client -c client.toml
 ```
 
+## 4. Try a request
 
-### Check the connection
+From another terminal:
 
 ```sh
 curl --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
-
-## Verify
-
-Create client.toml and start the client. Configure an application to use SOCKS5 at 127.0.0.1:1080; SOCKS negotiation has no username/password authentication, so keep that listener local. A curl request through --socks5-hostname checks the complete path and delegates target hostname resolution through SOCKS. Stop both foreground processes with Ctrl-C. Once TCP works, the examples page shows how to add QUIC UDP to the same instance.
+Once you receive a response, configure your app to use SOCKS5 at `127.0.0.1`, port `1080`. The `--socks5-hostname` option passes the destination hostname to the proxy. Stop foreground processes with `Ctrl-C`. Get TCP working before adding QUIC; use troubleshooting if a step fails.
 
 ## Next steps
 
-- [Set up a server](/en/docs/guides/server/)
-- [Connect a client](/en/docs/guides/client/)
+- [Set up the server](/en/docs/guides/server/)
+- [Connect apps and Clash-compatible clients](/en/docs/guides/client/)
 - [Configuration examples](/en/docs/configuration/examples/)

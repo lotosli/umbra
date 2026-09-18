@@ -1,7 +1,7 @@
 ---
 id: "troubleshooting"
 title: "故障排查"
-description: "定位設定、連線和傳輸問題。"
+description: "按失敗階段定位問題，逐步恢復連線。"
 section: "troubleshooting"
 order: 17
 version: "1.0.0-alpha"
@@ -9,28 +9,51 @@ source: ["docs/usage.md", "README.md"]
 translation: "complete"
 ---
 
-## 概覽
+先記錄兩端版本、平台和錯誤資訊，再用一個簡單請求復現。一次只修改一個設定，便於確認問題在哪一段。
 
-排查先確認安裝版本、失敗階段和去除所有秘密的最小設定描述。先復現一個請求，再調整設定。需要區分應用繞過 SOCKS、用戶端到伺服器端失敗，以及伺服器端到回落目標或業務目標失敗；這些現象的檢查位置不同，不能只憑頁面打不開認定協議失敗。
-
-## 詳細說明
-
-伺服器端立即退出時，檢查 TOML 語法、必填項、監聽衝突和啟動目標探測。解析錯誤保留安全的類別和行列位置，不回顯秘密。用戶端認證失敗時，透過可信渠道核對公鑰、short ID 與 server_name。先同步兩端系統時鐘，再考慮 max_time_diff。檢查實際 TCP 公網埠；使用 QUIC 時還要檢查 UDP。
-
-### 驗證連線
+## 先做一次直接連線測試
 
 ```sh
 umbra --help
 curl --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
+如果直接使用 SOCKS5 可以存取，而通過規則用戶端失敗，優先檢查節點選擇、分流規則、DNS 和代理循環。
 
-## 驗證與邊界
+## 伺服器端啟動後立即結束
 
-探測看到真實目標證書對未認證連線是正常現象。僅 UDP 失敗則核對 udp_transport、udp_listen、防火牆和目標真實 QUIC 服務。效能問題應使用固定負載和按需診斷，不要把邏輯記憶體、已接受寫入當成遠端交付指標。報告中提供脫敏命令、版本、平臺和錯誤類別，不附真實設定、私鑰、含使用者內容的抓包或實時基礎設施細節。
+檢查 TOML 語法、必填欄位、檔案讀取權限和接聽連接埠衝突。啟動時會探測掩護網站；同時檢查 `dest`、網站名稱和伺服器到該網站的連線。
+
+## 用戶端無法認證
+
+透過可信管道核對 `public_key`、`mldsa_verify`、`short_id` 和 `server_name`，並確認對應的是正在執行的伺服器端設定。
+
+檢查兩端系統時間，先修正時鐘，再評估時間容差。隨後檢查用戶端能否存取實際設定的伺服器連接埠。
+
+## 應用程式仍然無法存取
+
+確認應用程式確實使用 `127.0.0.1:1080` 的 SOCKS5 代理。再檢查伺服器端到應用程式目標的 DNS 和網路連線。使用 `socks5h` 或 `--socks5-hostname` 測試時，網域名稱會交給代理處理。
+
+## TCP 正常，UDP 失敗
+
+檢查用戶端的 `udp_transport`。使用 QUIC 時，確認伺服器端已啟用 `udp_listen`、防火牆允許 UDP，而且 `dest` 提供可達的真實 QUIC/HTTP/3 服務。
+
+在規則用戶端中啟用 UDP，並測試實際 UDP 應用程式。瀏覽網頁通常只能驗證相應的網頁連線路徑。
+
+## 連線到的是掩護網站
+
+普通瀏覽器或未認證 TLS 探測收到掩護網站的憑證和回應，屬於預期行為。驗證代理功能時，請使用設定正確的 Umbra 用戶端和本機 SOCKS5 入口。
+
+## 連線可用，但速度不理想
+
+保持相同目標、負載和網路路徑，對比不同傳輸設定。必要時開啟數值診斷，觀察視窗、排隊和記憶體預算，並結合系統 CPU、記憶體指標判斷。具體解釋見[效能與傳輸參數](/zh-hant/docs/reference/configuration/)。
+
+## 提交問題時提供什麼
+
+提供版本、操作系統、失敗階段、脫敏後的指令與錯誤類別，以及最小復現步驟。分享前移除金鑰、憑據、實際部署位址和使用者內容。涉及安全漏洞時，按[安全模型](/zh-hant/docs/concepts/security-model/)中的方式報告。
 
 ## 下一步
 
-- [伺服器端設定](/zh-hant/docs/configuration/server/)
-- [用戶端設定](/zh-hant/docs/configuration/client/)
-- [效能與策略參考](/zh-hant/docs/reference/configuration/)
+- [伺服器端設定參考](/zh-hant/docs/configuration/server/)
+- [用戶端設定參考](/zh-hant/docs/configuration/client/)
+- [效能與傳輸參數](/zh-hant/docs/reference/configuration/)

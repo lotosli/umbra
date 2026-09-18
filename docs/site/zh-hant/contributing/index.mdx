@@ -1,7 +1,7 @@
 ---
 id: "contributing"
 title: "參與貢獻"
-description: "透過規格、評審和有效測試參與專案。"
+description: "通過問題反饋、文件和程式碼改進 Umbra。"
 section: "contributing"
 order: 18
 version: "1.0.0-alpha"
@@ -9,13 +9,18 @@ source: ["CONTRIBUTING.md", "README.md", "LICENSE"]
 translation: "complete"
 ---
 
-## 概覽
+你可以幫助改進使用說明、報告可復現的問題，或參與功能開發。開始前閱讀儲存庫的 `CONTRIBUTING.md` 與 `AGENTS.md`，瞭解目前流程。
 
-Umbra 使用規格驅動開發。實現能力前，先提出 OpenSpec 變更並完成人工需求評審與批准，再按任務清單實現，併為場景建立測試。Rust 程式碼、公共 API 和協議行為仍受根目錄 AGENTS.md 與貢獻規則約束。文件修改也應核對事實來源，避免把規劃寫成既成能力。
+## 先對齊改動範圍
 
-## 詳細說明
+功能開發採用 OpenSpec：先提出變更、明確需求和驗證場景，完成人工評審與批准，再按任務清單實現。這樣可以讓評審者提前理解改動目標。
 
-按改動範圍執行格式化、嚴格 lint、測試、依賴檢查與覆蓋率閘門。行覆蓋率必須保持至少 90%，不能降低閾值或用無實質斷言的測試湊數。網路解析需要邊界和錯誤路徑測試；密碼學與指紋改動需要相應向量和真實取樣依據。依賴集中在 workspace catalog，並保持 crate 單向依賴。
+文件修改需要核對目前實作和公開來源。七語文件使用相同的穩定 ID，保持內容對應。
+
+## 驗證程式碼
+
+按改動範圍執行格式化、lint、測試、依賴與涵蓋率檢查。Rust 行涵蓋率要求至少 90%。解析器需要覆寫邊界和錯誤輸入，密碼學和瀏覽器指紋改動還需要對應向量或採樣依據。
+
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -25,12 +30,16 @@ cargo xtask coverage
 npx --yes @fission-ai/openspec@latest validate --all --strict
 ```
 
-## 驗證與邊界
+網站有獨立的建置、檢查、測試和涵蓋率要求，詳見儲存庫的 `docs/website-development.md`。新增依賴集中聲明，並檢查授權條款兼容性。
 
-網站文件保持穩定 ID、當前公開來源與完整七語翻譯。不要提交真實金鑰、私有基礎設施地址或未公開漏洞詳情。AI 輔助貢獻必須由承擔責任的人類理解、審查和測試；大段生成內容在 PR 或提交 trailer 中披露。採用 Conventional Commits 並遵循倉庫分支與評審規則。專案使用 MIT 許可證，新增包前仍需檢查依賴許可證相容性。
+## 提交可審閱的變更
+
+使用 Conventional Commits，在 PR 中說明解決的問題、修改範圍和驗證結果。AI 輔助內容需要由提交者理解、審查和測試；大段產生內容在 PR 或提交說明中標注工具及範圍。
+
+提交前移除真實認證資訊、私有基礎設施資訊和未公開漏洞詳情。項目以 MIT 授權條款發佈。
 
 ## 下一步
 
-- [架構](/zh-hant/docs/concepts/architecture/)
-- [協議參考](/zh-hant/docs/reference/protocol/)
+- [架構與連線流程](/zh-hant/docs/concepts/architecture/)
+- [代理方案對比](/zh-hant/docs/reference/protocol/)
 - [認識 Umbra](/zh-hant/docs/getting-started/introduction/)

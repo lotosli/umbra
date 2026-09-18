@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Umbra",
+  "short_name": "Umbra",
+  "description": "Umbra és un servidor intermediari de codi obert que allotges tu mateix. Connecta't a través del teu servidor, utilitza un lloc web real com a cobertura i reuneix les aplicacions en una sola entrada local.",
+  "lang": "ca",
+  "start_url": "/ca/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fafafa",
+  "theme_color": "#fafafa",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

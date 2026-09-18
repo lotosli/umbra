@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Umbra",
+  "short_name": "Umbra",
+  "description": "Umbra 是開放原始碼的自建代理工具。用自己的伺服器連線互聯網，以實際網站作為掩護，並通過一個本機代理入口連接常用應用程式。",
+  "lang": "zh-Hant",
+  "start_url": "/zh-hant/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fafafa",
+  "theme_color": "#fafafa",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

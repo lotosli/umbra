@@ -1,7 +1,7 @@
 ---
 id: "guides/deployment"
 title: "部署與運維"
-description: "將伺服器端作為服務執行並管理資源。"
+description: "設定背景服務，管理連接埠、設定和執行資源。"
 section: "guides"
 order: 6
 version: "1.0.0-alpha"
@@ -9,17 +9,23 @@ source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
 ---
 
-## 概覽
+先在前景完成一次用戶端到伺服器端的連線，再設定背景執行。以下範例使用 Linux systemd 管理伺服器端，通過 journald 查看紀錄。
 
-先用相同版本的兩端驗證前臺執行。在 Linux 上，可用 systemd 管理伺服器端，並由 journald 收集標準錯誤輸出。二進位制與 server.toml 都使用絕對路徑。設定檔案只允許服務身份和管理員讀取；服務身份、檔案所有權和低埠繫結許可權需要按主機環境設定，不能假定各發行版預設值一致。
+## 準備程式和設定
 
-## 詳細說明
+創建專用使用者 `umbra`，將程式安裝到 `/usr/local/bin/umbra`，設定保存到 `/etc/umbra/server.toml`。設定檔案僅向服務使用者和管理員開放讀取權限。
 
-開放實際設定的公網 TCP 埠。只有開啟 udp_listen 並使用原生 QUIC 時才開放對應 UDP 埠。如果公網埠由獨立四層入口占用，把 Umbra 後端繫結到迴環地址，並在入口設定透明 TCP/QUIC 轉發；內部後端埠無需開放到公網。普通 HTTP 反向代理不能代替 Umbra 所需的傳輸層轉發。
+如果使用其他路徑或使用者，請同步修改下面的服務單元。程式和設定都使用絕對路徑。
 
-### 服務單元示例
+## 設定接聽與防火牆
 
-將此單元儲存為 `/etc/systemd/system/umbra-server.service`。範例假設已建立專用 Linux 使用者 `umbra`，二進位檔已安裝至 `/usr/local/bin/umbra`，且該使用者可讀取 `/etc/umbra/server.toml`。啟用前請先以主機管理工具建立服務身分並安裝檔案；部署方式不同時須調整路徑及使用者。
+開放 `listen` 對應的公開網路 TCP 連接埠。啟用 QUIC 時，還需設定 `udp_listen` 並開放對應 UDP 連接埠。
+
+如果前面已有四層轉發服務佔用公開網路連接埠，可將 Umbra 繫結到迴路位址，由入口透明轉發 TCP 和 QUIC。內部連接埠保持僅本機可存取。此類轉發需要支援相應傳輸協議，常規 HTTP 反向代理設定不適用。
+
+## 創建 systemd 服務
+
+保存為 `/etc/systemd/system/umbra-server.service`：
 
 ```ini
 [Unit]
@@ -41,8 +47,9 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 ```
 
+`CAP_NET_BIND_SERVICE` 允許服務使用者繫結 443 等低連接埠。啟用前確認使用者、檔案路徑及權限已經就緒。
 
-### 服務管理命令
+## 啟動並查看紀錄
 
 ```sh
 sudo systemctl daemon-reload
@@ -50,13 +57,16 @@ sudo systemctl enable --now umbra-server
 sudo journalctl -u umbra-server -f
 ```
 
+服務啟動後，再從用戶端發起請求，確認背景執行正常。
 
-## 驗證與邊界
+## 安排資源與日常維護
 
-給作業系統預留記憶體。吞吐設計假定伺服器端至少有 1 GiB 實體記憶體；performance.memory_mib 是應用邏輯承諾上限，不是程序 RSS 硬限制。診斷預設關閉，排查時才啟用有限週期，並注意寫入接收計數不等於遠端已經收到。修改設定後安排重啟，保留之前驗證過的二進位制用於回退。服務化不會自動驗證目的站點或替你完成防火牆設定。
+目前吞吐優化以至少 1 GiB 實體記憶體的伺服器端為執行前提。設定應用程式記憶體預算時，為操作系統、核心緩衝和其他服務留出空間；具體參數見[效能與傳輸參數](/zh-hant/docs/reference/configuration/)。
+
+執行診斷預設關閉，需要排查時再啟用。修改設定後重啟服務，並驗證連線。升級時保留上一版程式和設定，方便還原。
 
 ## 下一步
 
-- [效能與策略參考](/zh-hant/docs/reference/configuration/)
+- [效能與傳輸參數](/zh-hant/docs/reference/configuration/)
 - [故障排查](/zh-hant/docs/troubleshooting/)
 - [升級 Umbra](/zh-hant/docs/guides/upgrade/)

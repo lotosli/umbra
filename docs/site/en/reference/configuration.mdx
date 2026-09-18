@@ -1,7 +1,7 @@
 ---
 id: "reference/configuration"
-title: "Performance and policy reference"
-description: "Memory ceilings, adaptive mux, padding and congestion settings."
+title: "Performance and transport settings"
+description: "Adjust memory budgets, windows, padding and diagnostics."
 section: "reference"
 order: 15
 version: "1.0.0-alpha"
@@ -9,15 +9,9 @@ source: ["crates/umbra-core/src/resources.rs", "README.md", "docs/performance.md
 translation: "complete"
 ---
 
-## Overview
+Start with defaults and a working connection, then tune against a repeatable workload. Both endpoints accept an optional `[performance]` table.
 
-Both client and server accept an optional performance table. Defaults are bounded logical resource commitments rather than memory allocated in full at startup. Keep headroom for the operating system, kernel buffers, allocator overhead and handshakes. Shared credential groups share a group budget; they do not create separate user accounts or guarantee equal bandwidth per person.
-
-## Details
-
-memory_mib accepts 16–16384 MiB. group_memory_mib must be at least 16 MiB and no larger than the process limit. Window fields accept 1–64 MiB; effective QUIC windows and send storage are additionally clipped to configured budgets. adaptive_mux controls the client opt-in for new TCP CONNECT mux sessions, while mux=false keeps the dedicated Vision selection.
-
-### Optional performance table
+## Defaults and fields
 
 ```toml
 [performance]
@@ -42,25 +36,41 @@ quic_congestion = "bbr"
 | `diagnostics_interval_secs` | `0` | Server diagnostic interval: 0 disabled, 1–3600 seconds |
 | `quic_congestion` | `"bbr"` | Outgoing QUIC: bbr, cubic, new-reno |
 
+## Memory and windows
 
-### Padding and TCP writes
+Budgets track resources committed to connections. Connections with the same credential share a group budget. `memory_mib` accepts 16–16384 MiB; `group_memory_mib` starts at 16 MiB and cannot exceed it. Windows accept 1–64 MiB and are clipped by available budgets.
 
-default: the first 16 business writes in each direction receive 100–1400 byte random PADDING frames before and after the data; later, every 32nd business write receives one padding frame. none disables injected padding. Custom form: early=N,min=N,max=N,later=N; early counts initial writes, min/max bound padding bytes and later sets the periodic interval (0 disables that phase). min must not exceed max, max must not exceed 65535, and enabled early padding requires a nonzero max.
+These are logical commitments, not startup allocations or an OS RSS limit. Leave memory for the kernel, allocator, handshakes and other services. Users sharing credentials share the same group.
 
-segment: ordered writes, default threshold 64 bytes and first chunk 32 bytes. off: ordinary write. Custom form: segment:threshold=N,first=M. Geneva strategies are rejected.
+## Adaptive mux and congestion control
+
+`adaptive_mux` applies to new client TCP sessions with `mux = true`. Windows grow from observed consumption and round-trip time after resources are reserved. `mux = false` keeps dedicated Vision. Use compatible endpoint versions.
+
+`quic_congestion` selects `bbr`, `cubic` or `new-reno` for this endpoint's outgoing QUIC traffic. TCP congestion control remains an OS setting.
+
+## Padding
+
+`default` adds a random 100–1400-byte frame before and after each of the first 16 business writes per direction, then once per 32 writes. `none` disables padding. Customize with `early=N,min=N,max=N,later=N`; `later=0` disables later padding. Require `min <= max`, `max <= 65535`, and a nonzero maximum when early padding is enabled. Padding consumes extra bandwidth.
+
+## Handshake writes
+
+`segment` writes ClientHello in order, with a default 64-byte threshold and 32-byte first chunk. Use `off` for ordinary writes or `segment:threshold=N,first=M` to customize. Geneva is not accepted.
 
 ```toml
 padding_scheme = "default"
 tcp_evasion = "segment"
 ```
 
+These are top-level fields: place them before `[performance]` or with the other top-level settings.
 
-## Verify
+## Diagnostics
 
-diagnostics_interval_secs=0 disables pipeline collection and reporting; 1–3600 enables a server interval in seconds. Numeric observations distinguish transport and target bytes and omit addresses, credentials, SNI and payloads. Logical commitments are not RSS; write acceptance is not proof of remote application delivery; scheduler poll time is not CPU utilization. quic_congestion changes this endpoint's outgoing QUIC traffic only. Start with defaults and tune against a repeatable workload instead of assuming a larger window always improves performance.
+On the server, set `diagnostics_interval_secs` to 1–3600 seconds to collect and report numeric observations. Zero disables collection and reporting. Output separates outer and target bytes and omits addresses, SNI, credentials and payloads.
+
+Logical commitments describe reserved resources; use OS metrics for actual memory. Accepted writes report local acceptance; verify delivery at the destination. Poll wall time describes task progress; use system metrics for CPU utilization. Change one related group of settings at a time and compare the same workload.
 
 ## Next steps
 
-- [Transports and traffic modes](/en/docs/concepts/transports/)
-- [Deploy and operate](/en/docs/guides/deployment/)
+- [Choose TCP, Vision or QUIC](/en/docs/concepts/transports/)
+- [Deploy and maintain Umbra](/en/docs/guides/deployment/)
 - [Troubleshooting](/en/docs/troubleshooting/)

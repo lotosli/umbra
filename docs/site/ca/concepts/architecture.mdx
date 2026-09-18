@@ -1,7 +1,7 @@
 ---
 id: "concepts/architecture"
-title: "Arquitectura"
-description: "Com es reparteixen les responsabilitats entre els crates Rust."
+title: "Arquitectura i recorregut d'una petició"
+description: "Segueix les dades des de l'aplicació fins a la destinació."
 section: "concepts"
 order: 11
 version: "1.0.0-alpha"
@@ -9,13 +9,20 @@ source: ["README.md"]
 translation: "complete"
 ---
 
-## Visió general
+Umbra combina entrada local, autenticació i transport remot. Els crates de Rust separen anàlisi del protocol, criptografia i gestió de connexions per provar-los individualment.
 
-Umbra és un workspace Cargo amb crates separats per a tipus del protocol, criptografia, TLS, autenticació, trànsit intern i orquestració. Aquesta divisió permet provar analitzadors, vectors criptogràfics i cicles de connexió separadament. La CLI combina els components amb server, client i keygen. El lloc no ofereix cap API de gestió remota del procés.
+## Recorregut d'una petició
 
-## Detalls
+L'aplicació utilitza SOCKS5 local. El client estableix TCP o QUIC i verifica la identitat. El servidor connecta amb la destinació i retransmet dades. Les connexions sense autenticar van al lloc de cobertura. `server`, `client` i `keygen` inicien els extrems i generen claus.
 
-umbra-proto defineix tipus i adreces. umbra-crypto centralitza intercanvi de claus, signatures, derivació, MAC i AEAD. umbra-fingerprint conté perfils i eines JA3/JA4. umbra-tls construeix i analitza TLS. umbra-reality gestiona autenticació, repetició i preparació de la destinació; umbra-inner proporciona multiplexació, farciment i Vision; umbra-transport implementa els camins TCP i QUIC.
+## Components
+
+`umbra-proto` defineix formats i adreces; `umbra-crypto`, intercanvi de claus, signatures, derivació i xifratge. `umbra-fingerprint` conté perfils i eines JA3/JA4; `umbra-tls` processa TLS 1.3.
+
+`umbra-reality` gestiona autenticació, repeticions i preparació del lloc; `umbra-inner`, multiplexació, farciment i Vision; `umbra-transport`, TCP i QUIC. `umbra-core` coordina configuració, SOCKS5, distribució i recursos. `umbra` és la CLI.
+
+## Dependències principals
+
 ```text
 umbra CLI
     ↓
@@ -30,12 +37,14 @@ umbra-crypto · umbra-fingerprint
 umbra-proto
 ```
 
-## Verificació i límits
+`umbra-testkit` ofereix proves locals; `xtask` executa comprovacions i compilacions de publicació. Consulta les guies i el codi actuals per a les funcions disponibles.
 
-umbra-core uneix configuració, distribució, SOCKS local, connexions a destinacions i propietat dels recursos. Les sessions autenticades segueixen el mode intern escollit; les altres van al lloc real. umbra-testkit proporciona proves en bucle local i xtask executa controls i compilacions de distribució. El document d’arquitectura també conté objectius futurs: esmentar un component no demostra que totes les funcions previstes estiguin disponibles. Consulta les guies actuals.
+## El web i les connexions
+
+El web ofereix descàrregues, documentació i notes de versió. Els programes utilitzen configuració local; el web no administra les connexions ni en desa la configuració.
 
 ## Passos següents
 
-- [Referència del protocol](/ca/docs/reference/protocol/)
+- [Comparar solucions de servidor intermediari](/ca/docs/reference/protocol/)
 - [Model de seguretat](/ca/docs/concepts/security-model/)
-- [Contribuir](/ca/docs/contributing/)
+- [Contribuir a Umbra](/ca/docs/contributing/)

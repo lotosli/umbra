@@ -1,7 +1,7 @@
 ---
 id: "getting-started/installation"
-title: "Instal·lació"
-description: "Tria una versió per a la teva plataforma o compila el binari Rust."
+title: "Instal·lar Umbra"
+description: "Descarrega el programa per al teu dispositiu o compila'l des de Rust."
 section: "getting-started"
 order: 2
 version: "1.0.0-alpha"
@@ -9,17 +9,11 @@ source: ["docs/usage.md", "README.md", ".github/workflows/dist.yml"]
 translation: "complete"
 ---
 
-## Visió general
+El mateix programa funciona com a client o servidor. Fes servir la mateixa versió als dos extrems i el fitxer adequat per al sistema i l'arquitectura de cada equip.
 
-El flux de publicació preveu macOS, Linux i Windows. Tria l’arquitectura de l’equip on executaràs Umbra. La taula identifica objectius de compilació; comprova els fitxers adjunts de la versió de GitHub escollida per saber quins existeixen realment. Un objectiu no garanteix que cada versió preliminar contingui aquell fitxer, i aquí no s’inventen signatures ni sumes de verificació.
+## Descarregar
 
-## Detalls
-
-Baixa el programa des de la pàgina de versions del projecte. A macOS o Linux, dona permís d’execució al fitxer concret i posa’l en un directori del PATH, canviant-li el nom a umbra si cal. A Windows, utilitza el fitxer .exe des d’un terminal. Llegeix les notes i comprova les sumes quan aquella publicació les proporcioni.
-
-### Baixades de versions
-
-[Baixades de versions](https://github.com/lotosli/umbra/releases)
+Obre les [versions de GitHub](https://github.com/lotosli/umbra/releases). La taula identifica les plataformes de compilació; els fitxers disponibles depenen de cada versió.
 
 | Plataforma | Arquitectura | Objectiu de compilació |
 |---|---|---|
@@ -29,7 +23,13 @@ Baixa el programa des de la pàgina de versions del projecte. A macOS o Linux, d
 | Linux | aarch64 | `umbra-aarch64-unknown-linux-gnu` |
 | Windows | x86_64 | `umbra-x86_64-pc-windows-msvc.exe` |
 
-### Compilar les fonts
+## Instal·lar el programa
+
+Al macOS o Linux, descomprimeix el fitxer si cal i dona permís d'execució al programa. Pots reanomenar-lo `umbra` i posar-lo en un directori de `PATH`. Al Windows, executa l'arxiu `.exe` des d'un terminal o afegeix-ne la carpeta a `PATH`. Llegeix les notes de versió i comprova el fitxer amb la informació de verificació publicada.
+
+## Compilar el codi font
+
+Fes servir la versió de Rust fixada al repositori, 1.96.1:
 
 ```sh
 git clone https://github.com/lotosli/umbra.git
@@ -38,12 +38,13 @@ cargo build --release
 ./target/release/umbra --help
 ```
 
+El programa queda a `target/release`, amb extensió `.exe` al Windows.
 
-## Verificació i límits
+## Comprovar la instal·lació
 
-Per compilar, fes servir Rust 1.96.1, fixat pel repositori. Clona el repositori públic i executa cargo build --release; trobaràs el programa a target/release. Comprova que umbra --help mostri server, client i keygen. Tots dos rols utilitzen el mateix binari. Instal·lar-lo no inicia cap servei ni crea escoltes automàticament; continua generant una identitat pròpia amb l’inici ràpid.
+Executa `umbra --help`, amb el camí complet si cal. Hi han d'aparèixer `server`, `client` i `keygen`. Després genera les claus i configura els dos extrems. La guia de desplegament explica com executar-lo en segon pla.
 
 ## Passos següents
 
 - [Inici ràpid](/ca/docs/getting-started/quick-start/)
-- [Contribuir](/ca/docs/contributing/)
+- [Contribuir a Umbra](/ca/docs/contributing/)

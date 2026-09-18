@@ -1,7 +1,7 @@
 ---
 id: "contributing"
-title: "Contribuer"
-description: "Contribuer avec des spécifications, des revues et des tests utiles."
+title: "Contribuer à Umbra"
+description: "Améliorez les guides, signalez un problème ou participez au code."
 section: "contributing"
 order: 18
 version: "1.0.0-alpha"
@@ -9,13 +9,16 @@ source: ["CONTRIBUTING.md", "README.md", "LICENSE"]
 translation: "complete"
 ---
 
-## Vue d’ensemble
+Lisez `CONTRIBUTING.md` et `AGENTS.md` avant de commencer.
 
-Umbra pratique le développement guidé par les spécifications. Proposez un changement OpenSpec et faites approuver les exigences avant l’implémentation. Réalisez les tâches avec des tests correspondant aux scénarios. Le code Rust, les API publiques et le protocole restent soumis à AGENTS.md et aux règles de contribution du dépôt.
+## Définir le changement
 
-## Détails
+Les fonctionnalités suivent OpenSpec : proposition, exigences et scénarios, approbation humaine, puis implémentation. La documentation doit correspondre aux sources actuelles et conserver les mêmes identifiants dans les sept langues.
 
-Exécutez formatage, lint strict, tests, vérification des dépendances et couverture selon le changement. La couverture de lignes doit rester au moins à 90 %, sans abaisser le seuil ni inventer des tests dépourvus d’assertions utiles. Les parseurs réseau demandent des tests de limites et d’erreurs ; cryptographie et empreintes nécessitent leurs vecteurs ou preuves de capture. Centralisez les dépendances et préservez leur graphe sans cycle.
+## Vérifier le travail
+
+Exécutez formatage, lint, tests, dépendances et couverture selon le périmètre. La couverture des lignes Rust reste au moins à 90 %. Les parseurs nécessitent des cas limites et d'erreur ; cryptographie et empreintes demandent vecteurs ou captures adaptés.
+
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -25,12 +28,14 @@ cargo xtask coverage
 npx --yes @fission-ai/openspec@latest validate --all --strict
 ```
 
-## Vérification et limites
+Le site a ses propres contrôles dans `docs/website-development.md`. Centralisez les dépendances et vérifiez leurs licences.
 
-La documentation conserve des identifiants stables, des sources publiques actuelles et sept traductions complètes. Séparez objectifs et implémentation ; excluez secrets, infrastructure privée et vulnérabilités inédites. Une contribution assistée par IA doit être comprise, revue et testée par un humain responsable, avec divulgation des générations importantes dans la PR ou le commit. Respectez Conventional Commits et la licence MIT, tout en vérifiant la compatibilité des dépendances.
+## Soumettre pour revue
+
+Utilisez Conventional Commits ; décrivez problème, périmètre et validation dans la PR. Le contributeur comprend, relit et teste le travail assisté par IA et déclare les contenus générés importants. Retirez identifiants réels, infrastructures privées et failles non publiées. Umbra est sous licence MIT.
 
 ## Pour continuer
 
-- [Architecture](/fr/docs/concepts/architecture/)
-- [Référence du protocole](/fr/docs/reference/protocol/)
-- [Présentation](/fr/docs/getting-started/introduction/)
+- [Architecture et parcours d'une requête](/fr/docs/concepts/architecture/)
+- [Comparer les solutions proxy](/fr/docs/reference/protocol/)
+- [Découvrir Umbra](/fr/docs/getting-started/introduction/)

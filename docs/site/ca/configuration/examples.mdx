@@ -1,7 +1,7 @@
 ---
 id: "configuration/examples"
 title: "Exemples de configuració"
-description: "Plantilles inicials per a TCP mux, Vision i QUIC UDP."
+description: "Tria reutilització de connexions, Vision o QUIC i integra les eines."
 section: "configuration"
 order: 10
 version: "1.0.0-alpha"
@@ -9,31 +9,29 @@ source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crate
 translation: "complete"
 ---
 
-## Visió general
+Combina aquests fragments amb una configuració completa després d'omplir adreces, claus i lloc de cobertura.
 
-Aquestes plantilles seleccionen modes després d’emplenar identitat i adreces seguint l’inici ràpid. Substitueix tots els marcadors: no són credencials completes. No publiquis mai els fitxers ja emplenats amb secrets reals. Cada rol fa servir el mateix binari i no necessites un altre client només per triar un transport UDP diferent del principal.
-
-## Detalls
-
-La multiplexació TCP xifrada utilitza transport=tcp i mux=true; els clients alpha activen el control adaptatiu per defecte. Per a TCP/Vision dedicat, tria transport=tcp i mux=false. El trànsit TLS 1.3 elegible es pot transferir després de l’intercanvi autenticat de frontera; la resta continua xifrada. No existeix cap paràmetre vision addicional i el reenviament es manté en espai d’usuari.
-
-### TCP multiplexat
+## Compartir connexions TCP
 
 ```toml
 transport = "tcp"
 mux = true
 ```
 
+Les peticions reutilitzen connexions. El control de flux adaptatiu és actiu per defecte i necessita un servidor compatible.
 
-### TCP / Vision dedicat
+## TCP / Vision dedicat
 
 ```toml
 transport = "tcp"
 mux = false
 ```
 
+Després de negociar l'autenticació, Vision reenvia registres TLS 1.3 aptes ja xifrats. La resta continua xifrada. No cal cap altra opció Vision.
 
-### TCP / Vision + QUIC UDP
+## Vision per a TCP, QUIC per a UDP
+
+Client:
 
 ```toml
 transport = "tcp"
@@ -42,23 +40,24 @@ mux = false
 socks_listen = "127.0.0.1:1080"
 ```
 
-
-### Plantilla del servidor
+Servidor:
 
 ```toml
 listen = "0.0.0.0:443"
 udp_listen = "0.0.0.0:443"
 ```
 
+Obre TCP i UDP i fes servir un lloc QUIC/HTTP/3 accessible. N'hi ha prou amb un procés a cada extrem.
 
-### QUIC natiu
+## QUIC per als dos tipus de petició
 
 ```toml
 transport = "quic"
 ```
 
+Omet `udp_transport` per heretar QUIC. Elimina una opció anterior o canvia-la a `quic`.
 
-### Node SOCKS5 de Clash
+## Node local per a un client compatible amb Clash
 
 ```yaml
 proxies:
@@ -69,13 +68,10 @@ proxies:
     udp: true
 ```
 
-
-## Verificació i límits
-
-Per tenir TCP/Vision i QUIC UDP en una instància, afegeix udp_transport=quic i habilita listen i udp_listen al servidor. Per a QUIC principal, selecciona transport=quic i omet udp_transport perquè hereti quic. La destinació ha d’oferir QUIC/HTTP3 real. udp: true a Clash permet UDP ASSOCIATE mentre TCP segueix el transport principal. Canvia un ajust cada vegada i mesura abans d’alterar el farciment o la segmentació per defecte.
+Afegeix-lo a la llista i al grup existents. `udp: true` permet UDP; TCP segueix `transport`. Envia directament l'adreça del servidor Umbra per evitar bucles. Canvia un mode cada vegada i prova TCP i UDP per separat.
 
 ## Passos següents
 
-- [Configuració del servidor](/ca/docs/configuration/server/)
-- [Configuració del client](/ca/docs/configuration/client/)
-- [Transports i modes de trànsit](/ca/docs/concepts/transports/)
+- [Referència de configuració del servidor](/ca/docs/configuration/server/)
+- [Referència de configuració del client](/ca/docs/configuration/client/)
+- [Triar TCP, Vision o QUIC](/ca/docs/concepts/transports/)

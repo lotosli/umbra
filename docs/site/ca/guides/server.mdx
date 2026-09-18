@@ -1,7 +1,7 @@
 ---
 id: "guides/server"
-title: "Configurar un servidor"
-description: "Configura una destinació real i engega el servidor."
+title: "Preparar el servidor"
+description: "Tria un lloc de cobertura, configura la identitat i verifica la connexió."
 section: "guides"
 order: 4
 version: "1.0.0-alpha"
@@ -9,15 +9,15 @@ source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crate
 translation: "complete"
 ---
 
-## Visió general
+El servidor autentica els clients Umbra i connecta amb les destinacions de les aplicacions. La resta de connexions es reenvien al lloc de `dest`.
 
-El servidor accepta connexions Umbra autenticades i reenvia les altres a una destinació real fixa. El lloc triat ha d’admetre TLS 1.3 i ser accessible des del servidor. La identitat ha de ser coherent amb server_names i amb el SNI del client. Els dominis de mostra són marcadors, no recomanacions concretes de desplegament.
+## Triar el lloc
 
-## Detalls
+Comprova que el servidor accedeix a un lloc TLS 1.3 real. Fes servir el seu domini a `server_names` i a `server_name` del client. Per a QUIC, el lloc també ha d'oferir QUIC/HTTP/3 accessible.
 
-Genera una identitat nova, completa server.toml i protegeix el fitxer perquè conté una clau privada i una llavor de signatura. listen és una adreça TCP numèrica. Afegeix udp_listen només si vols QUIC natiu; TCP i UDP poden fer servir el mateix número de port. El retorn QUIC exigeix un servei real QUIC/HTTP3 a dest: un lloc HTTPS limitat a TCP no és suficient.
+## Crear la configuració
 
-### Plantilla del servidor
+Executa `umbra keygen` i tria un `short_id` seguint l'inici ràpid. Desa aquest model a `server.toml`, substituint els marcadors i `cover.example`:
 
 ```toml
 listen = "0.0.0.0:443"
@@ -29,13 +29,22 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
+`listen` defineix l'escolta TCP. Protegeix aquest fitxer: conté la clau privada i la llavor de signatura.
 
-## Verificació i límits
+## Iniciar i comprovar
 
-Engega primer en primer pla. La comprovació inicial sempre s’executa; prebuild=false desactiva només l’actualització periòdica. Si la comprovació falla, el servidor no s’inicia. Revisa les adreces i les regles de xarxa abans de connectar un client compatible. Una prova TLS no autenticada que rep el certificat real de la destinació observa el comportament esperat. Configura la supervisió com a servei després de validar aquest recorregut bàsic.
+```sh
+umbra server -c server.toml
+```
+
+Si falla la comprovació inicial, revisa destinació, domini i connectivitat. `prebuild = false` només desactiva les actualitzacions periòdiques; la comprovació inicial es manté. Revisa port i tallafoc i prova un client configurat. És normal que un navegador o una sonda TLS sense autenticar rebin el certificat del lloc de cobertura.
+
+## Activar QUIC si cal
+
+Afegeix `udp_listen = "0.0.0.0:443"` a la configuració completa. TCP i UDP poden compartir número de port. Permet UDP i comprova el servei QUIC del lloc. Configura el servei en segon pla quan hagis validat el funcionament en primer pla.
 
 ## Passos següents
 
-- [Configuració del servidor](/ca/docs/configuration/server/)
-- [Desplegament i operació](/ca/docs/guides/deployment/)
+- [Referència de configuració del servidor](/ca/docs/configuration/server/)
+- [Desplegar i mantenir Umbra](/ca/docs/guides/deployment/)
 - [Model de seguretat](/ca/docs/concepts/security-model/)

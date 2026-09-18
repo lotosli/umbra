@@ -1,7 +1,7 @@
 ---
 id: "configuration/server"
 title: "Server configuration"
-description: "Required fields, optional defaults and server validation rules."
+description: "Look up server fields, defaults and validation rules."
 section: "configuration"
 order: 8
 version: "1.0.0-alpha"
@@ -9,15 +9,11 @@ source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.
 translation: "complete"
 ---
 
-## Overview
+Use TOML for the server configuration. For an initial installation, follow the server setup guide.
 
-Server configuration is TOML. Required values must be present after merging command-line overrides with the file. Unknown fields and invalid types are rejected. Socket listeners use numeric IP:port forms, including bracketed IPv6 where applicable; dest is a host:port endpoint. The following table covers top-level server fields. The optional performance table is documented separately.
+## Minimal configuration
 
-## Details
-
-private_key and mldsa_seed decode from base64 to exactly 32 bytes. Do not use the literal placeholder strings in a real deployment. short_ids must contain at least one entry; each entry is an even-length hexadecimal string encoding zero through eight bytes. An empty short ID is permitted by the parser. max_time_diff supports ms, s, m and h, or a bare number of seconds, and must represent at least one second.
-
-### Server template
+Replace identity placeholders and `cover.example`:
 
 ```toml
 listen = "0.0.0.0:443"
@@ -29,6 +25,7 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
+## Fields
 
 | Field | Default / requirement | Meaning |
 |---|---|---|
@@ -44,12 +41,26 @@ mldsa_seed = "<MLDSA_SEED_BASE64>"
 | `padding_scheme` | `"default"` | Inner padding policy |
 | `tcp_evasion` | `"segment"` | Ordered ClientHello write policy |
 
-## Verify
+Place performance options in a separate `[performance]` table.
 
-server_names must be nonempty, and entries must satisfy the parser's bounded ASCII/no-whitespace checks. Operationally choose a meaningful SNI matching the destination; syntactic acceptance alone does not establish that a destination is usable. The server always probes the destination at startup. CLI overrides use hyphenated names such as --udp-listen; omitted flags preserve the file value. Keep secrets in the protected configuration file rather than shell history or process arguments.
+## Addresses and website names
+
+`listen` and `udp_listen` require numeric IP addresses with ports, such as `0.0.0.0:443` or `[::]:443`. `dest` accepts a hostname and port. `server_names` needs at least one name satisfying the parser's length and ASCII rules, without whitespace. Use names matching the real website; the client selects one of them.
+
+## Keys and short IDs
+
+`private_key` and `mldsa_seed` are Base64 values that each decode to 32 bytes. Use the corresponding `keygen` outputs. `short_ids` needs at least one entry; each is an even-length hexadecimal string of at most 16 characters. The parser also accepts an empty string. The client value must match an entry.
+
+## Time and site refresh
+
+`max_time_diff` accepts `ms`, `s`, `m`, `h`, or seconds without a suffix; the resulting duration must be at least one second. Check system clocks before changing the tolerance. A destination probe runs on every startup. `prebuild` controls subsequent periodic refreshes and defaults to true.
+
+## Command-line overrides
+
+Provided CLI values override matching file fields; omitted values remain unchanged. Required values, types and unknown fields are checked after merging. CLI names use hyphens, such as `--udp-listen`; TOML uses underscores. Keep secrets in a protected file so they stay out of shell history and process arguments.
 
 ## Next steps
 
-- [Set up a server](/en/docs/guides/server/)
-- [Performance and policy reference](/en/docs/reference/configuration/)
-- [CLI reference](/en/docs/reference/cli/)
+- [Set up the server](/en/docs/guides/server/)
+- [Performance and transport settings](/en/docs/reference/configuration/)
+- [Command-line reference](/en/docs/reference/cli/)

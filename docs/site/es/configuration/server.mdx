@@ -1,7 +1,7 @@
 ---
 id: "configuration/server"
-title: "Configuración del servidor"
-description: "Campos obligatorios, valores predeterminados y validación del servidor."
+title: "Referencia de configuración del servidor"
+description: "Consulta campos, valores predeterminados y reglas de validación."
 section: "configuration"
 order: 8
 version: "1.0.0-alpha"
@@ -9,15 +9,11 @@ source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.
 translation: "complete"
 ---
 
-## Descripción general
+El servidor usa TOML. Para la primera instalación, sigue la guía del servidor.
 
-El servidor se configura con TOML. Todos los valores obligatorios deben existir después de aplicar las opciones CLI. Se rechazan campos desconocidos y tipos inválidos. Las escuchas usan IP:puerto numérica, con corchetes para IPv6; dest usa host:puerto. La tabla cubre los campos principales, mientras que performance se explica por separado.
+## Configuración mínima
 
-## Detalles
-
-private_key y mldsa_seed deben decodificar exactamente 32 bytes cada uno desde base64. No utilices literalmente los marcadores en una instalación. short_ids debe tener al menos una entrada; cada cadena hexadecimal de longitud par codifica entre cero y ocho bytes. Se permite una cadena vacía. max_time_diff admite ms, s, m, h o segundos sin sufijo y debe representar al menos un segundo.
-
-### Plantilla del servidor
+Sustituye los marcadores y `cover.example`:
 
 ```toml
 listen = "0.0.0.0:443"
@@ -29,6 +25,7 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
+## Campos
 
 | Campo | Valor predeterminado / requisito | Significado |
 |---|---|---|
@@ -44,12 +41,26 @@ mldsa_seed = "<MLDSA_SEED_BASE64>"
 | `padding_scheme` | `"default"` | Política de relleno interno |
 | `tcp_evasion` | `"segment"` | Escrituras ordenadas de ClientHello |
 
-## Verificación y límites
+Coloca los parámetros de rendimiento en `[performance]`.
 
-server_names no puede estar vacío. Cada nombre pasa controles de longitud, ASCII y ausencia de espacios; esto no demuestra que el destino exista o tenga el SNI adecuado. La comprobación inicial siempre es necesaria. Las opciones CLI usan guiones, por ejemplo --udp-listen, y solo reemplazan lo que se indica. Conserva los secretos en un archivo protegido, no en el historial del shell ni en argumentos visibles a otros procesos.
+## Direcciones y dominios
+
+`listen` y `udp_listen` requieren IP numérica y puerto: `0.0.0.0:443` o `[::]:443`. `dest` admite un nombre de host. `server_names` necesita al menos un nombre que cumpla los límites de longitud y sintaxis ASCII, sin espacios. Usa dominios del sitio real; el cliente elige uno.
+
+## Claves e identificadores
+
+`private_key` y `mldsa_seed` son Base64 y se decodifican en 32 bytes cada uno. Usa las salidas de `keygen`. `short_ids` contiene al menos una cadena hexadecimal de longitud par, hasta 16 caracteres; también se acepta una cadena vacía. El valor del cliente debe coincidir.
+
+## Hora y actualización del sitio
+
+`max_time_diff` acepta `ms`, `s`, `m`, `h`, o segundos sin sufijo; la duración final es al menos un segundo. Revisa los relojes antes de ampliar la tolerancia. El sitio se comprueba en cada arranque; `prebuild`, activo por defecto, controla las actualizaciones posteriores.
+
+## Opciones de línea de comandos
+
+Las opciones proporcionadas sustituyen los campos del archivo antes de validar valores requeridos, tipos y campos desconocidos. La CLI usa guiones, como `--udp-listen`; TOML usa guiones bajos. Guarda secretos en archivos protegidos para evitar el historial y los argumentos de procesos.
 
 ## Siguientes pasos
 
-- [Configurar un servidor](/es/docs/guides/server/)
-- [Rendimiento y políticas](/es/docs/reference/configuration/)
-- [Referencia de CLI](/es/docs/reference/cli/)
+- [Preparar el servidor](/es/docs/guides/server/)
+- [Parámetros de rendimiento y transporte](/es/docs/reference/configuration/)
+- [Referencia de la línea de comandos](/es/docs/reference/cli/)

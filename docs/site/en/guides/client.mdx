@@ -1,7 +1,7 @@
 ---
 id: "guides/client"
-title: "Connect applications and Clash-style clients"
-description: "Connect existing applications and rule-based clients through local SOCKS5, with separate transport choices for TCP and UDP."
+title: "Connect apps and Clash-compatible clients"
+description: "Use the local SOCKS5 proxy while keeping your existing apps and rules."
 section: "guides"
 order: 5
 version: "1.0.0-alpha"
@@ -9,13 +9,11 @@ source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crate
 translation: "complete"
 ---
 
-## Overview
+Umbra provides a SOCKS5 proxy on your device. Connect an app directly, or let your existing proxy client manage rules and pass selected requests to Umbra.
 
-The Umbra client provides a local SOCKS5 endpoint. Applications or existing proxy clients pass requests to it, and Umbra connects to the remote Umbra server. Your familiar client can continue to handle rule-based routing, the interface and system proxy settings; Umbra itself is not a TUN interface, and installing the binary does not automatically proxy other applications.
+## 1. Start Umbra
 
-## 1. Configure and start Umbra
-
-First prepare the server using the [server guide](/en/docs/guides/server/). Enter the matching identity material in `client.toml`; the placeholders below must be replaced and are not real credentials:
+Set up the server first. Replace the address, website name and identity placeholders in `client.toml`:
 
 ```toml
 server = "198.51.100.10:443"
@@ -28,29 +26,27 @@ mldsa_verify = "<MLDSA_VERIFY_BASE64>"
 socks_listen = "127.0.0.1:1080"
 ```
 
-`server` is your Umbra server address; `server_name` is the real site's SNI, matching the server configuration, not an arbitrary camouflage domain. After checking these values, run:
+`server` is the Umbra server address; `server_name` is an allowed cover website domain.
 
 ```sh
 umbra client -c client.toml
 ```
 
-Keep the loopback binding. Local SOCKS5 does not provide password authentication and must not be exposed directly to the public internet or an untrusted LAN.
+Keep the proxy on `127.0.0.1:1080`. It has no username or password authentication.
 
-## 2. Connect applications that support SOCKS5 directly
+## 2. Connect an app directly
 
-Select SOCKS5 in the application's proxy settings, enter `127.0.0.1` as the address and `1080` as the port, and leave the username and password blank. The application must run on the same device as Umbra or in the same network namespace with access to this loopback endpoint.
-
-To verify an HTTPS request, replace the address below with the site you want to test:
+Choose SOCKS5, enter `127.0.0.1` and port `1080`, and leave credentials blank. The app must be able to reach the same local interface; check network isolation when using containers.
 
 ```sh
 curl --proxy socks5h://127.0.0.1:1080 https://example.com/
 ```
 
-`socks5h` makes curl pass the destination domain to the proxy instead of resolving it locally first. Other applications' DNS behavior depends on their own settings; configuring SOCKS5 alone does not mean all DNS queries on the device go through the proxy.
+`socks5h` asks the proxy to handle the hostname. Other apps control DNS through their own settings.
 
-## 3. Keep your rules with a Clash-style client
+## 3. Add a node to your rules client
 
-Merge the following node into the `proxies` list in your existing client configuration and select it in the proxy group you use. Do not overwrite the entire configuration:
+Add this entry to the existing `proxies` list, add it to a proxy group, and select it:
 
 ```yaml
 proxies:
@@ -61,13 +57,11 @@ proxies:
     udp: true
 ```
 
-The existing client still applies the rules, while local Umbra handles the remote connection. Make sure the rules do not send the remote Umbra server address back to `Umbra Local`, which could create a proxy loop. Consult your client's documentation for its specific rule, DNS and TUN settings.
+Keep your other nodes and rules. Route the Umbra server address directly to avoid a loop through `Umbra Local`. Configure system proxy or TUN in your existing client as usual. This connection uses SOCKS5; the remote endpoint must run Umbra. Other protocol subscriptions remain with their supported clients.
 
-This uses a standard SOCKS5 node, not native Umbra protocol support. VLESS / VMess / Trojan nodes and subscriptions cannot become Umbra nodes just by changing a name; both ends need matching Umbra programs and identity material.
+## 4. Use Vision for TCP and QUIC for UDP
 
-## 4. Optional: Vision for TCP, QUIC for UDP
-
-Merge this into your existing `client.toml`:
+Merge into the full client configuration:
 
 ```toml
 transport = "tcp"
@@ -75,19 +69,12 @@ udp_transport = "quic"
 mux = false
 ```
 
-Enable both `listen` and `udp_listen` on the server, and allow the corresponding TCP and UDP ports through the firewall. `udp: true` allows a Clash-style client to send UDP requests; it does not change the transport for TCP requests. The UDP relay endpoint is negotiated through SOCKS and does not require a fixed listener on UDP port 1080.
+Enable both `listen` and `udp_listen` on the server, allow both protocols through the firewall, and choose a cover site with QUIC. `udp: true` permits UDP requests; SOCKS negotiates the relay endpoint, so it need not be UDP port 1080.
 
-If UDP is unreachable, use TCP first to verify ordinary application requests. There is no automatic QUIC-to-TCP failover here; see [transport modes](/en/docs/concepts/transports/) for the available choices.
-
-## Verification and troubleshooting
-
-1. Test one application directly through SOCKS5 before adding a rule-based client, so rule problems are not mistaken for transport failures.
-2. Cross-check the public key, verification key, short ID, SNI and server address at both ends, and check the system clocks and firewall.
-3. Verify TCP and UDP separately; successfully opening a web page does not mean UDP is working.
-4. Adjust only one transport or performance option at a time; upgrade both ends together when updating adaptive mux.
+Test directly through SOCKS5 before adding rules, then test UDP separately. If UDP is unavailable, change the transport configuration manually. Umbra does not automatically switch between TCP and QUIC.
 
 ## Next steps
 
-- [Client configuration fields](/en/docs/configuration/client/)
-- [Complete configuration examples](/en/docs/configuration/examples/)
-- [Connection troubleshooting](/en/docs/troubleshooting/)
+- [Client configuration](/en/docs/configuration/client/)
+- [Configuration examples](/en/docs/configuration/examples/)
+- [Troubleshooting](/en/docs/troubleshooting/)

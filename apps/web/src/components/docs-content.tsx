@@ -20,7 +20,7 @@ export function DocumentationArticle({ path, locale, metadata }: { path: string;
   return <DocsPage toc={toc} tabIndex={-1}>
     <DocsTitle>{metadata.title}</DocsTitle>
     <DocsDescription>{metadata.description}</DocsDescription>
-    <div className="umbra-docs-meta"><span>{copy.version} {metadata.version}</span><span>{copy.translated}</span></div>
+    <div className="umbra-docs-meta"><span>{copy.version} {metadata.version}</span></div>
     <DocsBody><MDX components={mdxComponents} /></DocsBody>
     <div className="umbra-docs-sources">
       <p>{copy.source}</p>

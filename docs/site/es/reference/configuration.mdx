@@ -1,7 +1,7 @@
 ---
 id: "reference/configuration"
-title: "Rendimiento y políticas"
-description: "Presupuestos de memoria, mux adaptativo, relleno y congestión."
+title: "Parámetros de rendimiento y transporte"
+description: "Ajusta memoria, ventanas, relleno y diagnósticos."
 section: "reference"
 order: 15
 version: "1.0.0-alpha"
@@ -9,15 +9,9 @@ source: ["crates/umbra-core/src/resources.rs", "README.md", "docs/performance.md
 translation: "complete"
 ---
 
-## Descripción general
+Empieza con valores predeterminados y una conexión funcional; después compara una carga reproducible. Ambos extremos aceptan `[performance]`.
 
-Ambos extremos admiten una tabla performance opcional. Sus límites representan compromisos lógicos, no asignaciones completas al arrancar. Reserva margen para el sistema, buffers del núcleo, asignador y negociaciones. Las conexiones con la misma credencial canónica comparten presupuesto de grupo; no crean cuentas de usuario independientes ni garantizan idéntico ancho de banda.
-
-## Detalles
-
-memory_mib acepta 16–16384 MiB. group_memory_mib debe ser al menos 16 MiB y no superar el límite del proceso. Las ventanas admiten 1–64 MiB; las ventanas QUIC y el almacenamiento efectivo se recortan también según los presupuestos. adaptive_mux afecta a las nuevas sesiones TCP CONNECT multiplexadas del cliente. mux=false conserva Vision dedicado.
-
-### Tabla de rendimiento opcional
+## Valores y campos
 
 ```toml
 [performance]
@@ -42,25 +36,35 @@ quic_congestion = "bbr"
 | `diagnostics_interval_secs` | `0` | Intervalo servidor: 0 desactivado, 1–3600 segundos |
 | `quic_congestion` | `"bbr"` | QUIC saliente: bbr, cubic, new-reno |
 
+## Memoria y ventanas
 
-### Relleno y escrituras TCP
+Los presupuestos registran recursos comprometidos para conexiones. Una credencial comparte presupuesto de grupo. `memory_mib` acepta 16–16384 MiB; el grupo empieza en 16 MiB y no supera el proceso. Las ventanas admiten 1–64 MiB y se ajustan al presupuesto. Son compromisos lógicos, no reservas iniciales ni límites RSS. Deja memoria para núcleo, asignador, negociaciones y otros servicios.
 
-default: cada una de las primeras 16 escrituras por dirección recibe una trama PADDING aleatoria de 100–1400 bytes antes y después; luego se añade una trama cada 32 escrituras. none desactiva el relleno. Forma: early=N,min=N,max=N,later=N; early cuenta escrituras iniciales, min/max limitan bytes y later fija el intervalo (0 desactiva esa fase). min no supera max, max no supera 65535 y el relleno inicial exige max distinto de cero.
+## Mux y congestión
 
-segment: escrituras ordenadas, umbral predeterminado de 64 bytes y primer bloque de 32 bytes. off: escritura ordinaria. Forma personalizada: segment:threshold=N,first=M. Se rechazan estrategias Geneva.
+`adaptive_mux` se aplica a sesiones nuevas con `mux = true`. Las ventanas crecen según consumo y tiempo de ida y vuelta tras reservar recursos. `mux = false` mantiene Vision. Usa versiones compatibles. `quic_congestion` elige `bbr`, `cubic` o `new-reno` para el envío QUIC local; TCP sigue bajo control del sistema.
+
+## Relleno
+
+`default` añade una trama aleatoria de 100–1400 bytes antes y después de las primeras 16 escrituras de cada dirección, y luego cada 32. `none` lo desactiva. Personaliza con `early=N,min=N,max=N,later=N`; `later=0` desactiva la fase posterior. Se exige `min <= max`, `max <= 65535` y máximo mayor que cero si hay relleno inicial. Consume ancho de banda adicional.
+
+## Escritura de ClientHello
+
+`segment` usa un umbral de 64 bytes y un primer fragmento de 32. `off` escribe normalmente; `segment:threshold=N,first=M` personaliza. Geneva no se acepta.
 
 ```toml
 padding_scheme = "default"
 tcp_evasion = "segment"
 ```
 
+Son campos raíz: colócalos antes de `[performance]`.
 
-## Verificación y límites
+## Diagnósticos
 
-diagnostics_interval_secs=0 desactiva la recopilación; 1–3600 establece un intervalo del servidor en segundos. Las observaciones separan bytes de transporte y destino sin direcciones, credenciales, SNI ni carga útil. Compromiso lógico no significa RSS; escritura aceptada no significa entrega; duración de poll no equivale a CPU. quic_congestion solo cambia QUIC saliente. Ajusta los valores a partir de pruebas reproducibles y no supongas que una ventana mayor siempre mejora el rendimiento.
+En el servidor, `diagnostics_interval_secs` entre 1 y 3600 establece el intervalo; cero desactiva recogida e informes. Se separan bytes externos y del destino, omitiendo direcciones, SNI, credenciales y contenido. La memoria lógica describe compromisos; consulta el sistema para el uso real. Las escrituras aceptadas son locales; confirma entrega en destino. El tiempo de poll no es utilización de CPU. Cambia un grupo de ajustes cada vez.
 
 ## Siguientes pasos
 
-- [Transportes y modos de tráfico](/es/docs/concepts/transports/)
-- [Despliegue y operación](/es/docs/guides/deployment/)
-- [Resolución de problemas](/es/docs/troubleshooting/)
+- [Elegir TCP, Vision o QUIC](/es/docs/concepts/transports/)
+- [Desplegar y mantener Umbra](/es/docs/guides/deployment/)
+- [Resolver problemas](/es/docs/troubleshooting/)

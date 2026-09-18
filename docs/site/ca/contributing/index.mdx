@@ -1,7 +1,7 @@
 ---
 id: "contributing"
-title: "Contribuir"
-description: "Contribueix amb especificacions, revisions i proves útils."
+title: "Contribuir a Umbra"
+description: "Millora les guies, informa de problemes o participa en el codi."
 section: "contributing"
 order: 18
 version: "1.0.0-alpha"
@@ -9,13 +9,16 @@ source: ["CONTRIBUTING.md", "README.md", "LICENSE"]
 translation: "complete"
 ---
 
-## Visió general
+Llegeix `CONTRIBUTING.md` i `AGENTS.md` abans de començar.
 
-Umbra fa servir desenvolupament guiat per especificacions. Proposa un canvi OpenSpec i obtén revisió i aprovació dels requisits abans d’implementar. Completa les tasques amb proves associades als escenaris. El codi Rust, les API públiques i el protocol continuen subjectes a AGENTS.md i a les normes de contribució del repositori.
+## Acordar el canvi
 
-## Detalls
+Les funcions segueixen OpenSpec: proposta, requisits i escenaris, aprovació humana i implementació. La documentació ha de reflectir el codi actual i conservar els identificadors en les set llengües.
 
-Executa formatació, lint estricte, proves, revisió de dependències i cobertura segons el canvi. La cobertura de línies ha de continuar com a mínim al 90 %, sense abaixar el llindar ni afegir proves sense assercions útils. Els analitzadors de xarxa necessiten casos límit i d’error; criptografia i empremtes requereixen vectors o evidències de captura. Centralitza dependències i conserva un graf sense cicles.
+## Verificar la feina
+
+Executa format, lint, proves, dependències i cobertura segons el canvi. La cobertura de línies Rust ha de ser com a mínim del 90 %. Els analitzadors necessiten casos límit i d'error; criptografia i empremtes requereixen vectors o captures corresponents.
+
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -25,12 +28,14 @@ cargo xtask coverage
 npx --yes @fission-ai/openspec@latest validate --all --strict
 ```
 
-## Verificació i límits
+El web té controls propis a `docs/website-development.md`. Centralitza dependències i comprova llicències.
 
-La documentació manté identificadors estables, fonts públiques actuals i set traduccions completes. Distingeix objectius d’implementació i exclou secrets, infraestructura privada i vulnerabilitats inèdites. Una persona responsable ha d’entendre, revisar i provar les contribucions assistides per IA, declarant generacions importants a la PR o al commit. Segueix Conventional Commits i revisa la compatibilitat de dependències amb la llicència MIT del projecte.
+## Enviar a revisió
+
+Utilitza Conventional Commits i explica problema, abast i validació a la PR. Qui contribueix ha d'entendre, revisar i provar la feina assistida per IA i declarar el contingut generat substancial. Retira credencials reals, infraestructura privada i vulnerabilitats no publicades. Umbra té llicència MIT.
 
 ## Passos següents
 
-- [Arquitectura](/ca/docs/concepts/architecture/)
-- [Referència del protocol](/ca/docs/reference/protocol/)
-- [Introducció](/ca/docs/getting-started/introduction/)
+- [Arquitectura i recorregut d'una petició](/ca/docs/concepts/architecture/)
+- [Comparar solucions de servidor intermediari](/ca/docs/reference/protocol/)
+- [Coneix Umbra](/ca/docs/getting-started/introduction/)

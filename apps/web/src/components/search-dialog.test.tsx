@@ -32,7 +32,7 @@ describe('local documentation search', () => {
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'server.toml' } });
     expect(await screen.findByRole('link', { name: 'CLI commands' })).toHaveAttribute('href', '/en/docs/reference/cli/');
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'zzzz' } });
-    expect(await screen.findByText('No matching documents')).toBeVisible();
+    expect(await screen.findByText('No matching documents. Try another search.')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
@@ -42,21 +42,21 @@ describe('local documentation search', () => {
     const fetcher = vi.fn().mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; })).mockResolvedValue({ ok: true, json: async () => index });
     vi.stubGlobal('fetch', fetcher);
     render(<SearchDialog locale="en" open onOpenChange={vi.fn()} />);
-    expect(screen.getByText('Loading search index…')).toBeVisible();
+    expect(screen.getByText('Preparing search…')).toBeVisible();
     reject(new Error('offline'));
-    expect(await screen.findByText('Search is temporarily unavailable')).toBeVisible();
+    expect(await screen.findByText('Search is unavailable. Please try again.')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    await waitFor(() => expect(screen.queryByText('Loading search index…')).not.toBeInTheDocument());
-    expect(screen.getByText('Search configuration, commands, concepts…')).toBeVisible();
+    await waitFor(() => expect(screen.queryByText('Preparing search…')).not.toBeInTheDocument());
+    expect(screen.getByText('Search settings, commands or how-to guides…')).toBeVisible();
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it('rejects HTTP failures and malformed indexes', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: false }).mockResolvedValueOnce({ ok: true, json: async () => ({ wrong: [] }) }));
     render(<SearchDialog locale="en" open onOpenChange={vi.fn()} />);
-    expect(await screen.findByText('Search is temporarily unavailable')).toBeVisible();
+    expect(await screen.findByText('Search is unavailable. Please try again.')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(await screen.findByText('Search is temporarily unavailable')).toBeVisible();
+    expect(await screen.findByText('Search is unavailable. Please try again.')).toBeVisible();
   });
 
   it('aborts an obsolete index request when closing', async () => {

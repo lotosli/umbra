@@ -1,7 +1,7 @@
 ---
 id: "configuration/server"
-title: "服务端配置"
-description: "服务端必填字段、默认值与校验规则。"
+title: "服务端配置参考"
+description: "查阅服务端字段、默认值和填写要求。"
 section: "configuration"
 order: 8
 version: "1.0.0-alpha"
@@ -9,15 +9,11 @@ source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.
 translation: "complete"
 ---
 
-## 概览
+服务端配置使用 TOML。首次部署可先阅读[设置服务端](/zh-hans/docs/guides/server/)，本页用于查找字段。
 
-服务端使用 TOML 配置。文件和命令行合并后必须具备全部必填值，未知字段及错误类型会被拒绝。listen 和 udp_listen 使用数字 IP:port 地址，需要 IPv6 时采用带方括号的形式；dest 为 host:port。下表覆盖服务端顶层字段，performance 表单独在参考章节说明。
+## 最小配置
 
-## 详细说明
-
-private_key 和 mldsa_seed 必须分别从 base64 解码为准确的 32 字节。真实部署不能使用文档中的占位字符串。short_ids 至少有一个条目；每项是偶数长度的十六进制字符串，编码零到八字节，解析器允许空字符串。max_time_diff 支持 ms、s、m、h 后缀或不带后缀的秒数，但最终时长至少是一秒。
-
-### 服务端模板
+替换所有身份占位值，并将 `cover.example` 换为所选的真实网站：
 
 ```toml
 listen = "0.0.0.0:443"
@@ -29,27 +25,50 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
+## 配置字段
 
 | 字段 | 默认值 / 要求 | 含义 |
 |---|---|---|
-| `listen` | 必填 | TCP 数字监听地址 |
+| `listen` | 必填 | TCP 监听地址，使用 IP:端口 |
 | `udp_listen` | `—` | 可选 QUIC UDP 地址；省略即关闭 |
-| `private_key` | 必填 | X25519 私钥，base64 解码为准确32字节 |
-| `short_ids` | 必填 | 非空十六进制 ID 列表；每项0–8字节 |
-| `dest` | 必填 | 真实回落目标，host:port |
-| `server_names` | 必填 | 非空的允许 SNI 列表 |
-| `max_time_diff` | 必填 | 允许的时间戳偏差，至少1秒 |
-| `mldsa_seed` | 必填 | ML-DSA 签名种子，base64 解码为32字节 |
-| `prebuild` | `true` | 周期刷新目标；启动探测始终执行 |
-| `padding_scheme` | `"default"` | 内层填充策略 |
-| `tcp_evasion` | `"segment"` | ClientHello 有序分块写入策略 |
+| `private_key` | 必填 | X25519 私钥，Base64 编码，解码后为 32 字节 |
+| `short_ids` | 必填 | 至少一项；每项为 0–8 字节的十六进制 ID |
+| `dest` | 必填 | 掩护网站地址，域名或 IP 加端口 |
+| `server_names` | 必填 | 允许的掩护网站域名列表，至少一项 |
+| `max_time_diff` | 必填 | 允许的时间戳偏差，至少 1 秒 |
+| `mldsa_seed` | 必填 | ML-DSA 签名种子，Base64 编码，解码后为 32 字节 |
+| `prebuild` | `true` | 定期刷新目标站点信息 |
+| `padding_scheme` | `"default"` | 业务数据的填充策略 |
+| `tcp_evasion` | `"segment"` | TLS 握手消息的分块写入策略 |
 
-## 验证与边界
+性能选项放在独立的 `[performance]` 表中，见[性能与传输参数](/zh-hans/docs/reference/configuration/)。
 
-server_names 不能为空；各项必须通过长度受限、ASCII、无空白的语法校验。运行时仍需选择与真实目标一致的有意义 SNI，语法有效不代表目标可用。启动探测始终执行。命令行使用 --udp-listen 等连字符选项覆盖文件，省略的选项保留文件值。私密字段建议放在受保护文件中，避免出现在 shell 历史或进程参数里。
+## 地址和网站名称
+
+`listen`、`udp_listen` 使用数字 IP 和端口，例如 `0.0.0.0:443`；IPv6 地址使用方括号，例如 `[::]:443`。`dest` 可以使用域名加端口。
+
+`server_names` 至少包含一个名称。名称需满足解析器的长度和 ASCII 语法要求，并且不含空白；实际使用时填写与目标网站匹配的域名。客户端的 `server_name` 从这份列表中选择。
+
+## 密钥与 short ID
+
+`private_key` 和 `mldsa_seed` 均使用 Base64 编码，解码后各为 32 字节。请使用 `umbra keygen` 生成的对应输出。
+
+`short_ids` 至少包含一项；每项使用偶数长度的十六进制字符串，最多 16 个字符。解析器也接受空字符串。客户端的 `short_id` 必须与其中一项一致。
+
+## 时间与目标刷新
+
+`max_time_diff` 接受 `ms`、`s`、`m`、`h` 后缀；不带后缀时以秒计，最终时长至少为 1 秒。排查认证失败时，先检查两端系统时间。
+
+服务端每次启动都会探测目标网站。`prebuild` 控制启动后的周期刷新，默认开启。
+
+## 命令行覆盖
+
+命令行参数覆盖配置文件中的对应值，未提供的参数保留文件值。合并后统一检查必填项、未知字段和字段类型。命令行用 `--udp-listen` 这样的连字符名称，配置文件用 `udp_listen`。
+
+私钥和签名种子放在受保护的配置文件中，避免出现在命令历史和进程参数中。
 
 ## 下一步
 
-- [配置服务端](/zh-hans/docs/guides/server/)
-- [性能与策略参考](/zh-hans/docs/reference/configuration/)
+- [设置服务端](/zh-hans/docs/guides/server/)
+- [性能与传输参数](/zh-hans/docs/reference/configuration/)
 - [CLI 命令参考](/zh-hans/docs/reference/cli/)

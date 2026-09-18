@@ -1,7 +1,7 @@
 ---
 id: "getting-started/installation"
 title: "インストール"
-description: "プラットフォームに合うリリースを選ぶか、Rust のソースからビルドします。"
+description: "端末に合う実行ファイルをダウンロードするか、Rust のソースからビルドします。"
 section: "getting-started"
 order: 2
 version: "1.0.0-alpha"
@@ -9,17 +9,11 @@ source: ["docs/usage.md", "README.md", ".github/workflows/dist.yml"]
 translation: "complete"
 ---
 
-## 概要
+同じ実行ファイルをクライアントとサーバーの両方に使います。両端で同じバージョンを選び、それぞれの OS と CPU アーキテクチャに合わせてください。
 
-リリース処理は macOS、Linux、Windows を対象とします。実行するマシンのアーキテクチャに合わせて選択してください。表はビルド対象の一覧です。特定のプレリリースに実際に添付されているファイルは、選択した GitHub Release で確認します。未確認の署名やチェックサムを提供したり、すべての対象が毎回公開されると保証したりはしません。
+## ダウンロード
 
-## 詳細
-
-プロジェクトのリリースページから取得します。macOS と Linux では取得した正確なファイル名に実行権限を付与し、必要なら umbra に名前を変えて PATH 内へ置きます。Windows では .exe をターミナルから使用します。その版の説明と、実際に提供されているチェックサムを確認してから実行してください。
-
-### リリースのダウンロード
-
-[リリースのダウンロード](https://github.com/lotosli/umbra/releases)
+[GitHub Releases](https://github.com/lotosli/umbra/releases) から取得します。以下はビルド対象の一覧です。実際に配布されているファイルは各リリースで確認してください。
 
 | プラットフォーム | アーキテクチャ | ビルド対象 |
 |---|---|---|
@@ -29,7 +23,13 @@ translation: "complete"
 | Linux | aarch64 | `umbra-aarch64-unknown-linux-gnu` |
 | Windows | x86_64 | `umbra-x86_64-pc-windows-msvc.exe` |
 
-### ソースビルド
+## 実行ファイルを配置
+
+macOS と Linux では必要に応じて展開し、実行権限を付けます。`umbra` に名前を変更して `PATH` の通ったディレクトリに置くと呼び出しやすくなります。Windows ではターミナルから `.exe` を実行するか、そのフォルダーを `PATH` に追加します。実行前にリリースノートを読み、公開されている検証情報でファイルを確認してください。
+
+## ソースからビルド
+
+リポジトリで指定された Rust 1.96.1 を使います。
 
 ```sh
 git clone https://github.com/lotosli/umbra.git
@@ -38,12 +38,13 @@ cargo build --release
 ./target/release/umbra --help
 ```
 
+実行ファイルは `target/release` に生成されます。Windows では `.exe` が付きます。
 
-## 確認と制約
+## インストールを確認
 
-ソースビルドではリポジトリが固定する Rust 1.96.1 を使用します。公開リポジトリを複製し、cargo build --release を実行すると target/release に生成されます。umbra --help で server、client、keygen を確認します。両端は同じバイナリを使います。インストールだけではサービスも待ち受けも開始されないため、次に自分専用の鍵を生成してください。
+必要に応じてフルパスで `umbra --help` を実行し、`server`、`client`、`keygen` が表示されることを確認します。次に鍵を生成し、両端を設定します。バックグラウンド実行は運用ガイドで設定できます。
 
 ## 次のステップ
 
 - [クイックスタート](/ja/docs/getting-started/quick-start/)
-- [開発への参加](/ja/docs/contributing/)
+- [開発に参加する](/ja/docs/contributing/)

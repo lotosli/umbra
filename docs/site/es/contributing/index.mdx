@@ -1,7 +1,7 @@
 ---
 id: "contributing"
-title: "Contribuir"
-description: "Contribuye mediante especificaciones, revisión y pruebas útiles."
+title: "Contribuir a Umbra"
+description: "Mejora las guías, informa de problemas o participa en el código."
 section: "contributing"
 order: 18
 version: "1.0.0-alpha"
@@ -9,13 +9,16 @@ source: ["CONTRIBUTING.md", "README.md", "LICENSE"]
 translation: "complete"
 ---
 
-## Descripción general
+Lee `CONTRIBUTING.md` y `AGENTS.md` antes de empezar.
 
-Umbra utiliza desarrollo guiado por especificaciones. Propón un cambio OpenSpec y consigue revisión y aprobación de requisitos antes de implementar. Completa las tareas con pruebas asociadas a los escenarios. El código Rust, las API públicas y el protocolo siguen sujetos a AGENTS.md y a las normas de contribución del repositorio.
+## Acordar el cambio
 
-## Detalles
+Las funciones siguen OpenSpec: propuesta, requisitos y escenarios, aprobación humana e implementación. La documentación debe reflejar el código actual y conservar los identificadores en los siete idiomas.
 
-Ejecuta formato, lint estricto, pruebas, revisión de dependencias y cobertura según el cambio. La cobertura de líneas debe permanecer al menos en 90 %, sin reducir el umbral ni añadir pruebas sin aserciones útiles. Los analizadores de red necesitan casos límite y de error; la criptografía y las huellas requieren sus vectores o evidencias de captura. Centraliza dependencias y conserva un grafo sin ciclos.
+## Verificar el trabajo
+
+Ejecuta formato, lint, pruebas, dependencias y cobertura según el cambio. La cobertura de líneas Rust debe ser al menos del 90 %. Los analizadores necesitan casos límite y de error; criptografía y huellas requieren vectores o capturas correspondientes.
+
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -25,12 +28,14 @@ cargo xtask coverage
 npx --yes @fission-ai/openspec@latest validate --all --strict
 ```
 
-## Verificación y límites
+La web tiene controles propios en `docs/website-development.md`. Centraliza dependencias y comprueba licencias.
 
-La documentación mantiene identificadores estables, fuentes públicas actuales y siete traducciones completas. Distingue objetivos de implementación y excluye secretos, infraestructura privada y vulnerabilidades inéditas. Una persona responsable debe entender, revisar y probar las contribuciones asistidas por IA, declarando generaciones importantes en la PR o el commit. Sigue Conventional Commits y revisa la compatibilidad de dependencias con la licencia MIT del proyecto.
+## Enviar para revisión
+
+Usa Conventional Commits y explica problema, alcance y validación en la PR. Quien contribuye debe entender, revisar y probar el trabajo asistido por IA y declarar el contenido generado sustancial. Retira credenciales reales, infraestructura privada y vulnerabilidades no publicadas. Umbra usa licencia MIT.
 
 ## Siguientes pasos
 
-- [Arquitectura](/es/docs/concepts/architecture/)
-- [Referencia del protocolo](/es/docs/reference/protocol/)
-- [Introducción](/es/docs/getting-started/introduction/)
+- [Arquitectura y recorrido de una solicitud](/es/docs/concepts/architecture/)
+- [Comparar soluciones proxy](/es/docs/reference/protocol/)
+- [Conoce Umbra](/es/docs/getting-started/introduction/)

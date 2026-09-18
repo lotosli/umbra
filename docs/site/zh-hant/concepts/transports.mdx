@@ -1,7 +1,7 @@
 ---
 id: "concepts/transports"
-title: "如何選擇 TCP、Vision 與 QUIC"
-description: "按網路條件與應用程式流量選擇模式，在一個 SOCKS5 入口中分別承載 TCP 和 UDP。"
+title: "選擇 TCP、Vision 與 QUIC"
+description: "瞭解各模式的用途，為 TCP 和 UDP 請求選擇合適的傳輸方式。"
 section: "concepts"
 order: 12
 version: "1.0.0-alpha"
@@ -9,32 +9,30 @@ source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
 ---
 
-## 概覽
+應用程式發出的請求可以是 TCP 或 UDP。Umbra 再按設定選擇如何把請求送到伺服器：`transport` 決定 TCP 請求的傳輸，`udp_transport` 可單獨指定 UDP 請求的傳輸；省略後者時，兩者使用同一種方式。
 
-先區分兩個問題：應用程式發的是 TCP 還是 UDP？Umbra 用 TCP 還是 QUIC 把它送到伺服器？應用程式類型與外層傳輸不是一回事。`transport` 選擇主要外層傳輸；`udp_transport` 可單獨選擇 UDP 請求的傳輸，省略時繼承 `transport`。
+## 從哪種模式開始
 
-## 按需求選擇
-
-| 需求或網路條件 | 起點 | 需要注意 |
+| 需求 | 設定起點 | 使用條件 |
 | --- | --- | --- |
-| 先連通，或 UDP 被網路過濾 | `transport = "tcp"` | 伺服器端開放 TCP 連接埠；預設啟用 mux |
-| 多個並行 TCP 請求，希望複用既有連線 | TCP + `mux = true` | 共用外層 TCP，丟包仍可能影響其他串流 |
-| 以 HTTPS 為主，希望減少符合條件流量的重複加密 | TCP + `mux = false` | 使用獨立 Vision 連線；並非所有 TLS 都能拼接 |
-| TCP 經常受到 RST 重設，且 UDP 可達 | `transport = "quic"` | 兩端必須可用 QUIC；UDP 同樣可能被限速或封鎖 |
-| TCP 保持 Vision，UDP 獨立走 QUIC | TCP + `udp_transport = "quic"` + `mux = false` | 同一伺服器端開啟 TCP 與 UDP 監聽 |
+| 完成第一次連線 | `transport = "tcp"` | 伺服器端 TCP 連接埠可達，預設啟用連線重複使用 |
+| 減少多個請求的重複建連 | TCP + `mux = true` | 多個請求共享外層 TCP 連線 |
+| 減少適用 HTTPS 流量的重複加密 | TCP + `mux = false` | 使用獨立 Vision 連線 |
+| 嘗試 UDP 上的傳輸路徑 | `transport = "quic"` | UDP 可達，伺服器端與掩護網站均支援 QUIC |
+| TCP 使用 Vision，UDP 使用 QUIC | TCP + `udp_transport = "quic"` + `mux = false` | 伺服器端同時啟用 TCP、UDP 接聽 |
 
-沒有對所有網路都最快的模式。先驗證可達性，再比較你實際應用程式的延遲、穩定性和吞吐量；不要同時改動多項參數。上述選擇不會自動探測網路並切換傳輸。
+先驗證連通性，再比較實際應用程式的延遲、穩定性與吞吐。切換模式通過修改設定完成。
 
-## TCP 多路複用
+## TCP 連線重複使用
 
 ```toml
 transport = "tcp"
 mux = true
 ```
 
-多個請求共用加密的外層連線，減少反覆建立連線的需求。目前版本會按實際流量消耗與往返時間調整視窗，同時受記憶體預算約束。它適合嘗試承載並行請求，但不會消除 TCP 的傳輸層隊頭阻塞。
+多個請求共享一條加密連線，減少重複建連。自適應流控根據資料消耗和往返時間調整視窗，並遵守記憶體預算。
 
-自適應 mux 需要兩端版本相容；升級到 1.0.0-alpha 時請同步更新用戶端與伺服器端。資源參數見[設定參考](/zh-hant/docs/reference/configuration/)。
+共享 TCP 連線發生丟包時，其中的請求可能一起等待重傳。是否啟用重複使用，可根據實際併發請求的表現選擇。使用自適應 mux 時，兩端版本需兼容。
 
 ## 獨立 TCP / Vision
 
@@ -43,9 +41,9 @@ transport = "tcp"
 mux = false
 ```
 
-對符合條件的內層 TLS 1.3 流量，認證邊界協商後可轉發原本已經加密的 TLS 記錄，不再繼續外層 TLS 加密與額外封裝。非 TLS 或不支援的 TLS 仍保留加密，不會因為開啟 Vision 而裸傳應用程式明文。
+每個請求使用獨立連線。對符合條件的 TLS 1.3 流量，雙方完成認證協商後直接轉發應用程式已經加密的 TLS 記錄，省去後續外層重複加密與額外封裝。其他流量繼續使用加密通道。
 
-Vision 使用使用者態 I/O，不是核心零複製。減少重複處理是機制上的優勢，不是已經測得的競品速度優勢。請繼續使用應用層 HTTPS。
+因此應繼續使用應用程式自身的 HTTPS。目前轉發在使用者態完成，具體吞吐還取決於裝置和網路路徑。
 
 ## QUIC
 
@@ -53,13 +51,15 @@ Vision 使用使用者態 I/O，不是核心零複製。減少重複處理是機
 transport = "quic"
 ```
 
-QUIC 在 UDP 上執行，可以避開 TCP RST 注入，以及不同 QUIC 串流之間由傳輸層重傳造成的隊頭阻塞；同一可靠串流仍需按序交付，所有串流也共用路徑容量與壅塞控制。伺服器端需要啟用 `udp_listen`、開放 UDP 防火牆連接埠，並能存取設定的真實 QUIC 回落站點。
+QUIC 執行在 UDP 上，提供一條不依賴 TCP 連線的傳輸路徑。在 TCP 經常遭遇 RST 重置、UDP 仍可用的環境中，可以嘗試這一模式。
 
-目前預設使用 Quinn BBR，另可選擇 `cubic` 或 `new-reno`。這些是 QUIC 的設定，不改變 Linux TCP 壅塞控制。若網路限制 UDP，QUIC 並不是 TCP 的可靠替代品。
+伺服器端需要開啟 `udp_listen`、開放對應 UDP 連接埠，並能連線實際網站的 QUIC 服務。不同 QUIC 流可分別處理重傳；同一可靠流仍按順序交付資料。Umbra 目前也將 UDP 關聯資料放在可靠 QUIC 流中，丟包時該流可能等待重傳。
 
-### TCP / Vision + QUIC UDP
+預設擁塞控制為 Quinn BBR，也可選擇 `cubic` 或 `new-reno`。這些設定作用於本端 QUIC 發送，與系統的 TCP 擁塞控制分開管理。
 
-在既有的完整用戶端設定中加入：
+## 一個入口，同時使用兩條路徑
+
+將下面片段合併到完整用戶端設定：
 
 ```toml
 transport = "tcp"
@@ -68,23 +68,27 @@ mux = false
 socks_listen = "127.0.0.1:1080"
 ```
 
-同一個伺服器端同時設定：
+伺服器端同時設定：
 
 ```toml
 listen = "0.0.0.0:443"
 udp_listen = "0.0.0.0:443"
 ```
 
-以上是需要合併到完整設定的片段，不替代金鑰、真實目標站點或其他必填欄位。一個用戶端、一個伺服器端、一個本地 SOCKS5 入口即可承載這兩條路徑。Clash 類用戶端中的 `udp: true` 只是允許 UDP 請求，不會把一般 TCP 強制改走 QUIC。
+應用程式仍然只連線一個本機 SOCKS5 入口。Clash 類用戶端的 `udp: true` 用於啟用 UDP 請求，TCP 請求繼續按 `transport` 選擇路徑。
 
-## 填充與 TCP 寫入策略
+如果網路條件變化，需要手動修改傳輸設定；目前沒有自動 TCP/QUIC 故障切換。
 
-預設填充會在連線早期增加隨機長度的資料，之後降低頻率，用於干擾直接按記錄長度識別內層握手的方式。它會消耗額外頻寬，不承諾消除所有流量特徵。通常保留 `padding_scheme = "default"`，有明確測試依據再調整。
+## 填充和握手分塊
 
-`tcp_evasion = "segment"` 只把 ClientHello 拆成有序應用程式寫入，不保證作業系統最終傳送的 TCP 封包邊界。遇到相容性問題可測試 `off`；目前不支援 Geneva DSL，不應將其作為可用功能部署。
+`padding_scheme = "default"` 在連線早期加入隨機長度的填充資料，之後降低頻率，用於弱化固定的資料長度特徵，同時會增加帶寬負擔。
+
+`tcp_evasion = "segment"` 將 TLS ClientHello 分成有序的應用程式寫入。最終 TCP 資料包如何分段仍由操作系統決定。遇到兼容性問題時，可單獨測試 `off`。目前設定不支援 Geneva DSL。
+
+具體參數與調整方法見[效能與傳輸參數](/zh-hant/docs/reference/configuration/)。
 
 ## 下一步
 
 - [把應用程式接到 Umbra](/zh-hant/docs/guides/client/)
 - [完整設定範例](/zh-hant/docs/configuration/examples/)
-- [與主流代理方案的比較](/zh-hant/docs/reference/protocol/)
+- [與主流代理方案的對比](/zh-hant/docs/reference/protocol/)

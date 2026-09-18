@@ -1,30 +1,46 @@
 ---
 id: "concepts/security-model"
 title: "Security model"
-description: "Understand authentication, secret handling and protection limits."
+description: "Understand authentication, website cover and what to protect in your deployment."
 section: "concepts"
 order: 13
 version: "1.0.0-alpha"
-source: ["README.md", "crates/umbra-core/src/socks.rs"]
+source: ["README.md", "crates/umbra-core/src/socks.rs", "crates/umbra-core/src/runtime.rs", "crates/umbra-reality/src/cert.rs", "crates/umbra-tls/src/server.rs"]
 translation: "complete"
 ---
 
-## Overview
+Umbra verifies identity, protects transport data and forwards unauthenticated connections to a real website. You manage keys, devices and the server environment.
 
-Umbra combines authentication before the first server response with a real-site fallback model. An unauthenticated connection is forwarded to the configured destination rather than receiving a distinctive proxy authentication error. Authenticated clients validate the expected identity material. Replay protection is bounded by capacity and time; it is one part of the model rather than an unlimited protection against resource exhaustion.
+## Authentication and website cover
 
-## Details
+The server checks authentication before its first response. Verified clients enter the proxy path; other connections go to the cover website. The client verifies the temporary certificate's binding to the expected server identity. A bounded, expiring replay cache checks repeated authentication material. Cryptographic checks use constant-time comparisons, with dedicated secret storage and cleanup.
 
-The code centralizes constant-time verification and zeroizing secret wrappers. Keep private_key and mldsa_seed on the server, protect client configuration distribution, and avoid copying keys, target addresses or payloads into logs or bug reports. The local SOCKS endpoint negotiates no-auth, so loopback binding is the default deployment advice. Client applications should continue to use HTTPS or their own authenticated encryption.
+## Protect keys and local access
 
-[GitHub Security](https://github.com/lotosli/umbra/security)
+Keep `private_key` and `mldsa_seed` on the server. Share client configuration through a trusted channel, restrict file permissions and remove credentials from public logs. The local SOCKS5 proxy has no password authentication: bind it to `127.0.0.1:1080`. Set network access controls before making it available to other devices.
 
-## Verify
+## Keep application encryption
 
-A privacy transport does not make compromised endpoints safe, hide every traffic pattern, or provide anonymity equivalent to a multi-hop anonymity network. The current alpha has no claim of an independent security audit or complete equivalence with current Chrome. chrome-latest remains a historical Chrome 150 profile; Chrome 153 capture evidence is not full conformance. Use the project security page for currently published reporting information, and do not publish sensitive vulnerability details or operational secrets in an ordinary public issue.
+Continue using HTTPS. Vision forwards already-protected application data when eligible. Device security, browser accounts and the destination service still need their own protection.
+
+## What website cover does
+
+Ordinary visits and unauthenticated probes receive website responses. Addresses, timing and traffic sizes can still be observed and analyzed, and the server IP can be blocked. Umbra provides a self-hosted proxy rather than the identity separation of a multi-hop anonymity network.
+
+## Browser profiles
+
+`chrome-latest` currently uses Chrome 150. The repository also contains Chrome 153 TCP/QUIC captures. Profiles, captures and JA3/JA4 checks cover specific features; complete equivalence with current Chrome network behavior has not been verified.
+
+## Post-quantum algorithms
+
+ML-DSA-65 binds the temporary certificate's public key. The X25519 + ML-KEM-768 exchange path is used only when negotiated. The standard CLI destination probe currently uses ring, which does not support ML-KEM, and the server follows the probed group. Assess the negotiated deployment rather than assuming full post-quantum protection from the presence of ML-KEM code.
+
+## Release status and reporting
+
+The current release is **1.0.0-alpha**, with no published evidence of a completed independent security audit. For sensitive uses, review implementation, release records and deployment conditions. Consult [GitHub Security](https://github.com/lotosli/umbra/security) for available reporting channels. Keep exploitable details, credentials and sensitive infrastructure information out of public issues.
 
 ## Next steps
 
-- [Protocol reference](/en/docs/reference/protocol/)
+- [Compare proxy setups](/en/docs/reference/protocol/)
 - [Troubleshooting](/en/docs/troubleshooting/)
-- [Contributing](/en/docs/contributing/)
+- [Contribute to Umbra](/en/docs/contributing/)

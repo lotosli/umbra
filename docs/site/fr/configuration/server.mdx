@@ -1,7 +1,7 @@
 ---
 id: "configuration/server"
-title: "Configuration du serveur"
-description: "Champs obligatoires, valeurs par défaut et validation du serveur."
+title: "Référence de configuration du serveur"
+description: "Retrouvez les champs, les valeurs par défaut et les règles de validation."
 section: "configuration"
 order: 8
 version: "1.0.0-alpha"
@@ -9,15 +9,11 @@ source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.
 translation: "complete"
 ---
 
-## Vue d’ensemble
+Le serveur utilise un fichier TOML. Pour une première installation, suivez le guide de configuration du serveur.
 
-La configuration du serveur est au format TOML. Tous les champs obligatoires doivent exister après application des options CLI. Les champs inconnus et les types invalides sont rejetés. Les écouteurs utilisent IP:port numérique, avec crochets pour IPv6 ; dest utilise hôte:port. Le tableau décrit les champs principaux, tandis que performance fait l’objet d’une référence séparée.
+## Configuration minimale
 
-## Détails
-
-private_key et mldsa_seed doivent chacun décoder exactement 32 octets base64. Les valeurs de remplacement ne sont pas utilisables en production. short_ids contient au moins une entrée ; chacune encode zéro à huit octets sous forme hexadécimale de longueur paire. Une chaîne vide est autorisée. max_time_diff accepte ms, s, m, h ou un nombre de secondes sans suffixe, avec une durée minimale d’une seconde.
-
-### Modèle serveur
+Remplacez les valeurs d'identité et `cover.example` :
 
 ```toml
 listen = "0.0.0.0:443"
@@ -29,6 +25,7 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
+## Champs
 
 | Champ | Valeur par défaut / exigence | Signification |
 |---|---|---|
@@ -44,12 +41,26 @@ mldsa_seed = "<MLDSA_SEED_BASE64>"
 | `padding_scheme` | `"default"` | Politique de remplissage interne |
 | `tcp_evasion` | `"segment"` | Écritures ordonnées du ClientHello |
 
-## Vérification et limites
+Les paramètres de performance se placent dans `[performance]`.
 
-server_names doit être non vide. Chaque nom passe des contrôles de longueur, ASCII et absence d’espaces ; cette validation ne prouve pas qu’un site est joignable ni que son SNI est approprié. La sonde initiale reste obligatoire. Les options CLI emploient des tirets, par exemple --udp-listen, et remplacent seulement les valeurs fournies. Gardez les secrets dans un fichier protégé plutôt que dans l’historique du shell.
+## Adresses et domaines
+
+`listen` et `udp_listen` exigent une IP numérique et un port, comme `0.0.0.0:443` ou `[::]:443`. `dest` accepte un nom d'hôte. `server_names` contient au moins un nom conforme aux limites de longueur et à la syntaxe ASCII, sans espaces. Utilisez les domaines du site réel ; le client en choisit un.
+
+## Clés et identifiants courts
+
+`private_key` et `mldsa_seed` sont encodés en Base64 et donnent chacun 32 octets. Utilisez les sorties correspondantes de `keygen`. `short_ids` contient au moins une chaîne hexadécimale de longueur paire, de 16 caractères maximum ; la chaîne vide est aussi acceptée. Le client doit reprendre l'une des valeurs.
+
+## Horloge et rafraîchissement
+
+`max_time_diff` accepte `ms`, `s`, `m`, `h`, ou des secondes sans suffixe ; la durée finale est d'au moins une seconde. Vérifiez les horloges avant d'élargir la tolérance. Le site est vérifié à chaque démarrage ; `prebuild`, activé par défaut, contrôle les rafraîchissements suivants.
+
+## Priorité des options
+
+Une option CLI fournie remplace le champ TOML correspondant. La validation intervient après fusion. Les options CLI utilisent des tirets, comme `--udp-listen`, et TOML des traits de soulignement. Gardez les secrets dans un fichier protégé pour éviter l'historique du shell et la liste des arguments.
 
 ## Pour continuer
 
-- [Configurer un serveur](/fr/docs/guides/server/)
-- [Performances et politiques](/fr/docs/reference/configuration/)
-- [Référence CLI](/fr/docs/reference/cli/)
+- [Configurer le serveur](/fr/docs/guides/server/)
+- [Paramètres de performance et de transport](/fr/docs/reference/configuration/)
+- [Référence de la ligne de commande](/fr/docs/reference/cli/)

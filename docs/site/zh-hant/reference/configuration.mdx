@@ -1,7 +1,7 @@
 ---
 id: "reference/configuration"
-title: "效能與策略參考"
-description: "記憶體預算、自適應 mux、填充和擁塞控制。"
+title: "效能與傳輸參數"
+description: "調整記憶體預算、接收視窗、流量填充和診斷輸出。"
 section: "reference"
 order: 15
 version: "1.0.0-alpha"
@@ -9,15 +9,9 @@ source: ["crates/umbra-core/src/resources.rs", "README.md", "docs/performance.md
 translation: "complete"
 ---
 
-## 概覽
+建議先使用預設值完成連線，再根據實際負載調整。用戶端與伺服器端都接受可選的 `[performance]` 表。
 
-用戶端和伺服器端都接受可選 performance 表。預設值表示有界的邏輯資源承諾，不是啟動時一次性分配的全部記憶體。應為作業系統、核心緩衝、分配器及握手保留空間。共享同一憑據的連線共享組預算，不會自動變成獨立使用者賬戶，也不保證每個人獲得相同頻寬。
-
-## 詳細說明
-
-memory_mib 範圍為 16–16384 MiB，group_memory_mib 至少 16 MiB 且不超過程序預算。視窗欄位接受 1–64 MiB，實際 QUIC 視窗和傳送儲存還會受預算裁剪。adaptive_mux 控制用戶端新的 TCP CONNECT mux 會話，mux=false 仍然選擇獨立 Vision，不受這個模式開關替代。
-
-### 可選效能設定表
+## 預設效能設定
 
 ```toml
 [performance]
@@ -33,34 +27,70 @@ quic_congestion = "bbr"
 
 | 欄位 | 預設值 / 要求 | 含義 |
 |---|---|---|
-| `memory_mib` | `512` | 程序邏輯記憶體承諾，16–16384 MiB |
-| `group_memory_mib` | `256` | 憑據組上限，至少16 MiB且不超過程序預算 |
+| `memory_mib` | `512` | 程序邏輯記憶體預算，16–16384 MiB |
+| `group_memory_mib` | `256` | 憑據組預算，至少 16 MiB，且不超過程序預算 |
 | `max_window_mib` | `64` | 自適應總接收視窗上限，1–64 MiB |
 | `quic_stream_window_mib` | `6` | QUIC 單流接收視窗，1–64 MiB |
-| `quic_send_window_mib` | `32` | QUIC 保留髮送儲存，1–64 MiB |
+| `quic_send_window_mib` | `32` | QUIC 保留發送存儲，1–64 MiB |
 | `adaptive_mux` | `true` | 用戶端新 TCP mux 會話的自適應開關 |
-| `diagnostics_interval_secs` | `0` | 伺服器端診斷週期：0關閉，1–3600秒 |
-| `quic_congestion` | `"bbr"` | 傳送 QUIC 演算法：bbr、cubic、new-reno |
+| `diagnostics_interval_secs` | `0` | 伺服器端診斷週期：0 為關閉，範圍 1–3600 秒 |
+| `quic_congestion` | `"bbr"` | 本端 QUIC 發送擁塞控制演算法：bbr、cubic、new-reno |
 
+## 設定記憶體和視窗
 
-### 填充與 TCP 寫入
+記憶體預算約束應用程式承諾給連線的資源。共享同一憑據的連線共用組預算；按程序和憑據組管理資源，便於控制併發連線的佔用。
 
-default：每個方向前16次業務寫入的前後各加一個100–1400位元組的隨機 PADDING 幀，之後每32次業務寫入加一個填充幀。none 關閉填充。自定義形式：early=N,min=N,max=N,later=N；early 為初期寫入次數，min/max 為填充位元組範圍，later 為後期週期，0關閉後期填充。min 不得超過 max，max 不得超過65535；開啟初期填充時 max 必須非零。
+`memory_mib` 接受 16–16384 MiB；`group_memory_mib` 至少為 16 MiB，並且不超過程序預算。視窗欄位接受 1–64 MiB，實際視窗還會根據預算裁剪。
 
-segment：有序分塊寫入，預設閾值64位元組、首塊32位元組。off：普通寫入。自定義形式：segment:threshold=N,first=M。Geneva 策略會被拒絕。
+這些值用於邏輯資源管理，並非啟動時一次性分配的記憶體，也不是操作系統顯示的 RSS 上限。為核心緩衝、分配器、握手和其他服務留出空間。共享預算以憑據為單位，多個使用者共用憑據時歸入同一組。
+
+## 使用自適應 mux
+
+`adaptive_mux` 控制用戶端新建 TCP 多路重複使用會話的流控方式。接收視窗根據實際資料消耗和往返時間增長，增長前先申請相應預算。
+
+這一設定在 `mux = true` 時使用。`mux = false` 繼續選擇獨立 Vision 連線。升級自適應 mux 時，兩端使用兼容版本。
+
+## 選擇 QUIC 擁塞控制
+
+`quic_congestion` 支援 `bbr`、`cubic` 和 `new-reno`，預設 `bbr`。設定影響本端發出的 QUIC 流量；用戶端與伺服器端可分別設定。系統 TCP 擁塞控制仍由操作系統管理。
+
+## 設定流量填充
+
+預設策略在每個方向前 16 次業務寫入的前後，各加入一個 100–1400 位元組的隨機填充幀；此後每 32 次業務寫入加入一個填充幀。
+
+- `default`：使用上述預設策略。
+- `none`：關閉填充。
+- `early=N,min=N,max=N,later=N`：自定義早期寫入次數、填充位元組範圍和後續間隔。`later=0` 關閉後續填充。
+
+`min` 不得大於 `max`，`max` 不得超過 65535。啟用早期填充時，`max` 必須大於零。填充增加額外帶寬消耗，調整後應驗證實際連線。
+
+## 設定 TCP 握手分塊
+
+`segment` 按順序分塊寫入 ClientHello，預設閾值為 64 位元組、首塊為 32 位元組。`off` 使用普通寫入，也可用 `segment:threshold=N,first=M` 自定義。目前不接受 Geneva 策略。
 
 ```toml
 padding_scheme = "default"
 tcp_evasion = "segment"
 ```
 
+這兩個欄位屬於頂層設定，請放在 `[performance]` 表之前或檔案中的頂層欄位區域。
 
-## 驗證與邊界
+## 啟用診斷
 
-diagnostics_interval_secs=0 關閉收集與報告，1–3600 表示伺服器端輸出週期秒數。數值觀察區分外層與目標位元組，並省略地址、憑據、SNI 和負載。邏輯承諾不是 RSS，寫入接收不是遠端投遞證明，排程 poll 時間不是 CPU 使用率。quic_congestion 僅改變本端傳送 QUIC 的行為。先使用預設值，以相同負載對比後再調整，不能假定更大的視窗必然更快。
+伺服器端將 `diagnostics_interval_secs` 設為 1–3600，可按指定秒數輸出數值診斷；設為 `0` 時關閉收集與報告。診斷區分外層傳輸與目標連線的位元組數，並省略位址、SNI、憑據和資料內容。
+
+閱讀指標時按下列含義判斷：
+
+| 指標 | 如何理解 |
+| --- | --- |
+| 邏輯記憶體承諾 | 應用程式為連線保留的資源預算；實際記憶體佔用另看操作系統指標 |
+| 寫入接受計數 | 本機寫入接口接受的資料量；目標應用程式收到多少需在目標端確認 |
+| 排程 poll 時間 | 任務推進過程中的牆鐘耗時；CPU 使用率另看系統指標 |
+
+每次只改一組相關參數，在相同負載下比較，再決定是否保留。
 
 ## 下一步
 
-- [傳輸與流量模式](/zh-hant/docs/concepts/transports/)
+- [選擇 TCP、Vision 與 QUIC](/zh-hant/docs/concepts/transports/)
 - [部署與運維](/zh-hant/docs/guides/deployment/)
 - [故障排查](/zh-hant/docs/troubleshooting/)

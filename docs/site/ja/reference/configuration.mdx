@@ -1,7 +1,7 @@
 ---
 id: "reference/configuration"
-title: "性能とポリシー"
-description: "メモリ予算、適応型 mux、パディング、輻輳制御を設定します。"
+title: "性能と通信パラメーター"
+description: "メモリ予算、ウィンドウ、パディング、診断を調整します。"
 section: "reference"
 order: 15
 version: "1.0.0-alpha"
@@ -9,15 +9,9 @@ source: ["crates/umbra-core/src/resources.rs", "README.md", "docs/performance.md
 translation: "complete"
 ---
 
-## 概要
+まず既定値で接続し、再現できる負荷で比較します。両端は `[performance]` を受け付けます。
 
-両端は省略可能な performance 表を受け付けます。上限は論理的なメモリ予約で、起動時の全量確保ではありません。OS、カーネルバッファ、アロケーター、ハンドシェイクに余裕を残します。同一の正規化資格情報を使う接続はグループ予算を共有し、利用者ごとの独立アカウントや等しい帯域を保証しません。
-
-## 詳細
-
-memory_mib は 16〜16384 MiB、group_memory_mib は最低16 MiBでプロセス上限以下です。ウィンドウは1〜64 MiBで、実効 QUIC ウィンドウや送信保存量は予算でも制限されます。adaptive_mux は新しいクライアント TCP CONNECT 多重化セッションを制御します。mux=false は引き続き専用 Vision です。
-
-### 任意の性能設定
+## 既定値とフィールド
 
 ```toml
 [performance]
@@ -42,25 +36,35 @@ quic_congestion = "bbr"
 | `diagnostics_interval_secs` | `0` | サーバー診断間隔。0で無効、1〜3600秒 |
 | `quic_congestion` | `"bbr"` | 送信 QUIC の方式。bbr、cubic、new-reno |
 
+## メモリとウィンドウ
 
-### パディングと TCP 書き込み
+予算は接続に約束したリソースを管理します。同じ認証情報を使う接続はグループ予算を共有します。`memory_mib` は 16–16384 MiB、グループは 16 MiB 以上でプロセス予算以下です。ウィンドウは 1–64 MiB を指定し、予算で制限されます。これは論理的な予約量であり、初期一括割り当てや RSS 上限ではありません。カーネル、アロケーター、握手、他サービスの余裕を残します。
 
-default は方向ごとに最初の16回の業務 write の前後へ、それぞれ100〜1400バイトのランダムな PADDING フレームを加え、その後は32回ごとに1フレームを加えます。none は無効です。指定形式は early=N,min=N,max=N,later=N で、early は初期回数、min/max はバイト範囲、later は後期周期（0で無効）です。min は max 以下、max は65535以下で、初期パディングが有効なら max はゼロにできません。
+## mux と輻輳制御
 
-segment は順序付き write で、既定の閾値64バイト、先頭32バイトです。off は通常の write、指定形式は segment:threshold=N,first=M です。Geneva は拒否されます。
+`adaptive_mux` は `mux = true` の新規セッションに作用します。リソース確保後、消費量と往復時間に応じてウィンドウを増やします。`mux = false` は Vision のままです。両端の互換性を保ってください。`quic_congestion` は QUIC 送信の `bbr`、`cubic`、`new-reno` を選び、TCP は OS が管理します。
+
+## パディング
+
+`default` は各方向の最初の 16 回の業務書き込みの前後に 100–1400 バイトのランダムフレームを加え、その後は 32 回ごとに加えます。`none` で無効化します。`early=N,min=N,max=N,later=N` で変更し、`later=0` で後半を無効にできます。`min <= max`、`max <= 65535` が必要で、初期パディング有効時の最大値はゼロにできません。追加の帯域を消費します。
+
+## ClientHello の書き込み
+
+`segment` は閾値 64 バイト、最初の断片 32 バイトです。`off` は通常の書き込み、`segment:threshold=N,first=M` はカスタム値です。Geneva は受理しません。
 
 ```toml
 padding_scheme = "default"
 tcp_evasion = "segment"
 ```
 
+これらはトップレベルのフィールドなので、`[performance]` より前に置きます。
 
-## 確認と制約
+## 診断
 
-diagnostics_interval_secs=0 は収集を無効にし、1〜3600はサーバーの秒間隔です。数値は外側通信とターゲットを分け、アドレス、資格情報、SNI、内容を含めません。論理予約は RSS、書き込み受理は遠端配送、poll 時間は CPU 使用率を意味しません。quic_congestion は本端の送信 QUIC だけを変更します。大きなウィンドウを無条件に選ばず、再現可能な負荷で検証してください。
+サーバーで `diagnostics_interval_secs` を 1–3600 秒にすると収集・報告し、ゼロで両方無効になります。外側と宛先のバイト数を分け、アドレス、SNI、認証情報、内容を除きます。実メモリは OS 指標で、宛先への配達は宛先側で確認します。poll の経過時間は CPU 使用率ではありません。関連する設定を一組ずつ変更してください。
 
 ## 次のステップ
 
-- [トランスポートと通信モード](/ja/docs/concepts/transports/)
+- [TCP・Vision・QUIC の選び方](/ja/docs/concepts/transports/)
 - [デプロイと運用](/ja/docs/guides/deployment/)
 - [トラブルシューティング](/ja/docs/troubleshooting/)

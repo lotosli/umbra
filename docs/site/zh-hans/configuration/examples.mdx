@@ -1,7 +1,7 @@
 ---
 id: "configuration/examples"
-title: "配置示例"
-description: "TCP mux、Vision 与 QUIC UDP 的起步模板。"
+title: "常用配置示例"
+description: "按场景选择连接复用、Vision 或 QUIC，并接入现有客户端。"
 section: "configuration"
 order: 10
 version: "1.0.0-alpha"
@@ -9,31 +9,29 @@ source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crate
 translation: "complete"
 ---
 
-## 概览
+以下片段用于合并到已有的完整配置。先按[快速开始](/zh-hans/docs/getting-started/quick-start/)填好服务器地址、密钥和掩护网站，再选择需要的模式。
 
-这些模板展示完成身份和端点配置之后的模式选择。请先按快速开始替换全部占位值；模板不是完整凭据，不能把填入真实值的文件粘贴到公开问题中。客户端与服务端使用同一二进制，也不需要仅仅为了让 UDP 使用不同传输而启动两个客户端实例。
-
-## 详细说明
-
-加密 TCP 多路复用使用 transport=tcp、mux=true，新的 alpha 客户端默认启用自适应流控。独立 TCP/Vision 使用 transport=tcp、mux=false；适用的内层 TLS 1.3 流量在认证边界交换后可进入拼接路径，其他流量仍保持加密。不需要额外 vision 开关，也不能把用户态拼接称为内核零拷贝。
-
-### TCP 多路复用
+## 多个请求复用 TCP 连接
 
 ```toml
 transport = "tcp"
 mux = true
 ```
 
+适合希望减少重复建连的场景。当前版本默认使用自适应流控，需要匹配版本的服务端。
 
-### 独立 TCP / Vision
+## 独立 TCP / Vision 连接
 
 ```toml
 transport = "tcp"
 mux = false
 ```
 
+对符合条件的 TLS 1.3 流量，Vision 在认证协商完成后直接转发已加密记录，减少重复加密。其他流量继续通过加密通道传输。设置 `mux = false` 即可选择此模式。
 
-### TCP / Vision + QUIC UDP
+## TCP 使用 Vision，UDP 使用 QUIC
+
+客户端：
 
 ```toml
 transport = "tcp"
@@ -42,23 +40,24 @@ mux = false
 socks_listen = "127.0.0.1:1080"
 ```
 
-
-### 服务端模板
+服务端同时启用两个监听：
 
 ```toml
 listen = "0.0.0.0:443"
 udp_listen = "0.0.0.0:443"
 ```
 
+一组客户端与服务端即可处理这两条路径。服务端防火墙需要放行相应 TCP、UDP 端口，掩护网站需要支持可访问的 QUIC/HTTP/3 服务。
 
-### 原生 QUIC
+## TCP 和 UDP 都使用 QUIC
 
 ```toml
 transport = "quic"
 ```
 
+省略 `udp_transport`，UDP 就会继承 `transport`。如果原配置中已有该字段，请删除它或显式改为 `quic`。
 
-### Clash SOCKS5 节点
+## 在 Clash 类客户端中添加本地节点
 
 ```yaml
 proxies:
@@ -69,13 +68,14 @@ proxies:
     udp: true
 ```
 
+将节点加入现有列表和代理组。`udp: true` 允许发送 UDP 请求；TCP 请求继续按 Umbra 的 `transport` 设置处理。将 Umbra 服务器地址设为直连，避免代理循环。
 
-## 验证与边界
+## 验证配置
 
-单实例 TCP/Vision 加 QUIC UDP 在客户端增加 udp_transport=quic，服务端同时设置 listen 和 udp_listen。若主要请求也使用原生 QUIC，则设置 transport=quic 并省略 udp_transport，使其继承 quic。dest 需要真实 QUIC/HTTP3 支持。Clash 的 udp: true 允许 UDP ASSOCIATE，TCP 仍按 transport 处理。先验证一项变化，再根据可复现问题调整默认填充或分块策略。
+每次只切换一种模式，用同一个应用验证连接。TCP 和 UDP 分别测试；需要优化时再调整填充、分块或性能参数。
 
 ## 下一步
 
-- [服务端配置](/zh-hans/docs/configuration/server/)
-- [客户端配置](/zh-hans/docs/configuration/client/)
-- [传输与流量模式](/zh-hans/docs/concepts/transports/)
+- [服务端配置参考](/zh-hans/docs/configuration/server/)
+- [客户端配置参考](/zh-hans/docs/configuration/client/)
+- [选择 TCP、Vision 与 QUIC](/zh-hans/docs/concepts/transports/)

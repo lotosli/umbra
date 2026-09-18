@@ -1,7 +1,7 @@
 ---
 id: "reference/cli"
-title: "Referència de la CLI"
-description: "Ordres server, client i keygen i les seves opcions."
+title: "Referència de la línia d'ordres"
+description: "Consulta les opcions de server, client i keygen."
 section: "reference"
 order: 14
 version: "1.0.0-alpha"
@@ -9,15 +9,9 @@ source: ["crates/umbra/src/main.rs", "README.md"]
 translation: "complete"
 ---
 
-## Visió general
+`server` inicia el servidor, `client` l'entrada SOCKS5 local i `keygen` genera claus.
 
-La CLI té tres subordres: server inicia les escoltes, client obre SOCKS local i keygen escriu una identitat a stdout. Consulta umbra --help i l’ajuda de cada subordre per conèixer el binari instal·lat. La documentació d’una altra versió no substitueix les opcions realment disponibles a la teva instal·lació.
-
-## Detalls
-
-Fes servir -c o --config per carregar TOML. Els valors CLI substitueixen els camps corresponents i els omesos conserven el fitxer. short IDs i server names admeten llistes separades per comes. Els booleans --mux i --prebuild demanen un valor explícit. Els ajustos performance pertanyen a la seva taula TOML; no tots els camps imbricats disposen d’una opció de línia d’ordres.
-
-### Ajuda i generació d’identitat
+## Consultar l'ajuda
 
 ```sh
 umbra --help
@@ -26,8 +20,13 @@ umbra client --help
 umbra keygen
 ```
 
+Consulta `--help` a la versió instal·lada.
 
-### umbra server
+## Carregar i substituir configuració
+
+`-c` o `--config` carrega TOML. Les opcions indicades substitueixen els camps; els altres es conserven. Les llistes d'identificadors i noms del servidor se separen amb comes. `--mux` i `--prebuild` necessiten `true` o `false`. El rendiment es configura a `[performance]`.
+
+## Opcions del servidor
 
 | Ordre / opció | Funció |
 |---|---|
@@ -44,8 +43,7 @@ umbra keygen
 | `--padding-scheme` | Política de farciment intern |
 | `--tcp-evasion` | Escriptures ordenades de ClientHello |
 
-
-### umbra client
+## Opcions del client
 
 | Ordre / opció | Funció |
 |---|---|
@@ -64,13 +62,12 @@ umbra keygen
 | `--padding-scheme` | Política de farciment intern |
 | `--tcp-evasion` | Escriptures ordenades de ClientHello |
 
+## Generar claus
 
-## Verificació i límits
-
-keygen no té opcions addicionals i emet x25519_private, x25519_public, mldsa_seed i mldsa_verify en base64. La sortida conté secrets: utilitza un terminal privat i fitxers protegits. Evita arguments visibles a l’historial o a la llista de processos. La taula descriu opcions de configuració; no hi ha ordres de compte al núvol, migració de base de dades ni instal·lació automàtica del servei. Verifica una petició després d’engegar-lo.
+`umbra keygen` no necessita opcions addicionals i retorna `x25519_private`, `x25519_public`, `mldsa_seed` i `mldsa_verify` en Base64. Distribueix-los segons l'inici ràpid. La sortida conté secrets: desa-la en un fitxer protegit i evita arguments que quedin a l'historial o a la llista de processos.
 
 ## Passos següents
 
-- [Configuració del servidor](/ca/docs/configuration/server/)
-- [Configuració del client](/ca/docs/configuration/client/)
-- [Rendiment i polítiques](/ca/docs/reference/configuration/)
+- [Referència de configuració del servidor](/ca/docs/configuration/server/)
+- [Referència de configuració del client](/ca/docs/configuration/client/)
+- [Paràmetres de rendiment i transport](/ca/docs/reference/configuration/)

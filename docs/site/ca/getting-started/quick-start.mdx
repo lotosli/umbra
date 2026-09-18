@@ -1,7 +1,7 @@
 ---
 id: "getting-started/quick-start"
 title: "Inici ràpid"
-description: "Genera una identitat i connecta el primer client i servidor."
+description: "Genera claus, configura els dos extrems i prova la primera connexió."
 section: "getting-started"
 order: 3
 version: "1.0.0-alpha"
@@ -9,24 +9,23 @@ source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crate
 translation: "complete"
 ---
 
-## Visió general
+Comença amb TCP. Instal·la la mateixa versió al servidor i al dispositiu client. El client ha de poder arribar al servidor, i aquest al lloc web de cobertura.
 
-Prepara un servidor i un client amb la mateixa versió. El client ha de poder arribar al servidor i aquest ha de poder contactar amb una destinació real de retorn. Els exemples contenen marcadors, no credencials utilitzables: substitueix cover.example per un lloc TLS 1.3 adequat i accessible, i emplena les dades d’identitat amb la teva sortida de keygen.
+## 1. Generar les claus
 
-## Detalls
-
-Executa umbra keygen en un terminal privat. Conserva x25519_private i mldsa_seed al servidor; comparteix x25519_public, mldsa_verify i un short_id amb el client per un canal fiable. Crea server.toml i engega el servidor. La comprovació inicial de la destinació ha de funcionar. El server_name del client ha de pertànyer a server_names i el seu short_id a short_ids.
-
-### Generar una identitat
+Al servidor:
 
 ```sh
 umbra keygen
 ```
 
-`umbra keygen` no genera `short_id`. Tria una cadena hexadecimal de longitud parella, entre 0 i 16 caràcters (0–8 bytes), i fes servir el mateix valor als dos extrems. Substitueix l’adreça de documentació `198.51.100.10` per l’adreça accessible del teu servidor i utilitza el port de la seva escolta.
+Desa `x25519_private` i `mldsa_seed` només al servidor, als camps `private_key` i `mldsa_seed`. Envia `x25519_public` i `mldsa_verify` al client per un canal de confiança, per als camps `public_key` i `mldsa_verify`.
 
+Tria a part un `short_id`: una cadena hexadecimal de longitud parella i fins a 16 caràcters. Fes servir el mateix valor als dos extrems; `keygen` no el genera.
 
-### Plantilla del servidor
+## 2. Iniciar el servidor
+
+Crea `server.toml`. Substitueix tots els marcadors d'identitat i `cover.example` a `dest` i `server_names` per un lloc TLS 1.3 accessible. Limita la lectura del fitxer a l'usuari del servei i als administradors.
 
 ```toml
 listen = "0.0.0.0:443"
@@ -38,15 +37,15 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
-
-### Iniciar el servidor
-
 ```sh
 umbra server -c server.toml
 ```
 
+Umbra comprova el lloc en arrencar. Confirma que s'inicia correctament i permet el port TCP configurat al tallafoc.
 
-### Plantilla del client
+## 3. Iniciar el client
+
+Crea `client.toml`. Canvia `198.51.100.10:443` per l'adreça real i omple les claus, el `short_id` i el nom del lloc corresponents.
 
 ```toml
 server = "198.51.100.10:443"
@@ -59,27 +58,24 @@ mldsa_verify = "<MLDSA_VERIFY_BASE64>"
 socks_listen = "127.0.0.1:1080"
 ```
 
-
-### Iniciar el client
+Mantén `127.0.0.1:1080` perquè l'entrada sense contrasenya només estigui disponible en aquest dispositiu.
 
 ```sh
 umbra client -c client.toml
 ```
 
+## 4. Provar una petició
 
-### Verificar la connexió
+Des d'un altre terminal:
 
 ```sh
 curl --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
-
-## Verificació i límits
-
-Crea client.toml, inicia el client i configura una aplicació amb SOCKS5 a 127.0.0.1:1080. SOCKS no autentica amb contrasenya, de manera que l’escolta ha de continuar sent local. Una petició curl amb --socks5-hostname comprova el recorregut complet i transmet el nom de destinació per SOCKS. Atura els processos amb Ctrl-C. Quan TCP funcioni, pots afegir QUIC UDP a la mateixa instància.
+Quan rebis resposta, configura SOCKS5 a l'aplicació amb adreça `127.0.0.1` i port `1080`. `--socks5-hostname` envia el nom de destinació al servidor intermediari. Atura els processos en primer pla amb `Ctrl-C`. Comprova TCP abans d'afegir QUIC.
 
 ## Passos següents
 
-- [Configurar un servidor](/ca/docs/guides/server/)
-- [Connectar un client](/ca/docs/guides/client/)
+- [Preparar el servidor](/ca/docs/guides/server/)
+- [Connectar aplicacions i clients compatibles amb Clash](/ca/docs/guides/client/)
 - [Exemples de configuració](/ca/docs/configuration/examples/)

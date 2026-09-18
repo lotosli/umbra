@@ -1,30 +1,46 @@
 ---
 id: "concepts/security-model"
 title: "Modelo de seguridad"
-description: "Comprende la autenticación, los secretos y los límites de protección."
+description: "Entiende la autenticación, la cobertura web y qué debes proteger."
 section: "concepts"
 order: 13
 version: "1.0.0-alpha"
-source: ["README.md", "crates/umbra-core/src/socks.rs"]
+source: ["README.md", "crates/umbra-core/src/socks.rs", "crates/umbra-core/src/runtime.rs", "crates/umbra-reality/src/cert.rs", "crates/umbra-tls/src/server.rs"]
 translation: "complete"
 ---
 
-## Descripción general
+Umbra verifica identidades, protege el transporte y reenvía conexiones sin autenticar a una web real. Tú gestionas claves, dispositivos y servidor.
 
-Umbra combina autenticación previa a la primera respuesta con respaldo en un sitio real. Las conexiones sin autenticar se transmiten a ese destino sin recibir un error reconocible de proxy. Los clientes autenticados verifican la identidad esperada. La caché contra repetición tiene límites de capacidad y tiempo y no supone defensa ilimitada contra agotamiento de recursos.
+## Autenticación y cobertura
 
-## Detalles
+El servidor verifica la autenticación antes de responder. El cliente comprueba la vinculación del certificado temporal con la identidad esperada. Otras conexiones van al sitio de cobertura. Una caché con límites de tamaño y duración detecta repeticiones. La criptografía usa comparaciones en tiempo constante y almacenamiento y borrado específicos para secretos.
 
-El código concentra verificaciones en tiempo constante y borrado de secretos. Conserva private_key y mldsa_seed en el servidor y distribuye la configuración del cliente de forma segura. Excluye claves, destinos y contenido de los informes públicos. SOCKS local no autentica al usuario, por lo que conviene vincularlo al bucle local. Las aplicaciones deben mantener HTTPS o su propio cifrado autenticado de extremo a extremo.
+## Claves y acceso local
 
-[GitHub Security](https://github.com/lotosli/umbra/security)
+Guarda `private_key` y `mldsa_seed` en el servidor. Comparte la configuración por un canal de confianza, limita permisos y elimina credenciales de registros públicos. SOCKS5 no tiene contraseña: escucha en `127.0.0.1:1080`. Configura controles de acceso antes de abrirlo a otros dispositivos.
 
-## Verificación y límites
+## Cifrado de las aplicaciones
 
-Un transporte privado no repara dispositivos comprometidos ni proporciona el anonimato de una red de varios saltos. Esta alpha no afirma tener auditoría independiente ni equivalencia completa con Chrome actual. chrome-latest sigue Chrome 150; una captura Chrome 153 no demuestra conformidad total. Consulta la información de seguridad publicada por el proyecto antes de comunicar detalles sensibles y no reveles secretos en una incidencia pública ordinaria.
+Sigue usando HTTPS. Vision reenvía datos ya protegidos cuando corresponde. La seguridad de dispositivos, cuentas y destinos requiere sus propias medidas.
+
+## Alcance de la cobertura
+
+Las visitas y sondas no autenticadas reciben respuestas del sitio. Direcciones, horarios y volúmenes siguen siendo observables, y la IP puede bloquearse. Umbra es un proxy autogestionado, sin la separación de identidad de una red anónima de varios saltos.
+
+## Perfiles de navegador
+
+`chrome-latest` usa Chrome 150; el repositorio también incluye capturas Chrome 153 TCP/QUIC. Perfiles, capturas y JA3/JA4 verifican características concretas; no se ha verificado equivalencia completa con el comportamiento de red del Chrome actual.
+
+## Algoritmos poscuánticos
+
+ML-DSA-65 vincula la clave pública del certificado temporal. X25519 + ML-KEM-768 solo se usa si se negocia. La sonda de destino de la CLI usa ring, sin ML-KEM, y el servidor sigue el grupo observado. Evalúa la negociación real del despliegue.
+
+## Versión y avisos de seguridad
+
+La versión **1.0.0-alpha** no tiene evidencia pública de una auditoría independiente terminada. Para usos sensibles, revisa implementación, versiones y despliegue. Consulta [GitHub Security](https://github.com/lotosli/umbra/security) antes de informar de una vulnerabilidad. No publiques detalles explotables, credenciales ni infraestructura sensible.
 
 ## Siguientes pasos
 
-- [Referencia del protocolo](/es/docs/reference/protocol/)
-- [Resolución de problemas](/es/docs/troubleshooting/)
-- [Contribuir](/es/docs/contributing/)
+- [Comparar soluciones proxy](/es/docs/reference/protocol/)
+- [Resolver problemas](/es/docs/troubleshooting/)
+- [Contribuir a Umbra](/es/docs/contributing/)

@@ -1,7 +1,7 @@
 ---
 id: "getting-started/installation"
-title: "Installation"
-description: "Choose a release for your platform or build the Rust binary."
+title: "Install Umbra"
+description: "Download a binary for your device or build it from Rust source."
 section: "getting-started"
 order: 2
 version: "1.0.0-alpha"
@@ -9,17 +9,11 @@ source: ["docs/usage.md", "README.md", ".github/workflows/dist.yml"]
 translation: "complete"
 ---
 
-## Overview
+The same Umbra binary runs in client or server mode. Choose the same release for both ends and the correct operating system and CPU architecture for each device.
 
-The release workflow targets macOS, Linux and Windows. Choose the architecture of the machine that will run Umbra. The table names build targets; availability must be checked on the selected GitHub Release. A target listed here does not promise that every prerelease contains that asset, and this documentation does not invent checksums or signing status.
+## Download a binary
 
-## Details
-
-Download from the project release page. On macOS or Linux, grant execute permission to the exact downloaded file, rename it to umbra if desired and place it in a directory on PATH. On Windows use the .exe file from a terminal. Check the selected release notes and any checksums provided with that release before running it.
-
-### Release downloads
-
-[Release downloads](https://github.com/lotosli/umbra/releases)
+Open the [GitHub releases](https://github.com/lotosli/umbra/releases) and choose a file from the release assets. The table helps identify build targets; available downloads depend on that release.
 
 | Platform | Architecture | Artifact target |
 |---|---|---|
@@ -29,7 +23,15 @@ Download from the project release page. On macOS or Linux, grant execute permiss
 | Linux | aarch64 | `umbra-aarch64-unknown-linux-gnu` |
 | Windows | x86_64 | `umbra-x86_64-pc-windows-msvc.exe` |
 
-### Source build
+## Install on your device
+
+On macOS or Linux, extract the archive if needed and make the downloaded binary executable. You can rename it to `umbra` and place it in a directory on `PATH`. On Windows, extract if needed and run the `.exe` from a terminal, or add its directory to `PATH`.
+
+Read the release notes and check the file against any verification information provided with the release.
+
+## Build from source
+
+Use the repository's pinned Rust 1.96.1 toolchain:
 
 ```sh
 git clone https://github.com/lotosli/umbra.git
@@ -38,12 +40,13 @@ cargo build --release
 ./target/release/umbra --help
 ```
 
+The binary is under `target/release`; Windows adds the `.exe` suffix.
 
-## Verify
+## Check the installation
 
-For a source build, use the repository toolchain pinned to Rust 1.96.1. Clone the public repository and run cargo build --release; the CLI is produced under target/release. Confirm that umbra --help lists server, client and keygen. Both client and server use the same binary. Installation alone does not configure listeners or start a background service; continue with the quick start and generate your own identity.
+Run `umbra --help`, using the full path if necessary. It should list `server`, `client` and `keygen`. Next, generate keys and configure both ends. Set up background operation later using the deployment guide.
 
 ## Next steps
 
 - [Quick start](/en/docs/getting-started/quick-start/)
-- [Contributing](/en/docs/contributing/)
+- [Contribute to Umbra](/en/docs/contributing/)

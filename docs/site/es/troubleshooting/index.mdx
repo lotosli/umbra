@@ -1,7 +1,7 @@
 ---
 id: "troubleshooting"
-title: "Resolución de problemas"
-description: "Diagnostica problemas de configuración y conectividad."
+title: "Resolver problemas"
+description: "Localiza el punto de fallo y recupera la conexión."
 section: "troubleshooting"
 order: 17
 version: "1.0.0-alpha"
@@ -9,28 +9,47 @@ source: ["docs/usage.md", "README.md"]
 translation: "complete"
 ---
 
-## Descripción general
+Anota versiones, plataforma y error. Reproduce una sola solicitud y cambia un ajuste cada vez.
 
-Empieza por la versión instalada, la etapa que falla y una descripción mínima sin secretos. Reproduce una petición antes de cambiar varios ajustes. Distingue una aplicación que omite SOCKS, un fallo cliente/servidor y un fallo del servidor al sitio de respaldo o destino de aplicación: no requieren las mismas comprobaciones.
-
-## Detalles
-
-Si el servidor termina inmediatamente, revisa TOML, campos obligatorios, conflictos de puerto y la comprobación inicial. Los errores conservan categoría y posición sin reproducir secretos. Ante un fallo de autenticación, compara identidad pública, short ID y server_name por un canal fiable. Sincroniza los relojes antes de ampliar max_time_diff. Comprueba el puerto público TCP y también UDP cuando utilices QUIC.
-
-### Verificar la conexión
+## Prueba directa
 
 ```sh
 umbra --help
 curl --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
+Si SOCKS5 funciona y el cliente de reglas no, revisa nodo, reglas, DNS y bucles.
 
-## Verificación y límites
+## El servidor se cierra al arrancar
 
-Ver el certificado real del destino es normal en una prueba no autenticada. Si solo falla UDP, comprueba udp_transport, udp_listen, cortafuegos y el servicio QUIC del destino. Para rendimiento, usa una carga repetible y diagnósticos opcionales. Un informe útil incluye versión, plataforma, comando saneado y categoría de error; evita configuraciones reales, claves privadas, capturas con tráfico de usuarios y detalles de infraestructura activa.
+Comprueba TOML, campos obligatorios, permisos y puertos ocupados. La comprobación inicial necesita `dest`, dominio y conectividad válidos.
+
+## Falla la autenticación
+
+Contrasta `public_key`, `mldsa_verify`, `short_id` y `server_name` por un canal de confianza con la configuración activa. Corrige relojes antes de tolerancias y comprueba el puerto real.
+
+## La aplicación no conecta
+
+Confirma SOCKS5 en `127.0.0.1:1080`, luego DNS y acceso desde el servidor al destino. `socks5h` pasa el dominio al proxy.
+
+## TCP funciona, UDP no
+
+Revisa `udp_transport`. QUIC necesita `udp_listen`, puerto UDP abierto y sitio QUIC/HTTP/3 accesible. Activa UDP en el cliente y prueba una aplicación UDP aparte.
+
+## Aparece el sitio de cobertura
+
+Es normal en un navegador o una sonda sin autenticar. Prueba el proxy con el cliente Umbra configurado y SOCKS5 local.
+
+## La conexión es lenta
+
+Compara el mismo destino, carga y ruta. Consulta diagnósticos, ventanas, colas y presupuestos junto a CPU y memoria del sistema. La referencia de rendimiento explica las métricas.
+
+## Informar del problema
+
+Incluye versiones, sistema, fase, comandos y errores sin secretos y pasos mínimos. Retira claves, credenciales, direcciones y contenido de usuarios. Para vulnerabilidades, sigue el canal de seguridad.
 
 ## Siguientes pasos
 
-- [Configuración del servidor](/es/docs/configuration/server/)
-- [Configuración del cliente](/es/docs/configuration/client/)
-- [Rendimiento y políticas](/es/docs/reference/configuration/)
+- [Referencia de configuración del servidor](/es/docs/configuration/server/)
+- [Referencia de configuración del cliente](/es/docs/configuration/client/)
+- [Parámetros de rendimiento y transporte](/es/docs/reference/configuration/)

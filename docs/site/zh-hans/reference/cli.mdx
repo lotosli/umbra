@@ -1,7 +1,7 @@
 ---
 id: "reference/cli"
-title: "CLI 命令参考"
-description: "server、client、keygen 子命令及其选项。"
+title: "命令行参考"
+description: "查阅 server、client、keygen 命令及其选项。"
 section: "reference"
 order: 14
 version: "1.0.0-alpha"
@@ -9,15 +9,9 @@ source: ["crates/umbra/src/main.rs", "README.md"]
 translation: "complete"
 ---
 
-## 概览
+Umbra 使用三个子命令完成日常操作：`server` 启动服务端，`client` 启动本地 SOCKS5 代理，`keygen` 生成身份密钥。
 
-Umbra 提供三个子命令：server 启动服务端监听与运行时，client 启动本地 SOCKS 代理，keygen 向标准输出写入新身份材料。使用 umbra --help 和各子命令 --help 查看已安装程序实际支持的选项；若使用不同版本，应以对应二进制与版本文档为准。
-
-## 详细说明
-
-使用 -c 或 --config 读取 TOML。命令行值覆盖匹配的文件字段，省略的选项保持原值。服务端 short ID 和 server name 接受逗号分隔列表。--mux 与 --prebuild 等布尔选项需要显式布尔值。performance 参数放在 TOML 表中，CLI 并不为每个嵌套性能字段提供开关。
-
-### 帮助与身份生成
+## 查看帮助
 
 ```sh
 umbra --help
@@ -26,51 +20,66 @@ umbra client --help
 umbra keygen
 ```
 
+已安装版本的具体选项可通过对应的 `--help` 查看。
 
-### umbra server
+## 读取和覆盖配置
+
+使用 `-c` 或 `--config` 指定 TOML 文件。命令行选项覆盖对应字段；未提供的选项继续使用文件值。
+
+服务端的 `--short-ids` 和 `--server-names` 接受逗号分隔的列表。`--mux`、`--prebuild` 需要显式填写 `true` 或 `false`。性能选项通过 TOML 的 `[performance]` 表设置。
+
+## 启动服务端
+
+```sh
+umbra server -c server.toml
+```
 
 | 命令 / 选项 | 用途 |
 |---|---|
 | `-c, --config` | `server.toml` |
-| `--listen` | TCP 数字监听地址 |
+| `--listen` | TCP 监听地址，IP:端口 |
 | `--udp-listen` | 覆盖配置文件中的 QUIC UDP 监听地址 |
-| `--private-key` | X25519 私钥，base64 解码为准确32字节 |
-| `--short-ids` | 非空十六进制 ID 列表；每项0–8字节 |
-| `--dest` | 真实回落目标，host:port |
-| `--server-names` | 非空的允许 SNI 列表 |
-| `--max-time-diff` | 允许的时间戳偏差，至少1秒 |
-| `--mldsa-seed` | ML-DSA 签名种子，base64 解码为32字节 |
+| `--private-key` | X25519 私钥，Base64 解码后为 32 字节 |
+| `--short-ids` | 至少一个十六进制 ID；每项 0–8 字节 |
+| `--dest` | 掩护网站地址，host:port |
+| `--server-names` | 允许的掩护网站域名列表 |
+| `--max-time-diff` | 允许的时间戳偏差，至少 1 秒 |
+| `--mldsa-seed` | ML-DSA 签名种子，Base64 解码后为 32 字节 |
 | `--prebuild` | 周期刷新目标；启动探测始终执行 |
-| `--padding-scheme` | 内层填充策略 |
-| `--tcp-evasion` | ClientHello 有序分块写入策略 |
+| `--padding-scheme` | 业务数据填充策略 |
+| `--tcp-evasion` | TLS 握手消息分块写入策略 |
 
+## 启动客户端
 
-### umbra client
+```sh
+umbra client -c client.toml
+```
 
 | 命令 / 选项 | 用途 |
 |---|---|
 | `-c, --config` | `client.toml` |
 | `--server` | Umbra 服务端，host:port |
-| `--transport` | 主要外层传输：tcp 或 quic |
+| `--transport` | TCP 请求的传输：tcp 或 quic |
 | `--udp-transport` | 覆盖 UDP 传输：tcp 或 quic |
-| `--public-key` | 服务端 X25519 公钥，base64 解码为32字节 |
+| `--public-key` | 服务端 X25519 公钥，Base64 解码后为 32 字节 |
 | `--short-id` | 服务端允许的一个 short ID |
-| `--server-name` | 服务端允许的 SNI |
-| `--fingerprint` | 内置指纹档案名称 |
-| `--mldsa-verify` | 服务端 ML-DSA 验证密钥，非空 base64 |
-| `--socks-listen` | 本地 SOCKS5 地址，免认证 |
-| `--spider-path` | 真实站点路径；以 / 开头，无 CR/LF |
+| `--server-name` | 服务端允许的掩护网站域名 |
+| `--fingerprint` | 浏览器握手档案名称 |
+| `--mldsa-verify` | 服务端 ML-DSA 验证密钥，非空 Base64 值 |
+| `--socks-listen` | 本地 SOCKS5 地址，无密码认证 |
+| `--spider-path` | 真实网站访问路径；以 / 开头，不含回车或换行 |
 | `--mux` | 加密多路复用；false 选择独立 TCP/Vision |
-| `--padding-scheme` | 内层填充策略 |
-| `--tcp-evasion` | ClientHello 有序分块写入策略 |
+| `--padding-scheme` | 业务数据填充策略 |
+| `--tcp-evasion` | TLS 握手消息分块写入策略 |
 
+## 生成密钥
 
-## 验证与边界
+`umbra keygen` 输出 `x25519_private`、`x25519_public`、`mldsa_seed`、`mldsa_verify` 四项 Base64 值，无需额外选项。按[快速开始](/zh-hans/docs/getting-started/quick-start/)分配到两端配置。
 
-keygen 没有额外选项，输出四项 base64：x25519_private、x25519_public、mldsa_seed、mldsa_verify。输出包含秘密，应在私密终端生成并写入受保护文件。避免使用会被 shell 历史或进程列表记录的私密参数。下表列出实际配置相关选项，程序不包含登录、云账户、数据库迁移或自动安装系统服务命令。命令启动成功后仍应验证实际应用链路。
+输出中包含私钥。请保存在受保护的文件中；日常启动也优先使用配置文件，避免秘密值出现在命令历史或进程参数中。
 
 ## 下一步
 
-- [服务端配置](/zh-hans/docs/configuration/server/)
-- [客户端配置](/zh-hans/docs/configuration/client/)
-- [性能与策略参考](/zh-hans/docs/reference/configuration/)
+- [服务端配置参考](/zh-hans/docs/configuration/server/)
+- [客户端配置参考](/zh-hans/docs/configuration/client/)
+- [性能与传输参数](/zh-hans/docs/reference/configuration/)

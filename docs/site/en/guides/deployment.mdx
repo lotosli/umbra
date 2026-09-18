@@ -1,7 +1,7 @@
 ---
 id: "guides/deployment"
-title: "Deploy and operate"
-description: "Run the server as a service and manage its resources."
+title: "Deploy and maintain Umbra"
+description: "Run a background service and manage ports, configuration and resources."
 section: "guides"
 order: 6
 version: "1.0.0-alpha"
@@ -9,17 +9,19 @@ source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
 ---
 
-## Overview
+Verify a foreground connection first. On Linux, systemd can manage the server and journald can collect its logs.
 
-First verify a foreground server and client using the same release. On Linux, a systemd unit can supervise the server and collect stderr through journald. Use absolute paths for both the binary and server.toml. Keep the identity file readable only by the service identity and administrators. Configure the service identity and any low-port binding permission for your host rather than assuming every distribution has identical defaults.
+## Prepare the files and user
 
-## Details
+Create a dedicated `umbra` user. Install the binary at `/usr/local/bin/umbra` and the configuration at `/etc/umbra/server.toml`. Only the service user and administrators should read it. Adjust the absolute paths and user below to match your installation.
 
-Open the configured public TCP port. Open UDP only if udp_listen is enabled and native QUIC is intended. If a separate layer-4 frontend owns the public port, bind backend listeners to loopback and configure transparent TCP/QUIC forwarding there. Internal backend ports do not need public firewall rules. A basic HTTP reverse proxy is not a replacement for the transport forwarding that Umbra requires.
+## Configure the network
 
-### Service unit example
+Open the TCP port configured in `listen`. For QUIC, also configure `udp_listen` and open the matching UDP port. If a layer-4 frontend owns the public port, bind Umbra to loopback and forward TCP/QUIC transparently. Keep backend ports private. This requires transport-aware forwarding rather than an ordinary HTTP reverse-proxy configuration.
 
-Save this unit as `/etc/systemd/system/umbra-server.service`. It assumes a dedicated Linux user named `umbra` already exists, the binary is installed at `/usr/local/bin/umbra`, and `/etc/umbra/server.toml` is readable by that user. Create the service identity and install those files using your host’s administration tools before enabling the unit; adjust the paths and user if your deployment differs.
+## Create the service
+
+Save as `/etc/systemd/system/umbra-server.service`:
 
 ```ini
 [Unit]
@@ -41,8 +43,9 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 ```
 
+`CAP_NET_BIND_SERVICE` permits binding low ports such as 443. Check the user, file paths and permissions before enabling the service.
 
-### Service controls
+## Start and inspect
 
 ```sh
 sudo systemctl daemon-reload
@@ -50,13 +53,14 @@ sudo systemctl enable --now umbra-server
 sudo journalctl -u umbra-server -f
 ```
 
+Make a client request to confirm background operation works.
 
-## Verify
+## Plan resources and maintenance
 
-Budget memory with operating-system headroom. The documented throughput deployment assumes at least 1 GiB of physical server RAM; performance.memory_mib is a logical application commitment ceiling, not a process RSS limit. Default diagnostics are disabled. Enable a bounded diagnostics interval only when investigating performance and interpret counters as observations, not proof of remote delivery. Restart deliberately after configuration changes and keep a previously verified binary available for rollback.
+Current throughput tuning assumes at least 1 GiB of server RAM. Leave room for the OS, kernel buffers and other services when setting application budgets. Diagnostics are disabled by default; enable them when investigating a problem. Restart after configuration changes and verify a request. Keep the previous binary and configuration for rollback.
 
 ## Next steps
 
-- [Performance and policy reference](/en/docs/reference/configuration/)
+- [Performance and transport settings](/en/docs/reference/configuration/)
 - [Troubleshooting](/en/docs/troubleshooting/)
 - [Upgrade Umbra](/en/docs/guides/upgrade/)

@@ -315,7 +315,7 @@ function HomePage({ locale }: { locale: Locale }) {
         <EclipseMark />
         <h2>{copy.cta.title}</h2>
         <p>{copy.cta.description}</p>
-        <a className="button button-primary" href={localePath(locale, 'docs')}>
+        <a className="button button-primary" href={localePath(locale, 'docs/getting-started/quick-start')}>
           {copy.hero.start}
           <ArrowRight size={17} />
         </a>
@@ -397,7 +397,7 @@ function DownloadPage({ locale }: { locale: Locale }) {
             className="text-link"
             href={localePath(locale, 'docs/getting-started/installation')}
           >
-            {copy.nav.docs}
+            {copy.download.read}
             <ArrowRight size={16} />
           </a>
         </div>
@@ -463,7 +463,7 @@ function ProtocolPage({ locale }: { locale: Locale }) {
         className="button button-primary"
         href={localePath(locale, 'docs/reference/protocol')}
       >
-        {copy.nav.docs}
+        {copy.protocol.read}
         <ArrowRight size={16} />
       </a>
     </div>
@@ -493,7 +493,7 @@ function SecurityPage({ locale }: { locale: Locale }) {
             className="text-link"
             href={localePath(locale, 'docs/concepts/security-model')}
           >
-            {copy.nav.docs}
+            {copy.security.read}
             <ArrowRight size={16} />
           </a>
         </div>
@@ -509,7 +509,7 @@ function SecurityPage({ locale }: { locale: Locale }) {
       <section className="disclosure-panel">
         <h2>{copy.security.disclosure}</h2>
         <p>{copy.security.disclosureDescription}</p>
-        <a className="text-link" href={repositoryUrl}>
+        <a className="text-link" href={`${repositoryUrl}/security`}>
           {copy.security.source}
           <ArrowUpRight size={16} />
         </a>
@@ -560,14 +560,14 @@ function ChangelogPage({
                   : localePath(locale, `changelog/${releaseVersion}`)
               }
             >
-              {copy.changelog.read}
+              {releaseDetail ? copy.changelog.externalRead : copy.changelog.read}
               <ArrowUpRight size={16} />
             </a>
             <a
               className="text-link"
               href={localePath(locale, 'docs/guides/upgrade')}
             >
-              {copy.nav.docs}
+              {copy.changelog.upgradeRead}
               <ArrowRight size={16} />
             </a>
           </div>
@@ -578,18 +578,18 @@ function ChangelogPage({
                 className="text-link"
                 href={`${repositoryUrl}/blob/main/README.md`}
               >
-                README
+                {copy.changelog.sourceRead}
                 <ArrowUpRight size={14} />
               </a>
               <a
                 className="text-link"
                 href={`${repositoryUrl}/blob/main/docs/performance.md`}
               >
-                docs/performance.md
+                {copy.changelog.performanceRead}
                 <ArrowUpRight size={14} />
               </a>
               <a className="text-link" href={localePath(locale, 'changelog')}>
-                {copy.nav.changelog}
+                {copy.changelog.back}
                 <ArrowRight size={14} />
               </a>
             </section>

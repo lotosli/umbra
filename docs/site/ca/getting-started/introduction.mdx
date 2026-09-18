@@ -1,7 +1,7 @@
 ---
 id: "getting-started/introduction"
-title: "Per què triar Umbra"
-description: "Coneix la cobertura amb un lloc real, els camins TCP i QUIC, la integració amb clients existents i quan et pot convenir Umbra."
+title: "Coneix Umbra"
+description: "Allotja el teu servidor intermediari, connecta-hi les aplicacions i tria TCP o QUIC."
 section: "getting-started"
 order: 1
 version: "1.0.0-alpha"
@@ -9,60 +9,37 @@ source: ["README.md", "docs/usage.md", "docs/performance.md"]
 translation: "complete"
 ---
 
-## Visió general
+Umbra és un servidor intermediari de codi obert que allotges tu mateix. Executa el servidor a la teva infraestructura i el client al dispositiu, i connecta les aplicacions al seu punt d'accés SOCKS5 local. Tu tries el servidor, el transport i les aplicacions que l'utilitzen.
 
-Umbra és una eina de transport de codi obert orientada a la privadesa i pensada per a nodes que allotges tu mateix. Executes el mateix binari en modes diferents al servidor i als teus dispositius, i les aplicacions s’hi connecten mitjançant una entrada SOCKS5 local. Reuneix la cobertura amb un lloc real, TLS 1.3/TCP i QUIC en un mateix conjunt de client i servidor perquè puguis triar la connexió adequada a les condicions de la xarxa.
+## Per què Umbra?
 
-No és un servei VPN a punt per fer servir: no ofereix subscripcions a nodes ni es fa càrrec automàticament de tot el trànsit del sistema després d’instal·lar-lo. Necessites un servidor accessible, configuració als dos extrems i aplicacions o un client de servidor intermediari que puguin utilitzar SOCKS5. El projecte està destinat a la protecció legal de la privadesa i a l’accés a la internet oberta.
+### Un lloc web real com a cobertura
 
-## Què aporta Umbra a la pràctica
+El teu client s'autentica per establir la connexió. La resta de connexions es reenvien al lloc web configurat i en reben la resposta habitual.
 
-### No exposar directament l’entrada del servidor intermediari als sondejos
+### Una entrada per a TCP i UDP
 
-El servidor comprova primer la identitat de la connexió. El trànsit que no supera l’autenticació es reenvia al lloc real de destinació configurat, en lloc de rebre un rebuig característic d’un servidor intermediari. Per a l’usuari, això vol dir que el desplegament no es limita a «xifrar el trànsit», sinó que també té en compte què veu un observador extern quan s’hi connecta activament. No garanteix que la IP del node no es bloquegi ni que el trànsit sigui absolutament indetectable.
+Un sol client i un sol servidor poden enviar les peticions TCP per TCP i les UDP per QUIC. Les aplicacions continuen fent servir una única adreça SOCKS5.
 
-### Una configuració per a TCP i UDP
+### Menys feina repetida
 
-Un sol client pot enviar les peticions TCP per TCP/Vision i les peticions UDP per QUIC, tot oferint a les aplicacions una única entrada SOCKS5. Al servidor també n’hi ha prou amb una sola instància que escolti simultàniament TCP i UDP. No cal mantenir dos nodes intermediaris locals per a aquests dos tipus de trànsit.
+La multiplexació permet reutilitzar connexions. Vision pot reenviar directament registres TLS 1.3 ja xifrats que compleixin les condicions necessàries, reduint el xifratge extern i l'encapsulació.
 
-Si la xarxa no permet UDP, pots començar amb TCP; si les connexions TCP pateixen reinicialitzacions i UDP és accessible, pots provar QUIC. És una tria explícita de configuració, no una commutació automàtica en cas de fallada. Que QUIC sigui més ràpid depèn del camí de xarxa, i no es pot deduir només del nom del protocol.
+### Conserva les eines habituals
 
-### Triar els costos de processament segons la connexió
+Les aplicacions amb SOCKS5 s'hi connecten directament. Un client compatible amb Clash pot mantenir la interfície i les regles mentre Umbra gestiona la connexió remota. Tampoc cal sol·licitar ni renovar un certificat d'una CA pública per al node Umbra.
 
-El mode de multiplexació TCP permet que diverses peticions comparteixin una connexió exterior, cosa que redueix la necessitat d’establir connexions repetidament. Per al trànsit TLS 1.3 intern que compleix els requisits, el mode Vision dedicat reenvia els registres que ja estan xifrats després d’una negociació autenticada, per reduir el doble xifratge i l’encapsulació addicional; la resta del trànsit continua xifrada.
+## Què necessites
 
-Els dos modes tenen contrapartides diferents: la multiplexació comparteix la connexió, però també les esperes causades per les pèrdues de paquets TCP; Vision utilitza connexions dedicades. Actualment no hi ha cap comparació de rendiment amb altres servidors intermediaris en condicions uniformes, de manera que aquests mecanismes no permeten afirmar que Umbra sigui més ràpid.
+Un servidor accessible, la mateixa versió d'Umbra als dos extrems, un lloc TLS 1.3 real accessible des del servidor i una aplicació amb SOCKS5. Umbra funciona des de la línia d'ordres, amb llicència MIT i sense compte d'Umbra. Tu proporciones i mantens el servidor. Els nodes VLESS, VMess i Trojan continuen amb els seus clients; una connexió Umbra necessita Umbra a tots dos extrems.
 
-### Conservar el client de servidor intermediari que ja coneixes
+## Comença amb una aplicació
 
-Els clients de tipus Clash que admeten sortides SOCKS5 poden utilitzar Umbra local com a node i continuar gestionant les regles, l’encaminament per aplicació i la interfície. Umbra s’encarrega del transport remot, sense exigir que reorganitzis el sistema de regles existent.
-
-Això no vol dir que hi hagi compatibilitat nativa amb VLESS, VMess o Trojan: a l’altre extrem cal executar un servidor Umbra, i els nodes d’aquests protocols no es poden importar directament com a nodes Umbra. Consulta la guia de [connexió de clients](/ca/docs/guides/client/).
-
-## Quan pot ser adequat
-
-| La teva necessitat | Recomanació |
-| --- | --- |
-| Allotjar el teu propi node, prioritzar la cobertura amb un lloc real i treballar amb la línia d’ordres | Pots provar Umbra i validar primer la connexió d’una sola aplicació |
-| Fer servir una mateixa entrada per a TCP i UDP sobre QUIC, amb camins separats | Utilitza la configuració de transport mixt en una sola instància |
-| Conservar les regles i la interfície d’un client de tipus Clash existent | Connecta’l a Umbra mitjançant un node SOCKS5 local |
-| Utilitzar directament subscripcions VLESS / VMess existents | Conserva el client compatible; Umbra no és un complement per substituir protocols |
-| Disposar d’un client gràfic consolidat, nodes preparats o una solució de producció auditada | No migris a la versió alpha actual només per la llista de funcions |
-
-Per entendre’n les diferències, llegeix la [comparació amb Xray, VMess i altres solucions](/ca/docs/reference/protocol/). La comparació tracta combinacions concretes de protocols, sense ordenar tots els servidors intermediaris en una classificació simplista de millors i pitjors.
-
-## Què cal saber abans de començar
-
-- La versió actual és **1.0.0-alpha**. Has d’avaluar l’estabilitat d’aquest programari preliminar; que el codi sigui obert no vol dir que s’hagi completat una auditoria de seguretat independent.
-- La pàgina d’instal·lació enumera les plataformes de compilació macOS, Linux i Windows; els fitxers que realment es poden descarregar depenen de cada versió publicada.
-- L’entrada SOCKS5 local no té autenticació amb contrasenya; mantén l’escolta a l’adreça de bucle local `127.0.0.1:1080`.
-- Continua utilitzant HTTPS a la capa d’aplicació. El transport intermediari no proporciona anonimat complet ni pot protegir un dispositiu o navegador ja compromès.
-- `chrome-latest` fa servir actualment un perfil històric de Chrome 150; les captures de Chrome 153 no demostren una coincidència completa amb l’empremta del navegador.
-- El codi font té llicència MIT i no cal registrar cap compte al núvol d’Umbra. El servidor, la xarxa i el manteniment diari continuen sent responsabilitat teva.
+Segueix l'inici ràpid abans d'afegir regles o QUIC. Tu decideixes quines aplicacions utilitzen el servidor intermediari. La versió actual és **1.0.0-alpha**: conserva un programa i una configuració que funcionin. L'entrada local no té contrasenya; limita-la a `127.0.0.1:1080`. El model de seguretat n'explica els detalls.
 
 ## Passos següents
 
-1. [Instal·lar el client i el servidor](/ca/docs/getting-started/installation/).
-2. [Generar les claus i establir la primera connexió](/ca/docs/getting-started/quick-start/).
-3. [Connectar aplicacions o un client de tipus Clash](/ca/docs/guides/client/).
-4. [Triar TCP, Vision o QUIC](/ca/docs/concepts/transports/) i llegir el [model de seguretat](/ca/docs/concepts/security-model/).
+1. [Instal·lar Umbra](/ca/docs/getting-started/installation/).
+2. [Inici ràpid](/ca/docs/getting-started/quick-start/).
+3. [Connectar aplicacions i clients compatibles amb Clash](/ca/docs/guides/client/).
+4. [Triar TCP, Vision o QUIC](/ca/docs/concepts/transports/) i llegir el [Model de seguretat](/ca/docs/concepts/security-model/).

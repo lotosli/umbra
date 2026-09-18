@@ -144,7 +144,7 @@ describe('file-route locale and canonical request boundaries', () => {
     state.pathname = '/';
     expect(markup(rootRoute)).toContain('<html lang="en"');
     const head = options(rootRoute).head!({});
-    expect(head.links).toContainEqual({ rel: 'manifest', href: '/manifest.webmanifest' });
+    expect(head.links).toContainEqual({ rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' });
     expect(head.meta).toContainEqual({ charSet: 'utf-8' });
   });
 

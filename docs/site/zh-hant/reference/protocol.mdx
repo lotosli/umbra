@@ -1,7 +1,7 @@
 ---
 id: "reference/protocol"
-title: "Umbra 與主流代理方案比較"
-description: "從真實站點掩護、憑證維護、TCP/UDP 路徑和用戶端接入，比較 Xray、VMess、Trojan、Shadowsocks 與 Hysteria 2。"
+title: "代理方案對比"
+description: "從部署方式、傳輸路徑和應用程式連接，比較常見方案。"
 section: "reference"
 order: 16
 version: "1.0.0-alpha"
@@ -9,94 +9,64 @@ source: ["README.md", "docs/usage.md", "docs/performance.md", "crates/umbra-core
 translation: "complete"
 ---
 
-## 概覽
+選型時先看三件事：網路允許哪些連線、準備如何維護伺服器，以及現有應用程式如何連接。Umbra 將網站掩護、TCP/Vision、QUIC 和 SOCKS5 入口放在一套用戶端與伺服器端中，適合希望自行管理這套連線的使用者。
 
-選代理方案，先看它是否適合你的網路、應用程式和維護方式，而不是演算法數量或測試覆蓋率。Umbra 的定位是自建隱私傳輸：把真實站點掩護、TCP/Vision、QUIC 與本地 SOCKS5 入口整合在一套用戶端和伺服器端裡。
+以下按 Umbra 1.0.0-alpha 和列出的官方資料說明功能差異。Xray 一欄限定為 VLESS + REALITY + Vision 的 TCP 組合，便於與具體部署方式對照。
 
-**比較範圍：** Umbra 1.0.0-alpha；其他專案以 2026-09-16 查閱的官方資料為準。這是功能與部署方式對照，不是速度測試、安全排名或匿名性保證。後續版本和不同用戶端可能改變具體行為。
+## 部署與傳輸對照
 
-Xray 是支援多協議與路由的代理平台；VMess、VLESS 和 Trojan 是協議。為了可比，下文將 Xray 明確限定為常見的 **VLESS + REALITY + Vision，RAW/TCP 外層**。不能把一種設定的限制說成整個 Xray 的限制。
-
-## 選型速覽
-
-| 方案 | 外層連線與站點行為 | 部署維護 | TCP 與 UDP |
+| 方案 | 主要特點 | 部署要點 | TCP 與 UDP |
 | --- | --- | --- | --- |
-| **Umbra** | REALITY 風格真實站點掩護；未認證連線轉發目標站點 | 自建兩端、身分金鑰與可達真實站點；無需自行申請節點 CA 憑證；目前為 alpha | TCP/Vision、TCP mux 或 QUIC；一個 SOCKS5 入口可讓 TCP 與 UDP 分別選擇外層 |
-| **Xray + VLESS + REALITY + Vision** | 借用真實站點身分，Vision 處理適用的內層 TLS 流量 | 維護 Xray 設定、金鑰和目標站點；不必為 REALITY 節點自行申請憑證 | 此處比較 TCP 外層；也能代理 UDP 請求，受 flow 與用戶端設定影響 |
-| **VMess AEAD** | 自身提供加密代理；TLS、WebSocket 等屬於另選的傳輸設定 | VMess 本身不要求網站憑證；疊加 TLS 時需設定相應身分驗證 | 支援 TCP 和 UDP 請求；實際外層取決於設定 |
-| **Trojan（原始 TLS 方案）** | 真實 TLS 握手；認證失敗或非 Trojan 請求可回落到 HTTP 服務 | 常見部署維護網域、TLS 憑證和私鑰；憑證不等於需要付費購買 | TCP 與 UDP 請求均可代理，UDP 封裝在 TLS/TCP 中 |
-| **Shadowsocks AEAD / 2022** | 原生加密 TCP/UDP；瀏覽器 TLS 和真實站點掩護不是基礎協議自帶能力 | 無需網站網域或 TLS 憑證；維護金鑰和相符用戶端，外掛另行設定 | 原生支援 TCP/UDP；不能把僅轉發 TCP 的 SIP003 外掛當成 UDP 偽裝 |
-| **Hysteria 2** | QUIC/UDP；未認證時具有 HTTP/3 網站行為 | 需要可用 UDP 路徑和 TLS 設定，可使用憑證檔案或 ACME | TCP 使用 QUIC 串流，UDP 使用不可靠資料報；不是 TCP 外層方案 |
+| Umbra | 實際網站掩護；一個本機入口可設定兩條傳輸路徑 | 自建兩端，管理金鑰和掩護網站；不必申請節點 CA 憑證 | TCP 可選連線重複使用或 Vision；UDP 可單獨使用 QUIC |
+| Xray + VLESS + REALITY + Vision | 在 Xray 中組合 REALITY 與 Vision | 設定核心、金鑰和目標網站，配合支援相應設定的用戶端 | 此處為 TCP 外層；UDP 請求按 flow 和用戶端設定處理 |
+| VMess AEAD | 協議提供加密，可搭配不同傳輸 | 使用支援對應協議與傳輸的用戶端；疊加 TLS 時設定相應認證 | 支援 TCP、UDP 請求，外層由設定決定 |
+| Trojan | 使用 TLS，並支援未認證請求轉送到網站服務 | 常見部署維護網域名稱、憑證和私密金鑰 | TCP 與 UDP 請求通過 TLS/TCP 承載 |
+| Shadowsocks AEAD / 2022 | 基於金鑰的加密代理 | 設定金鑰與匹配用戶端；額外插件依需求設定 | 基礎協議支援 TCP、UDP；插件支援範圍單獨確認 |
+| Hysteria 2 | 基於 QUIC；未認證時提供 HTTP/3 網站行為 | 需要可用的 UDP 路徑與 TLS 設定 | TCP 使用可靠 QUIC 流，UDP 使用不可靠資料報 |
 
-## 優勢與侷限
+對應的官方資料：[Xray VLESS/Vision](https://xtls.github.io/config/outbounds/vless.html)、[VMess](https://www.v2fly.org/developer/protocols/vmess.html)、[Trojan](https://trojan-gfw.github.io/trojan/protocol)、[Shadowsocks 2022](https://shadowsocks.org/doc/sip022.html)、[Hysteria 2](https://v2.hysteria.network/docs/developers/Protocol/)。
 
-這裡的每個方案都有各自適合的情境和代價。下面的清單濃縮了各方案的優勢與侷限，方便你按自己的網路條件和維護意願來匹配。
+## Umbra 可以簡化哪些工作
 
-- **Umbra** — 優勢：一個入口同時承載兩條路徑（TCP Vision 與 QUIC UDP），用戶端只需設定一個本地 SOCKS5 節點；身分金鑰與臨時憑證綁定免去了公網憑證的申請和續期；掩護、傳輸與 SOCKS5 以一套經過測試的用戶端和伺服器端整體交付。侷限：目前為 alpha 且僅有 CLI；不能匯入 VLESS、VMess 或 Trojan 節點；版本間的協議變化要求兩端同步升級。
-- **Xray + VLESS + REALITY + Vision** — 優勢：成熟的多協議平台，路由能力豐富、現成用戶端多、社群說明文件完善；REALITY 和 Vision 在這裡同樣可用。侷限：整套堆疊要自己組裝和維護——核心設定、傳輸層、路由規則和匹配的用戶端；共享機制不等於與 Umbra 互通。
-- **VMess AEAD** — 優勢：各平台用戶端覆蓋很廣，包括較舊和低效能裝置。侷限：協議負責加密，偽裝要另加——掩護完全取決於你疊加的傳輸層；舊的非 AEAD 模式已淘汰，請選用實作 AEAD 的用戶端。
-- **Trojan（原始 TLS 方案）** — 優勢：真實 TLS 握手，回落行為有文件說明，設計多年穩定。侷限：常見部署要維護網域並續期公開可信的憑證；UDP 封裝在 TLS over TCP 內，UDP 時延跟隨 TCP 路徑。
-- **Shadowsocks AEAD / 2022** — 優勢：元件最少——金鑰加匹配用戶端即可，無需網域或憑證；原生支援 TCP 和 UDP。侷限：基礎協議提供加密而非偽裝，需要掩護時外掛要單獨評估；不能把僅轉發 TCP 的 SIP003 外掛當成 UDP 偽裝。
-- **Hysteria 2** — 優勢：面向有損網路設計的不可靠資料報 UDP 路徑，壅塞控制針對惡劣條件調校；未認證時表現為 HTTP/3 網站。侷限：UDP 被封鎖或受限時失去主要優勢；TCP 仍以 QUIC 串流承載，丟包同樣可能阻塞串流，其設計也不保證在你的網路上更快。
+### 兩條路徑，共用一個本機入口
 
-## Umbra 值得考慮的地方
+設定 `transport = "tcp"`、`udp_transport = "quic"` 和 `mux = false` 後，TCP 請求使用 Vision，UDP 請求使用 QUIC。應用程式只需要一個 SOCKS5 代理位址，兩端各執行一個 Umbra 執行個體。
 
-### 把兩條傳輸路徑放進一個入口
+### 減少憑證維護
 
-一個 Umbra 用戶端可以設定 `transport = "tcp"`、`udp_transport = "quic"`、`mux = false`，讓 TCP 使用 Vision、UDP 使用 QUIC；同一個伺服器端同時開放 TCP 與 UDP。現有用戶端只連線一個本地 SOCKS5 節點，不必把兩條路徑拆成兩套 Umbra 行程。
+Umbra 使用身分金鑰和暫時憑證繫結，節點不必自行申請和續期公開網路 CA 憑證。你維護兩端金鑰，並選擇可達的實際網站。啟用 QUIC 時，目標網站也需要支援 QUIC。
 
-這是設定和使用上的便利，不代表其他平台無法透過不同出站或路由達到相近效果。Umbra 不會自動判斷哪條路徑最快，也不提供自動 TCP/QUIC 故障切換。
+### 沿用應用程式與規則
 
-### 減少符合條件流量的重複處理
+支援 SOCKS5 的應用程式可直接連接；Clash 類用戶端可以保留規則和介面，將遠端傳輸交給 Umbra。連線兩端使用 Umbra，現有其他協議節點仍由對應用戶端處理。
 
-TCP/Vision 在完成認證邊界交換後，可以直接轉發符合條件的內層 TLS 1.3 加密記錄，省去後續外層 TLS 加密與額外封裝。非 TLS 和不支援的 TLS 仍保持加密。TCP mux 則讓多個請求共用外層連線，減少重複建立連線的需求。
+### 按請求選擇連線方式
 
-REALITY 和 Vision 都不是 Umbra 獨有的概念，不能用它們聲稱全面優於 Xray。這裡是使用者態轉發，不是核心零複製；沒有統一環境下的競品基準測試，就不寫「更快多少」。
+TCP mux 重複使用連線，減少重複建連；獨立 Vision 連線針對符合條件的 TLS 1.3 流量減少重複加密。選擇方法見[傳輸模式](/zh-hant/docs/concepts/transports/)。
 
-### 不必自行維護節點的公網憑證
+## 按已有環境選擇
 
-Umbra 使用身分金鑰和臨時憑證綁定，部署時不要求自己申請或續期公網 CA 憑證。你仍要管理伺服器端秘密、用戶端認證資料和可存取的真實目標站點。啟用 QUIC 時還要滿足真實 QUIC 回落與 UDP 可達性要求。
+- **已經使用 Xray 與 REALITY：** 先評估現有路由、用戶端和設定管理需求。Umbra 的重點是一套用戶端與伺服器端中的單入口雙傳輸體驗。
+- **已有 VMess 應用程式：** 確認正在使用的傳輸組合和用戶端支援，再評估遷移工作量。
+- **希望按常規 TLS 服務維護：** 可以瞭解 Trojan 的憑證與轉送部署方式。
+- **希望採用金鑰設定的加密代理：** 可以瞭解 Shadowsocks，並依需求要評估額外插件。
+- **主要考慮 QUIC 路徑：** 對照 Hysteria 2 的資料報與 Umbra 的可靠流方式，測試實際 UDP 應用程式的表現。
 
-同樣，REALITY 組合也能減少這類憑證維護，Shadowsocks 原生部署也不依賴網站憑證。這是一種部署取捨，不是 Umbra 獨佔的優勢。
+Umbra 目前以 Alpha 命令列程式交付。選型還應考慮圖形介面、移動端與訂閱管理等現有需求。
 
-## 按現有方案判斷是否遷移
+## UDP 的一個關鍵差別
 
-- **已經使用 Xray / VLESS / REALITY：** 若依賴多協議、複雜路由與現有用戶端生態，不必只為同類掩護機制遷移。選擇 Umbra 的理由應是它的單一執行個體雙傳輸方式適合你的使用，而不是「REALITY 更高級」。
-- **已經使用 VMess：** 先確認實際是何種 TLS、WebSocket 或其他承載。不能僅憑 VMess 名稱推斷明文、缺少偽裝或無法傳輸 UDP。Umbra 不能直接匯入 VMess 節點。
-- **希望維護標準 TLS 服務：** Trojan 的真實 TLS 和回落有明確部署方式；不要把它描述成沒有探測抵抗。它與 Umbra 的區別包括憑證維護和 UDP 承載路徑。
-- **只需要輕量加密代理：** Shadowsocks 可能更貼近需求。AEAD 與 2022 應按版本討論，2022 包含完整重放保護；外掛能力不等於基礎協議能力。
-- **主要考慮 QUIC 與有損網路：** 可以同時評估 Hysteria 2。它的 UDP 使用不可靠資料報，Umbra 目前把 UDP 關聯資料封裝在可靠 QUIC 串流內；丟包時同一串流仍可能等待重傳，不能宣傳「所有 UDP 都沒有隊頭阻塞」。是否更適合遊戲、通話或下載，需要實際路徑測試。
-- **需要成熟圖形介面、行動端或現成訂閱：** 先確認具體用戶端與版本。Umbra 目前是 CLI 傳輸工具，可接入支援 SOCKS5 的規則用戶端，但不自帶這些生態能力。
+Hysteria 2 使用不可靠資料報承載 UDP；Umbra 目前把 UDP 關聯資料封裝在可靠 QUIC 流中。前者允許丟失資料報，後者會在同一流中等待缺失資料重傳。對通話、遊戲或其他即時應用程式，應在實際網路上比較延遲與丟包表現。[Hysteria 2 協議](https://v2.hysteria.network/docs/developers/Protocol/)
 
-## 已實作的連線流程
+## 進一步瞭解 Umbra
 
-1. **建立外層握手。** TCP 用戶端自行建構 TLS 1.3 ClientHello 與記錄；原生 QUIC 使用 Quinn。認證資料與 ClientHello 綁定，放入 `legacy_session_id`。
-2. **判斷連線身分。** 伺服器端在選擇認證傳輸路徑前檢查資料；未認證連線走設定的真實目標。用戶端驗證臨時憑證的綁定資訊，避免把一般真實站點當成 Umbra 伺服器端。
-3. **傳輸應用程式請求。** 認證後的連線根據模式承載位址、串流與填充；Vision 只在滿足條件並完成協商後切換轉發方式。
+連線流程見[架構與連線流程](/zh-hant/docs/concepts/architecture/)，瀏覽器檔案、密碼學協商和防護範圍見[安全模型](/zh-hant/docs/concepts/security-model/)。目前可用功能不包含 Geneva DSL、0-RTT 或轉送預連線。
 
-真實站點回落不保證永遠無法識別。目標站點故障、網路條件、逾時及觀察者能力都會影響實際表現，伺服器 IP 也可能被直接封鎖。
-
-## 瀏覽器指紋與後量子邊界
-
-- `chrome-latest` 仍使用歷史 Chrome 150 設定檔。擴充順序、GREASE、JA3/JA4 檢查和 Chrome 153 實際取樣，均不能單獨證明與目前瀏覽器完整等價。
-- ML-DSA-65 用於臨時憑證公鑰的簽章綁定，不意味著所有認證環節都變成後量子認證。
-- 程式碼具有 X25519 + ML-KEM-768 混合交換路徑，但只有實際協商混合群組時才使用該共享秘密。目前標準 CLI 的目標探測使用不支援 ML-KEM 的 ring 提供者，伺服器端跟隨探測群組，因此不能宣稱預設連線已經啟用混合後量子交換。
-- 目前 Xray REALITY 官方設定也包含可選 ML-DSA，以及與目標站點協商群組相關的混合交換支援。不能將後量子能力宣傳為 Umbra 獨有。
-- 目前 Umbra 不支援 Geneva DSL 傳送、0-RTT 或回落預連線；協議設計中的規劃不等於現有產品能力。
-
-## 官方比較依據
-
-下列連結為本頁其他方案的依據，查閱於 **2026-09-16**。Umbra 的依據為本頁中繼資料所列的 README、使用指南、效能說明和執行程式碼。
-
-- Xray：[REALITY 官方範例（固定修訂）](https://github.com/XTLS/REALITY/blob/431b6ff8c67cc18811d48b18df9ec28e1ecf57f7/README.md)、[REALITY 設定與後量子選項（固定修訂）](https://github.com/XTLS/Xray-docs-next/blob/9125d3237c2f1717425dc94f1b54d2743ec1797a/docs/config/transports/reality.md)、[VLESS / Vision 設定](https://xtls.github.io/config/outbounds/vless.html)、[路由](https://xtls.github.io/config/routing.html)。
-- VMess：[V2Fly 協議說明](https://www.v2fly.org/developer/protocols/vmess.html)、[Xray 傳輸分層](https://github.com/XTLS/Xray-docs-next/blob/main/docs/config/transport.md)。
-- Trojan：[協議](https://trojan-gfw.github.io/trojan/protocol)、[TLS 與伺服器端設定](https://trojan-gfw.github.io/trojan/config)。
-- Shadowsocks：[AEAD](https://shadowsocks.org/doc/aead.html)、[2022 / SIP022](https://shadowsocks.org/doc/sip022.html)、[SIP003 外掛邊界](https://shadowsocks.org/doc/sip003.html)。
-- Hysteria 2：[協議規範](https://v2.hysteria.network/docs/developers/Protocol/)、[伺服器端部署](https://v2.hysteria.network/docs/getting-started/Server/)、[用戶端模式](https://v2.hysteria.network/docs/advanced/Full-Client-Config/)。
+本文比較部署與使用方式。不同路徑下的速度和穩定性，採用相同負載進行實際測試後判斷。
 
 ## 下一步
 
 - [判斷 Umbra 是否適合你](/zh-hant/docs/getting-started/introduction/)
 - [選擇傳輸模式](/zh-hant/docs/concepts/transports/)
-- [接入應用程式與既有用戶端](/zh-hant/docs/guides/client/)
+- [連接應用程式與已有用戶端](/zh-hant/docs/guides/client/)
 - [瞭解安全模型](/zh-hant/docs/concepts/security-model/)

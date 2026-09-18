@@ -37,26 +37,30 @@ for (const locale of localeDefinitions) {
     await page.goto(`/${locale.id}/`);
     await expect(page.locator('.facts-strip')).toContainText('SOCKS5');
     await expect(page.locator('main')).not.toContainText(/90\s*[%％]/);
-    await page.getByRole('link', { name: marketingCopy[locale.id].hero.explore, exact: true }).click();
+    await page.locator('main').getByRole('link', { name: marketingCopy[locale.id].hero.explore, exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/${locale.id}/protocol/$`));
     await expect(page.locator('.layer-row')).toHaveCount(6);
     await expect(page.locator('.layer-list')).toContainText('VMess');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    await page.locator('main').getByRole('link', { name: marketingCopy[locale.id].nav.docs, exact: true }).click();
+    await page.locator('main').getByRole('link', { name: marketingCopy[locale.id].protocol.read, exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/${locale.id}/docs/reference/protocol/$`));
     const article = page.locator('article');
     await expect(article.locator('table tbody tr')).toHaveCount(6);
     for (const name of ['Umbra', 'Xray', 'VMess', 'Trojan', 'Shadowsocks', 'Hysteria']) {
       await expect(article.locator('table')).toContainText(name);
     }
-    await expect(article).toContainText('2026-09-16');
+    await expect(article).toContainText('1.0.0-alpha');
     await expect(article).not.toContainText('**');
     await expect(article.locator('a[href="https://shadowsocks.org/doc/sip022.html"]')).toBeVisible();
-    await expect(article).toContainText('ML-KEM');
+
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     const index = await request.get(`/search/${locale.id}.json`);
     const entries = await index.json() as { url: string; content: string }[];
     expect(entries.find((entry) => entry.url.endsWith('/docs/reference/protocol/'))?.content).toContain('VMess');
+    await page.goto(`/${locale.id}/docs/concepts/security-model/`);
+    await expect(page.locator('article')).toContainText('ML-KEM');
+    await expect(page.locator('article')).toContainText('Chrome 150');
+    await expect(page.locator('article')).toContainText('ring');
   });
 
   test(`${locale.id}: every published URL returns content`, async ({ request }) => {

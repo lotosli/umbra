@@ -68,6 +68,8 @@ describe('search-visible localized metadata', () => {
     for (const locale of locales) {
       const head = pageHead(locale, 'docs/reference/cli', 'CLI reference', 'Supported command-line options.');
       expect(head.meta).toContainEqual({ title: 'CLI reference · Umbra' });
+      expect(head.meta).toContainEqual({ property: 'og:image', content: `https://umbra.cat/social/${locale}.png` });
+      expect(head.links).toContainEqual({ rel: 'manifest', href: `/manifests/${locale}.webmanifest` });
       expect(head.meta).toContainEqual({ property: 'og:url', content: canonicalUrl(locale, 'docs/reference/cli') });
       expect(head.links).toContainEqual({ rel: 'canonical', href: canonicalUrl(locale, 'docs/reference/cli') });
       for (const alternate of localeDefinitions) {
@@ -79,7 +81,7 @@ describe('search-visible localized metadata', () => {
 
   it('uses the project title and native-script locale metadata on the homepage', () => {
     const head = pageHead('zh-hant', '', 'Umbra', '保護連線隱私');
-    expect(head.meta).toContainEqual({ title: 'Umbra — Privacy, in plain sight.' });
+    expect(head.meta).toContainEqual({ title: 'Umbra — 你的連線， 由你掌控。' });
     expect(head.meta).toContainEqual({ property: 'og:locale', content: 'zh_Hant' });
     expect(head.meta).toContainEqual({ name: 'description', content: '保護連線隱私' });
   });

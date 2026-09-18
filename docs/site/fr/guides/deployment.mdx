@@ -1,7 +1,7 @@
 ---
 id: "guides/deployment"
-title: "Déploiement et exploitation"
-description: "Superviser le serveur et gérer ses ressources."
+title: "Déployer et entretenir Umbra"
+description: "Gérez le service, les ports, la configuration et les ressources."
 section: "guides"
 order: 6
 version: "1.0.0-alpha"
@@ -9,17 +9,19 @@ source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
 ---
 
-## Vue d’ensemble
+Validez une connexion au premier plan avant de créer le service. Sous Linux, systemd gère le processus et journald collecte les journaux.
 
-Validez d’abord un client et un serveur au premier plan avec la même version. Sous Linux, systemd peut superviser le serveur et journald recueillir stderr. Utilisez des chemins absolus pour le binaire et server.toml. Limitez la lecture du fichier à l’identité du service et aux administrateurs. Définissez l’utilisateur et les droits nécessaires aux ports bas selon votre distribution.
+## Préparer les fichiers
 
-## Détails
+Créez un utilisateur `umbra`, installez le programme dans `/usr/local/bin/umbra` et la configuration dans `/etc/umbra/server.toml`. Réservez sa lecture au compte de service et aux administrateurs. Adaptez les chemins absolus et l'utilisateur à votre installation.
 
-Ouvrez le port TCP public configuré. Ouvrez UDP seulement si udp_listen est activé pour QUIC. Si un frontal de couche 4 possède déjà le port public, liez les écouteurs Umbra au bouclage et configurez un transfert transparent TCP/QUIC. Les ports internes ne nécessitent pas de règle publique. Un proxy HTTP ordinaire ne remplace pas ce transfert au niveau transport.
+## Configurer le réseau
 
-### Exemple d’unité de service
+Ouvrez le port TCP de `listen` ; pour QUIC, ajoutez `udp_listen` et le port UDP correspondant. Si une entrée de niveau 4 occupe le port public, liez Umbra à l'interface de boucle locale et transférez TCP/QUIC de façon transparente. Gardez les ports internes privés. Ce transfert nécessite une prise en charge des transports, au-delà d'un reverse proxy HTTP classique.
 
-Enregistrez cette unité dans `/etc/systemd/system/umbra-server.service`. L’exemple suppose qu’un utilisateur Linux dédié `umbra` existe déjà, que le binaire se trouve dans `/usr/local/bin/umbra` et que cet utilisateur peut lire `/etc/umbra/server.toml`. Créez cette identité et installez les fichiers avec les outils d’administration de votre hôte avant d’activer l’unité ; adaptez chemins et utilisateur à votre déploiement.
+## Créer le service
+
+Enregistrez dans `/etc/systemd/system/umbra-server.service` :
 
 ```ini
 [Unit]
@@ -41,8 +43,9 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 ```
 
+`CAP_NET_BIND_SERVICE` permet d'écouter sur les ports bas, dont 443. Vérifiez le compte, les chemins et les droits avant l'activation.
 
-### Gestion du service
+## Démarrer et consulter les journaux
 
 ```sh
 sudo systemctl daemon-reload
@@ -50,13 +53,14 @@ sudo systemctl enable --now umbra-server
 sudo journalctl -u umbra-server -f
 ```
 
+Testez ensuite une requête depuis le client.
 
-## Vérification et limites
+## Ressources et entretien
 
-Réservez de la mémoire pour le système. Le déploiement orienté débit suppose au moins 1 Gio de RAM physique ; performance.memory_mib borne des engagements logiques, pas le RSS du processus. Les diagnostics sont désactivés par défaut. Activez-les pour une investigation limitée et ne confondez pas octets acceptés et livraison distante. Redémarrez volontairement après modification et gardez un ancien binaire vérifié pour revenir en arrière.
+L'optimisation actuelle du débit suppose au moins 1 GiB de RAM sur le serveur. Gardez de la mémoire pour le système, les tampons réseau et les autres services. Activez les diagnostics, désactivés par défaut, lorsque vous recherchez un problème. Redémarrez après un changement de configuration et conservez l'ancienne version pour pouvoir revenir en arrière.
 
 ## Pour continuer
 
-- [Performances et politiques](/fr/docs/reference/configuration/)
-- [Dépannage](/fr/docs/troubleshooting/)
-- [Mettre à jour Umbra](/fr/docs/guides/upgrade/)
+- [Paramètres de performance et de transport](/fr/docs/reference/configuration/)
+- [Résoudre un problème](/fr/docs/troubleshooting/)
+- [Mettre Umbra à jour](/fr/docs/guides/upgrade/)

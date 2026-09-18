@@ -1,7 +1,7 @@
 ---
 id: "configuration/client"
-title: "Configuration du client"
-description: "Transport, identité et écoute du proxy local."
+title: "Référence de configuration du client"
+description: "Retrouvez les réglages d'identité, de transport et de proxy local."
 section: "configuration"
 order: 9
 version: "1.0.0-alpha"
@@ -9,15 +9,11 @@ source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.
 translation: "complete"
 ---
 
-## Vue d’ensemble
+Le fichier TOML décrit le serveur distant et le proxy SOCKS5 local.
 
-Le fichier TOML du client définit l’identité distante et l’écoute SOCKS locale. La validation intervient après fusion des options CLI. transport est obligatoire et accepte tcp ou quic. Sans udp_transport, UDP hérite de la valeur finale de transport ; le préciser modifie les associations UDP sans changer le chemin des requêtes TCP CONNECT.
+## Configuration minimale
 
-## Détails
-
-public_key doit décoder 32 octets. mldsa_verify doit être une valeur base64 non vide issue de l’identité du serveur. short_id et server_name doivent correspondre aux valeurs autorisées. fingerprint est obligatoire ; les noms intégrés comprennent chrome-latest et chrome-150-macos. Dans cette version, chrome-latest utilise encore le profil historique Chrome 150, malgré l’existence d’une capture plus récente.
-
-### Modèle client
+Remplacez l'adresse, le domaine et les valeurs d'identité :
 
 ```toml
 server = "198.51.100.10:443"
@@ -30,6 +26,7 @@ mldsa_verify = "<MLDSA_VERIFY_BASE64>"
 socks_listen = "127.0.0.1:1080"
 ```
 
+## Champs
 
 | Champ | Valeur par défaut / exigence | Signification |
 |---|---|---|
@@ -47,12 +44,22 @@ socks_listen = "127.0.0.1:1080"
 | `padding_scheme` | `"default"` | Politique de remplissage interne |
 | `tcp_evasion` | `"segment"` | Écritures ordonnées du ClientHello |
 
-## Vérification et limites
+## Vérifier l'identité
 
-Liez socks_listen au bouclage puisque SOCKS n’utilise pas de mot de passe. mux vaut true par défaut ; false choisit Vision dédié pour TCP. spider_path vaut /, doit commencer par / et ne peut contenir ni retour chariot ni saut de ligne. Il participe au comportement de site réel lorsque l’authentification n’établit pas de session Umbra. Une configuration syntaxiquement valide ne garantit ni des clés correspondantes ni une destination joignable.
+`public_key` est la clé X25519 du serveur, soit 32 octets après décodage. `mldsa_verify` est la clé de vérification Base64 non vide correspondante. Obtenez-les par un canal de confiance. `short_id` et `server_name` doivent appartenir aux listes autorisées du serveur.
+
+## Choisir les transports
+
+`transport` est obligatoire : `tcp` ou `quic`. UDP reprend sa valeur finale sauf si `udp_transport` est renseigné. Cette option ne change que les requêtes UDP. TCP utilise `mux = true` par défaut ; false sélectionne Vision dédié.
+
+## Accès local et profils
+
+Liez `socks_listen` à `127.0.0.1:1080`, car le proxy n'a pas de mot de passe. `fingerprint` sélectionne le profil de négociation. `chrome-latest` et `chrome-150-macos` utilisent actuellement Chrome 150 ; les alias évoluent avec les versions.
+
+`spider_path`, par défaut `/`, sert au comportement de site réel lorsque la session Umbra n'est pas authentifiée. Il commence par `/` et ne contient ni retour chariot ni saut de ligne. Les options CLI remplacent les champs avant validation. Placez les réglages de performance dans `[performance]` et commencez par les valeurs par défaut.
 
 ## Pour continuer
 
-- [Connecter un client](/fr/docs/guides/client/)
-- [Performances et politiques](/fr/docs/reference/configuration/)
-- [Référence CLI](/fr/docs/reference/cli/)
+- [Connecter les applications et les clients de type Clash](/fr/docs/guides/client/)
+- [Paramètres de performance et de transport](/fr/docs/reference/configuration/)
+- [Référence de la ligne de commande](/fr/docs/reference/cli/)

@@ -1,7 +1,7 @@
 ---
 id: "concepts/architecture"
-title: "Architecture"
-description: "Comprendre la répartition des responsabilités entre les crates Rust."
+title: "Architecture et parcours d'une requête"
+description: "Suivez les données de votre application jusqu'à leur destination."
 section: "concepts"
 order: 11
 version: "1.0.0-alpha"
@@ -9,13 +9,20 @@ source: ["README.md"]
 translation: "complete"
 ---
 
-## Vue d’ensemble
+Umbra réunit proxy local, authentification et transport distant. Les crates Rust séparent l'analyse du protocole, la cryptographie et la gestion des connexions pour les tester individuellement.
 
-Umbra est un espace de travail Cargo séparant types de protocole, cryptographie, TLS, authentification, trafic interne et orchestration. Cette organisation permet de tester les parseurs, les vecteurs cryptographiques et le cycle de vie des connexions indépendamment. La CLI assemble les composants avec server, client et keygen. Le site ne propose pas d’API distante de gestion du runtime.
+## Parcours d'une requête
 
-## Détails
+L'application s'adresse au proxy SOCKS5 local. Le client établit la connexion TCP ou QUIC configurée et vérifie l'identité. Le serveur joint la destination demandée et relaie les données. Les connexions non authentifiées sont envoyées au site de couverture. Les commandes `server`, `client` et `keygen` lancent les extrémités et génèrent les clés.
 
-umbra-proto définit types et adresses. umbra-crypto centralise échange de clés, signatures, dérivation, MAC et AEAD. umbra-fingerprint contient les profils et outils JA3/JA4. umbra-tls construit et analyse TLS. umbra-reality gère authentification, rejeu et préparation de destination ; umbra-inner fournit multiplexage, remplissage et Vision ; umbra-transport porte TCP et QUIC.
+## Rôle des composants
+
+`umbra-proto` définit formats et adresses ; `umbra-crypto` gère échanges de clés, signatures, dérivation et chiffrement. `umbra-fingerprint` contient les profils et outils JA3/JA4 ; `umbra-tls` traite TLS 1.3.
+
+`umbra-reality` gère authentification, rejeu et préparation du site ; `umbra-inner`, multiplexage, remplissage et Vision ; `umbra-transport`, TCP et QUIC. `umbra-core` coordonne configuration, SOCKS5, répartition et ressources. `umbra` fournit la CLI.
+
+## Dépendances principales
+
 ```text
 umbra CLI
     ↓
@@ -30,12 +37,14 @@ umbra-crypto · umbra-fingerprint
 umbra-proto
 ```
 
-## Vérification et limites
+`umbra-testkit` fournit les outils de test en boucle locale ; `xtask` réalise les contrôles et les builds de publication. Les guides actuels et le code précisent les fonctions disponibles.
 
-umbra-core relie configuration, répartition, SOCKS local, connexions cibles et propriété des ressources. Les sessions authentifiées suivent le mode interne choisi ; les autres suivent la destination réelle. umbra-testkit fournit les tests en boucle locale et xtask les contrôles et builds de publication. Le document d’architecture contient aussi des objectifs futurs : citer un composant n’établit pas que toutes ses fonctions envisagées existent. Consultez les guides actuels pour le comportement disponible.
+## Le site et vos connexions
+
+Le site propose téléchargements, documentation et notes de version. Les programmes utilisent leurs fichiers locaux ; le site ne gère pas vos connexions et n'enregistre pas leur configuration.
 
 ## Pour continuer
 
-- [Référence du protocole](/fr/docs/reference/protocol/)
+- [Comparer les solutions proxy](/fr/docs/reference/protocol/)
 - [Modèle de sécurité](/fr/docs/concepts/security-model/)
-- [Contribuer](/fr/docs/contributing/)
+- [Contribuer à Umbra](/fr/docs/contributing/)

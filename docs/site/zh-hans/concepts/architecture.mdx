@@ -1,7 +1,7 @@
 ---
 id: "concepts/architecture"
-title: "架构"
-description: "了解 Rust crate 如何分担连接生命周期。"
+title: "架构与连接流程"
+description: "从应用请求到远端连接，了解各组件如何协作。"
 section: "concepts"
 order: 11
 version: "1.0.0-alpha"
@@ -9,13 +9,35 @@ source: ["README.md"]
 translation: "complete"
 ---
 
-## 概览
+Umbra 将本地代理、连接认证和远端传输组合在同一套客户端与服务端中。代码按职责拆分为 Rust crate，便于分别测试协议解析、密码学运算和连接管理。
 
-Umbra 是 Cargo workspace，线格式、密码学、TLS、认证、内层流量与运行时编排分别放在不同 crate。这样的划分使解析边界、密码学向量和连接生命周期能分别测试。CLI 通过 server、client、keygen 组合这些能力；官网不提供远程运行时管理 API，也不存储用户配置。
+## 一次请求如何到达目标
 
-## 详细说明
+1. 应用将请求交给本地 SOCKS5 入口。
+2. 客户端按配置与 Umbra 服务端建立 TCP 或 QUIC 连接，并验证身份。
+3. 服务端连接应用请求的目标，在两端之间转发数据。
+4. 未通过 Umbra 身份验证的连接转发到配置的掩护网站。
 
-umbra-proto 定义线类型与地址；umbra-crypto 集中封装密钥交换、签名、派生、MAC 和 AEAD；umbra-fingerprint 管理档案和 JA3/JA4 辅助；umbra-tls 构造并解析 TLS 表面。umbra-reality 负责认证、反重放和目标预构建，umbra-inner 提供多路复用、填充和 Vision，umbra-transport 提供 TCP 与 QUIC 路径。
+`server`、`client`、`keygen` 三个 CLI 子命令分别负责启动两端和生成身份密钥。
+
+## 组件分工
+
+| 组件 | 职责 |
+| --- | --- |
+| `umbra-proto` | 协议数据格式、地址和基础类型 |
+| `umbra-crypto` | 密钥交换、签名、密钥派生与加密校验 |
+| `umbra-fingerprint` | 浏览器握手档案及 JA3/JA4 辅助工具 |
+| `umbra-tls` | TLS 1.3 握手与记录处理 |
+| `umbra-reality` | 身份认证、重放检查和目标网站信息准备 |
+| `umbra-inner` | 连接复用、流量填充和 Vision |
+| `umbra-transport` | TCP 与 QUIC 传输 |
+| `umbra-core` | 配置、本地 SOCKS5、连接分派和资源管理 |
+| `umbra` | 命令行入口 |
+
+## 依赖方向
+
+下图概括主要依赖层次：
+
 ```text
 umbra CLI
     ↓
@@ -30,12 +52,14 @@ umbra-crypto · umbra-fingerprint
 umbra-proto
 ```
 
-## 验证与边界
+`umbra-testkit` 提供本地回环测试工具，`xtask` 负责工程检查和发布构建。具体功能以当前版本的使用指南和源码为准。
 
-umbra-core 负责配置、分派、SOCKS、目标连接与资源所有权。已认证连接进入选定内层模式，未认证连接走真实目标转发。umbra-testkit 提供回环测试设施，xtask 执行工程闸门与构建发布产物。公开架构文档也包含规划目标，表中出现组件名称不代表该方向下所有功能都已经完成。判断实际可用能力时，应结合当前指南和有源码依据的参考页。
+## 网站与运行程序
+
+官网提供下载、文档和版本说明。客户端与服务端通过本地配置运行，官网不参与管理你的连接或保存配置。
 
 ## 下一步
 
-- [协议参考](/zh-hans/docs/reference/protocol/)
+- [代理方案对比](/zh-hans/docs/reference/protocol/)
 - [安全模型](/zh-hans/docs/concepts/security-model/)
 - [参与贡献](/zh-hans/docs/contributing/)

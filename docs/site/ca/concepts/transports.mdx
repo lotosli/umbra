@@ -1,7 +1,7 @@
 ---
 id: "concepts/transports"
-title: "Com triar entre TCP, Vision i QUIC"
-description: "Tria el mode segons la xarxa i el trànsit de les aplicacions, amb camins TCP i UDP separats darrere d’una mateixa entrada SOCKS5."
+title: "Triar TCP, Vision o QUIC"
+description: "Selecciona com transportar cada tipus de petició."
 section: "concepts"
 order: 12
 version: "1.0.0-alpha"
@@ -9,32 +9,20 @@ source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
 ---
 
-## Visió general
+`transport` tria el transport TCP. `udp_transport` pot definir una ruta diferent per a UDP; si s'omet, hereta `transport`.
 
-Primer cal distingir dues qüestions: l’aplicació envia TCP o UDP? Umbra fa servir TCP o QUIC per portar-lo al servidor? El tipus de trànsit de l’aplicació i el transport exterior són coses diferents. `transport` tria el transport exterior principal; `udp_transport` permet triar per separat el de les peticions UDP i, si s’omet, hereta el valor de `transport`.
+## Per on començar
 
-## Triar segons les necessitats
+Utilitza TCP per a la primera connexió o si UDP no està disponible. Activa mux per reutilitzar connexions o desactiva'l per a Vision dedicat. Prova QUIC quan UDP funcioni, especialment si TCP pateix reinicialitzacions injectades. Combina rutes amb TCP i `udp_transport = "quic"`. Comprova primer connectivitat i després latència, estabilitat i cabal amb la mateixa aplicació.
 
-| Necessitat o condició de xarxa | Punt de partida | Què cal tenir en compte |
-| --- | --- | --- |
-| Establir primer la connexió, o connectar-se quan la xarxa filtra UDP | `transport = "tcp"` | Obre el port TCP al servidor; mux està activat per defecte |
-| Reutilitzar una connexió existent per a diverses peticions TCP simultànies | TCP + `mux = true` | Comparteixen el TCP exterior; la pèrdua de paquets encara pot afectar altres fluxos |
-| Reduir el doble xifratge del trànsit que compleix els requisits, principalment HTTPS | TCP + `mux = false` | Utilitza connexions Vision dedicades; no tot el trànsit TLS admet el reenviament directe |
-| Patir reinicialitzacions TCP RST freqüents mentre UDP és accessible | `transport = "quic"` | QUIC ha d’estar disponible als dos extrems; UDP també pot patir limitacions de velocitat o bloquejos |
-| Mantenir TCP amb Vision i enviar UDP separadament per QUIC | TCP + `udp_transport = "quic"` + `mux = false` | Activa l’escolta TCP i UDP al mateix servidor |
-
-No hi ha cap mode que sigui el més ràpid en totes les xarxes. Verifica primer la connectivitat i després compara la latència, l’estabilitat i el cabal de les teves aplicacions reals; no canviïs diversos paràmetres alhora. Aquestes opcions no detecten automàticament la xarxa ni canvien de transport per si soles.
-
-## Multiplexació TCP
+## Reutilitzar connexions TCP
 
 ```toml
 transport = "tcp"
 mux = true
 ```
 
-Diverses peticions comparteixen una connexió exterior xifrada, cosa que redueix la necessitat d’establir connexions repetidament. La versió actual ajusta les finestres segons el consum real de trànsit i el temps d’anada i tornada, dins dels límits d’un pressupost de memòria. Pot ser adequat per provar peticions simultànies, però no elimina el bloqueig de cap de línia a la capa de transport TCP.
-
-El mux adaptatiu requereix versions compatibles als dos extrems; quan passis a 1.0.0-alpha, actualitza el client i el servidor alhora. Consulta els paràmetres de recursos a la [referència de configuració](/ca/docs/reference/configuration/).
+Les peticions comparteixen connexions xifrades. Les finestres adaptatives segueixen consum i temps d'anada i tornada dins dels pressupostos. Una pèrdua TCP pot fer esperar les peticions de la mateixa connexió. Fes servir versions compatibles.
 
 ## TCP / Vision dedicat
 
@@ -43,9 +31,7 @@ transport = "tcp"
 mux = false
 ```
 
-Per al trànsit TLS 1.3 intern que compleix els requisits, un cop negociat de manera autenticada el límit de canvi de reenviament, es poden transmetre els registres TLS ja xifrats sense continuar amb el xifratge TLS exterior ni l’encapsulació addicional. El trànsit no TLS o amb TLS no admès continua xifrat: activar Vision no envia en clar les dades de les aplicacions.
-
-Vision utilitza E/S en espai d’usuari, no còpia zero al nucli. Reduir el processament duplicat és un avantatge del mecanisme, no un avantatge de velocitat mesurat respecte de la competència. Continua fent servir HTTPS a la capa d’aplicació.
+Cada petició té la seva connexió. Després de negociar l'autenticació, els registres TLS 1.3 aptes es reenvien sense xifratge extern ni encapsulació addicional. La resta continua xifrada. Mantén HTTPS a les aplicacions. El reenviament funciona en espai d'usuari; el rendiment depèn del dispositiu i la xarxa.
 
 ## QUIC
 
@@ -53,13 +39,13 @@ Vision utilitza E/S en espai d’usuari, no còpia zero al nucli. Reduir el proc
 transport = "quic"
 ```
 
-QUIC funciona sobre UDP i pot evitar la injecció de TCP RST i el bloqueig de cap de línia entre fluxos QUIC diferents causat per les retransmissions de la capa de transport; dins d’un mateix flux fiable, el lliurament continua sent ordenat, i tots els fluxos comparteixen la capacitat del camí i el control de congestió. El servidor ha d’activar `udp_listen`, obrir el port UDP al tallafoc i poder accedir al lloc QUIC real de reserva configurat.
+QUIC utilitza UDP. Activa `udp_listen`, obre el port i tria un lloc QUIC accessible. Els fluxos separats recuperen pèrdues independentment; cada flux fiable lliura en ordre. Umbra també transporta associacions UDP en fluxos QUIC fiables: una pèrdua pot retardar les dades següents.
 
-Actualment s’utilitza Quinn BBR per defecte; també es pot triar `cubic` o `new-reno`. Són paràmetres de QUIC i no modifiquen el control de congestió TCP de Linux. Si la xarxa limita UDP, QUIC no és una alternativa fiable a TCP.
+Quinn BBR és el predeterminat; també hi ha `cubic` i `new-reno`. Controlen l'enviament QUIC local, separat del TCP del sistema.
 
-### TCP / Vision + QUIC UDP
+## Dues rutes, una entrada
 
-Afegeix a la configuració completa del client:
+Client:
 
 ```toml
 transport = "tcp"
@@ -68,23 +54,21 @@ mux = false
 socks_listen = "127.0.0.1:1080"
 ```
 
-Al mateix servidor, configura simultàniament:
+Servidor:
 
 ```toml
 listen = "0.0.0.0:443"
 udp_listen = "0.0.0.0:443"
 ```
 
-Aquests fragments s’han d’integrar en una configuració completa; no substitueixen les claus, el lloc real de destinació ni els altres camps obligatoris. Un client, un servidor i una entrada SOCKS5 local són suficients per als dos camins. En un client de tipus Clash, `udp: true` només permet peticions UDP; no força les peticions TCP ordinàries a passar per QUIC.
+Conserva els altres camps de la configuració completa. Les aplicacions utilitzen un SOCKS5. `udp: true` permet UDP a Clash; TCP segueix `transport`. Ajusta la configuració si canvia la xarxa: el canvi TCP/QUIC és manual.
 
-## Farciment i estratègia d’escriptura TCP
+## Farciment i escriptura de la negociació
 
-El farciment per defecte afegeix dades de longitud aleatòria al principi de la connexió i després en redueix la freqüència, per dificultar la identificació directa de la negociació interna a partir de la longitud dels registres. Consumeix amplada de banda addicional i no promet eliminar totes les característiques del trànsit. En general, mantén `padding_scheme = "default"` i modifica’l només si tens resultats de proves que ho justifiquin.
-
-`tcp_evasion = "segment"` només divideix el ClientHello en escriptures ordenades de l’aplicació; no garanteix els límits dels paquets TCP que acabarà enviant el sistema operatiu. Si hi ha problemes de compatibilitat, pots provar `off`. Actualment no s’admet Geneva DSL i no s’ha de desplegar com si fos una funció disponible.
+El farciment afegeix dades de longitud aleatòria al principi i després menys sovint per suavitzar patrons de longitud, consumint amplada de banda. `tcp_evasion = "segment"` divideix ClientHello en escriptures ordenades; el sistema determina els paquets reals. Prova `off` si hi ha incompatibilitats. Geneva DSL no està disponible.
 
 ## Passos següents
 
-- [Connectar les aplicacions a Umbra](/ca/docs/guides/client/)
-- [Exemples de configuració complets](/ca/docs/configuration/examples/)
-- [Comparació amb les principals solucions de servidor intermediari](/ca/docs/reference/protocol/)
+- [Connectar aplicacions i clients compatibles amb Clash](/ca/docs/guides/client/)
+- [Exemples de configuració](/ca/docs/configuration/examples/)
+- [Comparar solucions de servidor intermediari](/ca/docs/reference/protocol/)

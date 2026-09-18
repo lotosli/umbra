@@ -1,7 +1,7 @@
 ---
 id: "troubleshooting"
 title: "Troubleshooting"
-description: "Diagnose configuration, connectivity and transport problems."
+description: "Find the failing stage and work toward a working connection."
 section: "troubleshooting"
 order: 17
 version: "1.0.0-alpha"
@@ -9,28 +9,47 @@ source: ["docs/usage.md", "README.md"]
 translation: "complete"
 ---
 
-## Overview
+Record endpoint versions, platform and the error. Reproduce with one simple request and change one setting at a time.
 
-Begin with the installed version, the exact failing stage and a minimal configuration description with every secret removed. Reproduce a single request before changing several settings. Distinguish an application bypassing SOCKS from a failure between client and server, and distinguish both from a server-to-destination or server-to-target failure.
-
-## Details
-
-If the server exits immediately, check TOML syntax, required fields, listener conflicts and the startup destination probe. Parser errors preserve a safe category and location without echoing secret input. If the client cannot authenticate, compare the intended public identity, short ID and server_name with the server configuration through a trusted channel. Synchronize system clocks before widening max_time_diff. Check the public TCP port, and UDP when QUIC is selected.
-
-### Check the connection
+## Start with a direct test
 
 ```sh
 umbra --help
 curl --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
+If SOCKS5 works directly but a rules client fails, check node selection, rules, DNS and proxy loops.
 
-## Verify
+## The server exits at startup
 
-If a probe sees the genuine destination certificate, that is expected for unauthenticated traffic. If UDP alone fails, check udp_transport, server udp_listen, firewall rules and the destination's actual QUIC service. For performance, compare a known workload and inspect opt-in diagnostics; avoid treating logical memory or accepted writes as delivery metrics. Report a sanitized command, version, platform and error category. Do not attach real configuration files, private keys, packet captures containing user traffic or live infrastructure details.
+Check TOML syntax, required values, file permissions and port conflicts. Startup probes the cover website; check `dest`, website names and connectivity from the server.
+
+## Authentication fails
+
+Compare `public_key`, `mldsa_verify`, `short_id` and `server_name` through a trusted channel against the running server configuration. Correct system clocks before adjusting tolerance, then check the actual server port.
+
+## The app still cannot connect
+
+Confirm it uses SOCKS5 at `127.0.0.1:1080`. Check DNS and connectivity from the server to the app's destination. `socks5h` and `--socks5-hostname` pass the hostname to the proxy.
+
+## TCP works but UDP fails
+
+Check `udp_transport`. QUIC needs `udp_listen`, an open UDP firewall port and a reachable QUIC/HTTP/3 cover website. Enable UDP in the rules client and test a real UDP app separately.
+
+## You see the cover website
+
+An ordinary browser or unauthenticated probe receiving its certificate and response is expected. Test proxy operation with a configured Umbra client and local SOCKS5.
+
+## The connection is slow
+
+Compare the same destination, workload and path. Enable numeric diagnostics if needed and inspect windows, queues and budgets alongside system CPU and memory. See the performance reference for metric meanings.
+
+## Reporting a problem
+
+Provide versions, OS, failure stage, redacted commands and errors, and minimal reproduction steps. Remove keys, credentials, deployment addresses and user content. Follow the security reporting guidance for vulnerabilities.
 
 ## Next steps
 
 - [Server configuration](/en/docs/configuration/server/)
 - [Client configuration](/en/docs/configuration/client/)
-- [Performance and policy reference](/en/docs/reference/configuration/)
+- [Performance and transport settings](/en/docs/reference/configuration/)

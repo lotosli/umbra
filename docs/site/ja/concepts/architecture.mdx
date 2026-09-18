@@ -1,7 +1,7 @@
 ---
 id: "concepts/architecture"
-title: "アーキテクチャ"
-description: "Rust クレートごとの役割と接続の流れを説明します。"
+title: "アーキテクチャと通信の流れ"
+description: "アプリの要求が宛先へ届くまでを確認します。"
 section: "concepts"
 order: 11
 version: "1.0.0-alpha"
@@ -9,13 +9,20 @@ source: ["README.md"]
 translation: "complete"
 ---
 
-## 概要
+Umbra はローカルプロキシ、認証、リモート伝送を組み合わせます。Rust crate を分けることで、プロトコル解析、暗号処理、接続管理を個別にテストできます。
 
-Umbra は Cargo ワークスペースで、ワイヤー型、暗号、TLS、認証、内部通信、実行時制御を別々のクレートに分けています。解析境界、暗号テストベクトル、接続ライフサイクルを役割別に検証できます。CLI は server、client、keygen でそれらを組み合わせます。サイトは遠隔管理 API やユーザー設定保存機能を提供しません。
+## 要求の流れ
 
-## 詳細
+アプリはローカル SOCKS5 に要求を送ります。クライアントは TCP または QUIC 接続を確立し、認証情報を検証します。サーバーが宛先へ接続してデータを中継します。未認証の接続はカバーサイトへ転送します。`server`、`client`、`keygen` が両端の起動と鍵生成を担当します。
 
-umbra-proto は型とアドレス、umbra-crypto は鍵交換、署名、導出、MAC、AEAD を扱います。umbra-fingerprint はプロファイルと JA3/JA4、umbra-tls は TLS の構築と解析を担当します。umbra-reality は認証、リプレイ対策、接続先準備を行い、umbra-inner は多重化、パディング、Vision、umbra-transport は TCP と QUIC を提供します。
+## コンポーネント
+
+`umbra-proto` は形式とアドレス、`umbra-crypto` は鍵交換、署名、導出、暗号化を担当します。`umbra-fingerprint` はプロファイルと JA3/JA4、`umbra-tls` は TLS 1.3 を扱います。
+
+`umbra-reality` は認証、リプレイ確認、サイト情報の準備、`umbra-inner` は多重化、パディング、Vision、`umbra-transport` は TCP と QUIC を担当します。`umbra-core` が設定、SOCKS5、振り分け、リソースを統括し、`umbra` が CLI を提供します。
+
+## 主な依存関係
+
 ```text
 umbra CLI
     ↓
@@ -30,12 +37,14 @@ umbra-crypto · umbra-fingerprint
 umbra-proto
 ```
 
-## 確認と制約
+`umbra-testkit` はループバックテスト、`xtask` は検査とリリースビルドを提供します。実装済み機能は現在のガイドとコードで確認してください。
 
-umbra-core が設定、振り分け、SOCKS、ターゲット接続、リソース所有権を統合します。認証済み接続は内部モードへ、未認証接続は実サイトへ進みます。umbra-testkit はループバック検証、xtask は品質ゲートや配布ビルドを担当します。アーキテクチャ文書には計画も含まれ、名前が記載されただけで関連機能すべてが完成済みとはいえません。利用可能な動作は現行ガイドを参照します。
+## Web サイトと接続の関係
+
+Web サイトはダウンロード、文書、リリース情報を提供します。両端はローカル設定で動作し、サイトが接続を管理したり設定を保管したりすることはありません。
 
 ## 次のステップ
 
-- [プロトコルリファレンス](/ja/docs/reference/protocol/)
+- [プロキシ構成を比較する](/ja/docs/reference/protocol/)
 - [セキュリティモデル](/ja/docs/concepts/security-model/)
-- [開発への参加](/ja/docs/contributing/)
+- [開発に参加する](/ja/docs/contributing/)

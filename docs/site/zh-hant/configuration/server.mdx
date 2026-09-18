@@ -1,7 +1,7 @@
 ---
 id: "configuration/server"
-title: "伺服器端設定"
-description: "伺服器端必填欄位、預設值與校驗規則。"
+title: "伺服器端設定參考"
+description: "查閱伺服器端欄位、預設值和填寫要求。"
 section: "configuration"
 order: 8
 version: "1.0.0-alpha"
@@ -9,15 +9,11 @@ source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.
 translation: "complete"
 ---
 
-## 概覽
+伺服器端設定使用 TOML。第一次部署可先閱讀[設定伺服器端](/zh-hant/docs/guides/server/)，本頁用於尋找欄位。
 
-伺服器端使用 TOML 設定。檔案和命令列合併後必須具備全部必填值，未知欄位及錯誤型別會被拒絕。listen 和 udp_listen 使用數字 IP:port 地址，需要 IPv6 時採用帶方括號的形式；dest 為 host:port。下表覆蓋伺服器端頂層欄位，performance 表單獨在參考章節說明。
+## 最小設定
 
-## 詳細說明
-
-private_key 和 mldsa_seed 必須分別從 base64 解碼為準確的 32 位元組。真實部署不能使用文件中的佔位字串。short_ids 至少有一個條目；每項是偶數長度的十六進位制字串，編碼零到八位元組，解析器允許空字串。max_time_diff 支援 ms、s、m、h 字尾或不帶字尾的秒數，但最終時長至少是一秒。
-
-### 伺服器端模板
+替換所有身分預留值，並將 `cover.example` 換為所選的實際網站：
 
 ```toml
 listen = "0.0.0.0:443"
@@ -29,27 +25,50 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
+## 設定欄位
 
 | 欄位 | 預設值 / 要求 | 含義 |
 |---|---|---|
-| `listen` | 必填 | TCP 數字監聽地址 |
-| `udp_listen` | `—` | 可選 QUIC UDP 地址；省略即關閉 |
-| `private_key` | 必填 | X25519 私鑰，base64 解碼為準確32位元組 |
-| `short_ids` | 必填 | 非空十六進位制 ID 列表；每項0–8位元組 |
-| `dest` | 必填 | 真實回落目標，host:port |
-| `server_names` | 必填 | 非空的允許 SNI 列表 |
-| `max_time_diff` | 必填 | 允許的時間戳偏差，至少1秒 |
-| `mldsa_seed` | 必填 | ML-DSA 簽名種子，base64 解碼為32位元組 |
-| `prebuild` | `true` | 週期重新整理目標；啟動探測始終執行 |
-| `padding_scheme` | `"default"` | 內層填充策略 |
-| `tcp_evasion` | `"segment"` | ClientHello 有序分塊寫入策略 |
+| `listen` | 必填 | TCP 接聽位址，使用 IP:連接埠 |
+| `udp_listen` | `—` | 可選 QUIC UDP 位址；省略即關閉 |
+| `private_key` | 必填 | X25519 私密金鑰，Base64 編碼，解碼後為 32 位元組 |
+| `short_ids` | 必填 | 至少一項；每項為 0–8 位元組的十六進制 ID |
+| `dest` | 必填 | 掩護網站位址，網域名稱或 IP 加連接埠 |
+| `server_names` | 必填 | 允許的掩護網站網域名稱清單，至少一項 |
+| `max_time_diff` | 必填 | 允許的時間戳偏差，至少 1 秒 |
+| `mldsa_seed` | 必填 | ML-DSA 簽章種子，Base64 編碼，解碼後為 32 位元組 |
+| `prebuild` | `true` | 定期更新目標網站資訊 |
+| `padding_scheme` | `"default"` | 業務資料的填充策略 |
+| `tcp_evasion` | `"segment"` | TLS 握手訊息的分塊寫入策略 |
 
-## 驗證與邊界
+效能選項放在獨立的 `[performance]` 表中，見[效能與傳輸參數](/zh-hant/docs/reference/configuration/)。
 
-server_names 不能為空；各項必須透過長度受限、ASCII、無空白的語法校驗。執行時仍需選擇與真實目標一致的有意義 SNI，語法有效不代表目標可用。啟動探測始終執行。命令列使用 --udp-listen 等連字元選項覆蓋檔案，省略的選項保留檔案值。私密欄位建議放在受保護檔案中，避免出現在 shell 歷史或程序引數裡。
+## 位址和網站名稱
+
+`listen`、`udp_listen` 使用數值 IP 和連接埠，例如 `0.0.0.0:443`；IPv6 位址使用方括號，例如 `[::]:443`。`dest` 可以使用網域名稱加連接埠。
+
+`server_names` 至少包含一個名稱。名稱需滿足解析器的長度和 ASCII 語法要求，並且不含空白；實際使用時填寫與目標網站匹配的網域名稱。用戶端的 `server_name` 從這份清單中選擇。
+
+## 金鑰與 short ID
+
+`private_key` 和 `mldsa_seed` 均使用 Base64 編碼，解碼後各為 32 位元組。請使用 `umbra keygen` 產生的對應輸出。
+
+`short_ids` 至少包含一項；每項使用偶數長度的十六進制字串，最多 16 個字元。解析器也接受空字串。用戶端的 `short_id` 必須與其中一項一致。
+
+## 時間與目標更新
+
+`max_time_diff` 接受 `ms`、`s`、`m`、`h` 後綴；不帶後綴時以秒計，最終時長至少為 1 秒。排查認證失敗時，先檢查兩端系統時間。
+
+伺服器端每次啟動都會探測目標網站。`prebuild` 控制啟動後的週期更新，預設開啟。
+
+## 命令列覆寫
+
+命令列參數覆寫設定檔案中的對應值，未提供的參數保留檔案值。合併後統一檢查必填項、未知欄位和欄位類型。命令列用 `--udp-listen` 這樣的連字元名稱，設定檔案用 `udp_listen`。
+
+私密金鑰和簽章種子放在受保護的設定檔案中，避免出現在指令歷史和程序參數中。
 
 ## 下一步
 
 - [設定伺服器端](/zh-hant/docs/guides/server/)
-- [效能與策略參考](/zh-hant/docs/reference/configuration/)
-- [CLI 命令參考](/zh-hant/docs/reference/cli/)
+- [效能與傳輸參數](/zh-hant/docs/reference/configuration/)
+- [CLI 指令參考](/zh-hant/docs/reference/cli/)

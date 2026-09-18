@@ -1,7 +1,7 @@
 ---
 id: "getting-started/installation"
-title: "安裝"
-description: "選擇適合平臺的釋出產物，或從 Rust 原始碼構建。"
+title: "安裝 Umbra"
+description: "下載適合裝置的程式，或使用 Rust 從原始碼建置。"
 section: "getting-started"
 order: 2
 version: "1.0.0-alpha"
@@ -9,19 +9,13 @@ source: ["docs/usage.md", "README.md", ".github/workflows/dist.yml"]
 translation: "complete"
 ---
 
-## 概覽
+用戶端與伺服器端使用同一個 Umbra 程式，通過不同子指令啟動。為兩端選擇同一版本，再按各自的操作系統和處理器架構下載。
 
-釋出工作流面向 macOS、Linux 和 Windows。請按實際執行機器的架構選擇產物。下表列的是構建目標，某個具體預釋出是否提供相應檔案，應以 GitHub Release 的實際附件為準。這裡不會把構建目標冒充已釋出檔案，也不提供未經核驗的校驗和或簽名宣告。
+## 下載程式
 
-## 詳細說明
+打開[GitHub 發佈頁面](https://github.com/lotosli/umbra/releases)，在所選版本的附件中尋找對應檔案。下表幫助你識別檔案名；可下載的平台以該版本附件為準。
 
-從專案的釋出頁面下載。在 macOS 或 Linux 上，給選中的準確檔名新增執行許可權，按需重新命名為 umbra 並放入 PATH 目錄；Windows 使用對應的 .exe 檔案。在執行前閱讀該版本說明，並核對釋出頁面實際提供的校驗資訊。不要把本地系統的下載安全策略當成專案已完成程式碼簽名的證明。
-
-### 釋出下載
-
-[釋出下載](https://github.com/lotosli/umbra/releases)
-
-| 平臺 | 架構 | 構建產物目標 |
+| 平台 | 架構 | 檔案名對應的建置目標 |
 |---|---|---|
 | macOS | Apple Silicon | `umbra-aarch64-apple-darwin` |
 | macOS | Intel | `umbra-x86_64-apple-darwin` |
@@ -29,7 +23,16 @@ translation: "complete"
 | Linux | aarch64 | `umbra-aarch64-unknown-linux-gnu` |
 | Windows | x86_64 | `umbra-x86_64-pc-windows-msvc.exe` |
 
-### 原始碼構建
+## 安裝到裝置
+
+- **macOS、Linux：** 如果附件是壓縮包，先解壓。為下載的程式添加執行權限；可以將其重命名為 `umbra`，放入 `PATH` 中的目錄，方便在終端機調用。
+- **Windows：** 如果附件是壓縮包，先解壓。在終端機中執行對應的 `.exe`；也可以將其所在目錄加入 `PATH`。
+
+執行前查看版本說明，並按發佈頁面提供的資訊核對檔案。
+
+## 從原始碼建置
+
+本儲存庫固定使用 Rust 1.96.1。準備好對應工具鏈後執行：
 
 ```sh
 git clone https://github.com/lotosli/umbra.git
@@ -38,10 +41,13 @@ cargo build --release
 ./target/release/umbra --help
 ```
 
+建置完成的程式位於 `target/release`。Windows 下可執行檔案帶有 `.exe` 後綴。
 
-## 驗證與邊界
+## 確認安裝成功
 
-從原始碼構建時使用倉庫鎖定的 Rust 1.96.1 工具鏈。克隆公開倉庫後執行 cargo build --release，程式位於 target/release。透過 umbra --help 檢查 server、client、keygen 子命令。用戶端與伺服器端使用同一個二進位制檔案。安裝本身不會啟動後臺服務，也不會自動建立監聽器；接著按快速開始生成自己的身份材料。
+執行 `umbra --help`；如果尚未加入 `PATH`，請使用程式的實際路徑。幫助中應能看到 `server`、`client`、`keygen` 三個子指令。
+
+接下來產生金鑰、設定兩端並啟動程式。需要開機執行時，再按[部署與運維](/zh-hant/docs/guides/deployment/)設定背景服務。
 
 ## 下一步
 

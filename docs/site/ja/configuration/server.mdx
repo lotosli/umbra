@@ -1,7 +1,7 @@
 ---
 id: "configuration/server"
-title: "サーバー設定"
-description: "サーバーの必須項目、既定値、検証規則を確認します。"
+title: "サーバー設定リファレンス"
+description: "各フィールド、既定値、検証条件を確認します。"
 section: "configuration"
 order: 8
 version: "1.0.0-alpha"
@@ -9,15 +9,11 @@ source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.
 translation: "complete"
 ---
 
-## 概要
+サーバーは TOML を使います。初回構築はサーバー設定ガイドから始めてください。
 
-サーバー設定は TOML です。コマンドラインの上書き後に必須項目が揃っている必要があり、未知の項目や型の誤りは拒否されます。待ち受けは数値 IP:port、IPv6 は角括弧付きで指定します。dest は host:port です。下表はトップレベル項目を扱い、performance 表は別ページで説明します。
+## 最小構成
 
-## 詳細
-
-private_key と mldsa_seed は base64 から正確に 32 バイトへ復号できる必要があります。例のプレースホルダーは実際には使えません。short_ids は最低1件で、各値は偶数桁の16進数として0〜8バイトを表します。空文字列も構文上許可されています。max_time_diff は ms、s、m、h または単位なしの秒数を受け付け、少なくとも1秒が必要です。
-
-### サーバーテンプレート
+認証用の値と `cover.example` を置き換えます。
 
 ```toml
 listen = "0.0.0.0:443"
@@ -29,6 +25,7 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
+## フィールド
 
 | 項目 | 既定値 / 要件 | 意味 |
 |---|---|---|
@@ -44,12 +41,26 @@ mldsa_seed = "<MLDSA_SEED_BASE64>"
 | `padding_scheme` | `"default"` | 内部パディング方式 |
 | `tcp_evasion` | `"segment"` | ClientHello の順序付き分割 write |
 
-## 確認と制約
+性能設定は `[performance]` に記述します。
 
-server_names は空にできず、各値は長さ制限、ASCII、空白なしの検査を受けます。構文が通っても接続先や SNI が運用可能だとは証明されません。起動時の検査は常に実行されます。CLI は --udp-listen のようなハイフン形式で指定項目だけを上書きします。秘密情報は履歴やプロセス引数を避け、保護された設定ファイルに置いてください。
+## アドレスとドメイン
+
+`listen` と `udp_listen` には `0.0.0.0:443`、`[::]:443` のような数値 IP とポートを指定します。`dest` はホスト名も使えます。`server_names` は一つ以上で、長さ制限と ASCII の構文を満たし、空白を含まない名前が必要です。実在サイトのドメインを指定し、クライアントはその中から選びます。
+
+## 鍵と短い ID
+
+`private_key` と `mldsa_seed` はそれぞれデコード後 32 バイトとなる Base64 値です。`keygen` の対応出力を使います。`short_ids` は一つ以上の 16 進数文字列で、偶数長、最大 16 文字です。空文字列も受理されます。クライアントの値を一致させてください。
+
+## 時刻とサイト情報の更新
+
+`max_time_diff` は `ms`、`s`、`m`、`h`、または単位なしの秒数を受け付け、最終的な長さは 1 秒以上です。許容差を広げる前に時計を確認します。起動時は毎回サイトを検査し、既定で有効な `prebuild` がその後の定期更新を制御します。
+
+## コマンドラインの優先順位
+
+指定した CLI オプションが対応フィールドを上書きし、結合後に必須値、型、未知フィールドを検査します。CLI は `--udp-listen` のようなハイフン、TOML はアンダースコアを使います。秘密は履歴やプロセス引数に残さず、保護されたファイルに保存してください。
 
 ## 次のステップ
 
-- [サーバーの設定](/ja/docs/guides/server/)
-- [性能とポリシー](/ja/docs/reference/configuration/)
-- [CLI リファレンス](/ja/docs/reference/cli/)
+- [サーバーを設定する](/ja/docs/guides/server/)
+- [性能と通信パラメーター](/ja/docs/reference/configuration/)
+- [コマンドラインリファレンス](/ja/docs/reference/cli/)

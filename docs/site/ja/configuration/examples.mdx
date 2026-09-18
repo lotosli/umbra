@@ -1,7 +1,7 @@
 ---
 id: "configuration/examples"
 title: "設定例"
-description: "TCP mux、Vision、QUIC UDP の開始用テンプレートです。"
+description: "接続の再利用、Vision、QUIC を選び、既存ツールに接続します。"
 section: "configuration"
 order: 10
 version: "1.0.0-alpha"
@@ -9,31 +9,29 @@ source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crate
 translation: "complete"
 ---
 
-## 概要
+まずアドレス、鍵、カバーサイトを設定し、以下の断片を完全な設定に組み込んでください。
 
-これらはクイックスタートで識別情報とアドレスを埋めた後の通信モード例です。すべてのプレースホルダーを置き換えてください。完全な資格情報ではなく、実値を入れた設定を公開 issue に投稿してはいけません。各役割で同じバイナリを使用し、UDP の方式を変えるためだけに二つ目のクライアントは不要です。
-
-## 詳細
-
-暗号化 TCP 多重化は transport=tcp と mux=true を使い、alpha クライアントは適応型制御を既定で有効にします。専用 TCP/Vision には transport=tcp と mux=false を使います。対象となる TLS 1.3 は認証済み境界交換後に転送経路を切り替えられ、それ以外は暗号化を維持します。追加の vision フラグはなく、転送はユーザー空間の処理です。
-
-### TCP 多重化
+## TCP 接続を共有
 
 ```toml
 transport = "tcp"
 mux = true
 ```
 
+複数の要求で接続を再利用します。適応型フロー制御は既定で有効で、互換性のあるサーバーが必要です。
 
-### 専用 TCP / Vision
+## 独立 TCP / Vision
 
 ```toml
 transport = "tcp"
 mux = false
 ```
 
+認証協議の後、Vision は条件を満たす暗号化済み TLS 1.3 レコードを転送します。他の通信は暗号化を維持します。追加の Vision スイッチは不要です。
 
-### TCP / Vision + QUIC UDP
+## TCP は Vision、UDP は QUIC
+
+クライアント：
 
 ```toml
 transport = "tcp"
@@ -42,23 +40,24 @@ mux = false
 socks_listen = "127.0.0.1:1080"
 ```
 
-
-### サーバーテンプレート
+サーバー：
 
 ```toml
 listen = "0.0.0.0:443"
 udp_listen = "0.0.0.0:443"
 ```
 
+TCP と UDP を許可し、到達可能な QUIC/HTTP/3 サイトを使います。各端で一つのプロセスを動かします。
 
-### ネイティブ QUIC
+## 両方を QUIC に
 
 ```toml
 transport = "quic"
 ```
 
+`udp_transport` を省略すると QUIC を継承します。以前の指定があれば削除するか `quic` に変更します。
 
-### Clash SOCKS5 ノード
+## Clash 系クライアントのローカルノード
 
 ```yaml
 proxies:
@@ -69,13 +68,10 @@ proxies:
     udp: true
 ```
 
-
-## 確認と制約
-
-同じインスタンスで TCP/Vision と QUIC UDP を使うには udp_transport=quic を加え、サーバーの listen と udp_listen を有効にします。主要通信も QUIC にする場合は transport=quic とし、udp_transport を省略して継承します。接続先には実際の QUIC/HTTP3 が必要です。Clash の udp: true は UDP 要求を許可します。設定は一つずつ変え、測定してから既定のパディングや分割を調整します。
+既存リストとグループに追加します。`udp: true` は UDP を許可し、TCP は `transport` に従います。ループ防止のため Umbra サーバーへは直接接続します。モードは一つずつ変更し、TCP と UDP を別々に確認します。
 
 ## 次のステップ
 
-- [サーバー設定](/ja/docs/configuration/server/)
-- [クライアント設定](/ja/docs/configuration/client/)
-- [トランスポートと通信モード](/ja/docs/concepts/transports/)
+- [サーバー設定リファレンス](/ja/docs/configuration/server/)
+- [クライアント設定リファレンス](/ja/docs/configuration/client/)
+- [TCP・Vision・QUIC の選び方](/ja/docs/concepts/transports/)

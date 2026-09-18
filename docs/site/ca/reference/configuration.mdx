@@ -1,7 +1,7 @@
 ---
 id: "reference/configuration"
-title: "Rendiment i polítiques"
-description: "Pressupostos de memòria, mux adaptatiu, farciment i congestió."
+title: "Paràmetres de rendiment i transport"
+description: "Ajusta memòria, finestres, farciment i diagnòstics."
 section: "reference"
 order: 15
 version: "1.0.0-alpha"
@@ -9,15 +9,9 @@ source: ["crates/umbra-core/src/resources.rs", "README.md", "docs/performance.md
 translation: "complete"
 ---
 
-## Visió general
+Comença amb valors predeterminats i una connexió funcional; després compara una càrrega reproduïble. Tots dos extrems accepten `[performance]`.
 
-Tots dos extrems admeten una taula performance opcional. Els límits representen compromisos lògics, no assignacions completes en arrencar. Reserva marge per al sistema, buffers del nucli, assignador i negociacions. Les connexions amb la mateixa credencial canònica comparteixen pressupost de grup; no creen comptes independents ni garanteixen la mateixa amplada de banda.
-
-## Detalls
-
-memory_mib accepta 16–16384 MiB. group_memory_mib ha de ser almenys 16 MiB i no superar el límit del procés. Les finestres admeten 1–64 MiB; les finestres QUIC i l’emmagatzematge efectiu es retallen també segons els pressupostos. adaptive_mux afecta les noves sessions TCP CONNECT multiplexades del client. mux=false conserva Vision dedicat.
-
-### Taula de rendiment opcional
+## Valors i camps
 
 ```toml
 [performance]
@@ -42,25 +36,35 @@ quic_congestion = "bbr"
 | `diagnostics_interval_secs` | `0` | Interval servidor: 0 desactivat, 1–3600 segons |
 | `quic_congestion` | `"bbr"` | QUIC sortint: bbr, cubic, new-reno |
 
+## Memòria i finestres
 
-### Farciment i escriptures TCP
+Els pressupostos registren recursos compromesos per a connexions. Una credencial comparteix pressupost de grup. `memory_mib` accepta 16–16384 MiB; el grup comença a 16 MiB i no supera el procés. Les finestres admeten 1–64 MiB dins del pressupost. Són compromisos lògics, no assignacions inicials ni límits RSS. Deixa memòria per al nucli, l'assignador, les negociacions i altres serveis.
 
-default: cadascuna de les primeres 16 escriptures per sentit rep una trama PADDING aleatòria de 100–1400 bytes abans i després; més tard s’afegeix una trama cada 32 escriptures. none desactiva el farciment. Forma: early=N,min=N,max=N,later=N; early compta escriptures inicials, min/max limiten bytes i later fixa l’interval (0 desactiva la fase). min no supera max, max no supera 65535 i el farciment inicial exigeix max diferent de zero.
+## Mux i congestió
 
-segment: escriptures ordenades, llindar per defecte de 64 bytes i primer bloc de 32 bytes. off: escriptura ordinària. Forma personalitzada: segment:threshold=N,first=M. Les estratègies Geneva es rebutgen.
+`adaptive_mux` s'aplica a sessions noves amb `mux = true`. Les finestres creixen segons consum i temps d'anada i tornada després de reservar recursos. `mux = false` manté Vision. Utilitza versions compatibles. `quic_congestion` tria `bbr`, `cubic` o `new-reno` per a l'enviament QUIC local; TCP continua sota control del sistema.
+
+## Farciment
+
+`default` afegeix una trama aleatòria de 100–1400 bytes abans i després de les primeres 16 escriptures de cada direcció, i després cada 32. `none` el desactiva. Personalitza amb `early=N,min=N,max=N,later=N`; `later=0` desactiva la fase posterior. Cal `min <= max`, `max <= 65535` i màxim superior a zero si hi ha farciment inicial. Consumeix amplada de banda addicional.
+
+## Escriptura de ClientHello
+
+`segment` utilitza un llindar de 64 bytes i un primer fragment de 32. `off` escriu normalment; `segment:threshold=N,first=M` personalitza. Geneva no s'accepta.
 
 ```toml
 padding_scheme = "default"
 tcp_evasion = "segment"
 ```
 
+Són camps arrel: posa'ls abans de `[performance]`.
 
-## Verificació i límits
+## Diagnòstics
 
-diagnostics_interval_secs=0 desactiva la recopilació; 1–3600 estableix un interval de servidor en segons. Les observacions separen bytes de transport i destinació sense adreces, credencials, SNI ni càrrega útil. Compromís lògic no és RSS; escriptura acceptada no és lliurament; durada de poll no és CPU. quic_congestion només modifica QUIC sortint. Ajusta els valors a partir de proves reproduïbles sense pressuposar que una finestra més gran sempre millora el rendiment.
+Al servidor, `diagnostics_interval_secs` entre 1 i 3600 fixa l'interval; zero desactiva recollida i informes. Se separen bytes externs i de destinació, ometent adreces, SNI, credencials i contingut. La memòria lògica descriu compromisos; consulta el sistema per a l'ús real. Les escriptures acceptades són locals; confirma el lliurament a la destinació. El temps de poll no és ús de CPU. Canvia un grup d'ajustos cada vegada.
 
 ## Passos següents
 
-- [Transports i modes de trànsit](/ca/docs/concepts/transports/)
-- [Desplegament i operació](/ca/docs/guides/deployment/)
-- [Resolució de problemes](/ca/docs/troubleshooting/)
+- [Triar TCP, Vision o QUIC](/ca/docs/concepts/transports/)
+- [Desplegar i mantenir Umbra](/ca/docs/guides/deployment/)
+- [Resoldre problemes](/ca/docs/troubleshooting/)

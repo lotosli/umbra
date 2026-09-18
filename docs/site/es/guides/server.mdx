@@ -1,7 +1,7 @@
 ---
 id: "guides/server"
-title: "Configurar un servidor"
-description: "Configura un destino real y arranca el servidor."
+title: "Preparar el servidor"
+description: "Elige un sitio de cobertura, configura la identidad y verifica la conexión."
 section: "guides"
 order: 4
 version: "1.0.0-alpha"
@@ -9,15 +9,15 @@ source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crate
 translation: "complete"
 ---
 
-## Descripción general
+El servidor autentica a los clientes Umbra y conecta con los destinos que solicitan sus aplicaciones. El resto de las conexiones se reenvía al sitio de `dest`.
 
-El servidor acepta conexiones Umbra autenticadas y reenvía las demás a un destino real fijo. El sitio elegido debe admitir TLS 1.3 y ser accesible desde el servidor. Su identidad debe ser coherente con server_names y con el SNI del cliente. Los dominios de ejemplo son marcadores, no recomendaciones concretas de despliegue.
+## Elegir el sitio
 
-## Detalles
+Comprueba que el servidor accede a un sitio TLS 1.3 real. Usa su dominio en `server_names` y en `server_name` del cliente. Para QUIC, el sitio también debe ofrecer QUIC/HTTP/3 accesible.
 
-Genera una identidad nueva, completa server.toml y protege el archivo porque contiene una clave privada y una semilla de firma. listen es una dirección TCP numérica. Añade udp_listen solo si deseas QUIC nativo; TCP y UDP pueden utilizar el mismo número de puerto. El respaldo QUIC exige un servicio real QUIC/HTTP3 en dest: un sitio HTTPS que solo usa TCP no basta.
+## Crear la configuración
 
-### Plantilla del servidor
+Ejecuta `umbra keygen` y elige un `short_id` según el inicio rápido. Guarda este modelo en `server.toml`, sustituyendo los marcadores y `cover.example`:
 
 ```toml
 listen = "0.0.0.0:443"
@@ -29,13 +29,22 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
+`listen` define la escucha TCP. Protege este archivo: contiene la clave privada y la semilla de firma.
 
-## Verificación y límites
+## Iniciar y comprobar
 
-Arranca primero en primer plano. La comprobación inicial siempre se ejecuta; prebuild=false desactiva únicamente el refresco periódico. Si falla la comprobación, el servidor no arranca. Revisa las direcciones y las reglas de red antes de conectar un cliente compatible. Una prueba TLS no autenticada que recibe el certificado real del destino observa el comportamiento esperado. Configura la supervisión del servicio después de validar esta ruta básica.
+```sh
+umbra server -c server.toml
+```
+
+Si falla la comprobación inicial del sitio, revisa destino, dominio y conectividad. `prebuild = false` desactiva solo las actualizaciones periódicas; la comprobación al arrancar sigue activa. Revisa puerto y cortafuegos y prueba un cliente configurado. Es normal que un navegador o una sonda TLS sin autenticar reciban el certificado del sitio de cobertura.
+
+## Activar QUIC si lo necesitas
+
+Añade `udp_listen = "0.0.0.0:443"` a la configuración completa. TCP y UDP pueden compartir número de puerto. Permite UDP y comprueba el servicio QUIC del sitio. Configura el servicio en segundo plano después de validar el funcionamiento en primer plano.
 
 ## Siguientes pasos
 
-- [Configuración del servidor](/es/docs/configuration/server/)
-- [Despliegue y operación](/es/docs/guides/deployment/)
+- [Referencia de configuración del servidor](/es/docs/configuration/server/)
+- [Desplegar y mantener Umbra](/es/docs/guides/deployment/)
 - [Modelo de seguridad](/es/docs/concepts/security-model/)

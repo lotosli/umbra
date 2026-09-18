@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Umbra",
+  "short_name": "Umbra",
+  "description": "Umbra es un proxy de código abierto que alojas tú. Conecta a través de tu servidor, usa un sitio web real como cobertura y reúne tus aplicaciones en un único proxy local.",
+  "lang": "es",
+  "start_url": "/es/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fafafa",
+  "theme_color": "#fafafa",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

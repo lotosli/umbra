@@ -1,7 +1,7 @@
 ---
 id: "getting-started/installation"
-title: "安装"
-description: "选择适合平台的发布产物，或从 Rust 源码构建。"
+title: "安装 Umbra"
+description: "下载适合设备的程序，或使用 Rust 从源码构建。"
 section: "getting-started"
 order: 2
 version: "1.0.0-alpha"
@@ -9,19 +9,13 @@ source: ["docs/usage.md", "README.md", ".github/workflows/dist.yml"]
 translation: "complete"
 ---
 
-## 概览
+客户端与服务端使用同一个 Umbra 程序，通过不同子命令启动。为两端选择同一版本，再按各自的操作系统和处理器架构下载。
 
-发布工作流面向 macOS、Linux 和 Windows。请按实际运行机器的架构选择产物。下表列的是构建目标，某个具体预发布是否提供相应文件，应以 GitHub Release 的实际附件为准。这里不会把构建目标冒充已发布文件，也不提供未经核验的校验和或签名声明。
+## 下载程序
 
-## 详细说明
+打开[GitHub 发布页面](https://github.com/lotosli/umbra/releases)，在所选版本的附件中查找对应文件。下表帮助你识别文件名；可下载的平台以该版本附件为准。
 
-从项目的发布页面下载。在 macOS 或 Linux 上，给选中的准确文件名添加执行权限，按需重命名为 umbra 并放入 PATH 目录；Windows 使用对应的 .exe 文件。在运行前阅读该版本说明，并核对发布页面实际提供的校验信息。不要把本地系统的下载安全策略当成项目已完成代码签名的证明。
-
-### 发布下载
-
-[发布下载](https://github.com/lotosli/umbra/releases)
-
-| 平台 | 架构 | 构建产物目标 |
+| 平台 | 架构 | 文件名对应的构建目标 |
 |---|---|---|
 | macOS | Apple Silicon | `umbra-aarch64-apple-darwin` |
 | macOS | Intel | `umbra-x86_64-apple-darwin` |
@@ -29,7 +23,16 @@ translation: "complete"
 | Linux | aarch64 | `umbra-aarch64-unknown-linux-gnu` |
 | Windows | x86_64 | `umbra-x86_64-pc-windows-msvc.exe` |
 
-### 源码构建
+## 安装到设备
+
+- **macOS、Linux：** 如果附件是压缩包，先解压。为下载的程序添加执行权限；可以将其重命名为 `umbra`，放入 `PATH` 中的目录，方便在终端调用。
+- **Windows：** 如果附件是压缩包，先解压。在终端中运行对应的 `.exe`；也可以将其所在目录加入 `PATH`。
+
+运行前查看版本说明，并按发布页面提供的信息核对文件。
+
+## 从源码构建
+
+本仓库固定使用 Rust 1.96.1。准备好对应工具链后运行：
 
 ```sh
 git clone https://github.com/lotosli/umbra.git
@@ -38,10 +41,13 @@ cargo build --release
 ./target/release/umbra --help
 ```
 
+构建完成的程序位于 `target/release`。Windows 下可执行文件带有 `.exe` 后缀。
 
-## 验证与边界
+## 确认安装成功
 
-从源码构建时使用仓库锁定的 Rust 1.96.1 工具链。克隆公开仓库后运行 cargo build --release，程序位于 target/release。通过 umbra --help 检查 server、client、keygen 子命令。客户端与服务端使用同一个二进制文件。安装本身不会启动后台服务，也不会自动创建监听器；接着按快速开始生成自己的身份材料。
+运行 `umbra --help`；如果尚未加入 `PATH`，请使用程序的实际路径。帮助中应能看到 `server`、`client`、`keygen` 三个子命令。
+
+接下来生成密钥、配置两端并启动程序。需要开机运行时，再按[部署与运维](/zh-hans/docs/guides/deployment/)设置后台服务。
 
 ## 下一步
 

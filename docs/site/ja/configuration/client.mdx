@@ -1,7 +1,7 @@
 ---
 id: "configuration/client"
-title: "クライアント設定"
-description: "通信方式、識別情報、ローカルプロキシを設定します。"
+title: "クライアント設定リファレンス"
+description: "サーバーの認証情報、通信方式、ローカルプロキシを設定します。"
 section: "configuration"
 order: 9
 version: "1.0.0-alpha"
@@ -9,15 +9,11 @@ source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.
 translation: "complete"
 ---
 
-## 概要
+クライアントの TOML は、リモート接続先とローカル SOCKS5 を定義します。
 
-クライアントの TOML は遠隔識別情報とローカル SOCKS 待ち受けを定義し、CLI との統合後に検証します。transport は必須で tcp または quic です。udp_transport を省略すると統合後の transport を継承し、指定すると UDP だけが変わり TCP CONNECT の経路は維持されます。
+## 最小構成
 
-## 詳細
-
-public_key は32バイトに復号できる必要があります。mldsa_verify は空でない base64 値で、対応サーバーの keygen から取得します。short_id と server_name は許可された値に一致させます。fingerprint は必須で、組み込み名に chrome-latest と chrome-150-macos があります。現版の chrome-latest は新しい採取記録があっても歴史的 Chrome 150 プロファイルを使用します。
-
-### クライアントテンプレート
+アドレス、ドメイン、認証用の値を置き換えます。
 
 ```toml
 server = "198.51.100.10:443"
@@ -30,6 +26,7 @@ mldsa_verify = "<MLDSA_VERIFY_BASE64>"
 socks_listen = "127.0.0.1:1080"
 ```
 
+## フィールド
 
 | 項目 | 既定値 / 要件 | 意味 |
 |---|---|---|
@@ -47,12 +44,22 @@ socks_listen = "127.0.0.1:1080"
 | `padding_scheme` | `"default"` | 内部パディング方式 |
 | `tcp_evasion` | `"segment"` | ClientHello の順序付き分割 write |
 
-## 確認と制約
+## サーバーの認証情報を確認
 
-SOCKS は認証しないため、socks_listen はループバックを指定します。mux は既定 true で、false は TCP の専用 Vision を選びます。spider_path は既定 / で、/ から始まり CR や LF を含められません。Umbra 認証セッションが成立しない場合の実サイト動作に使用します。設定の構文が正しくても鍵の一致やネットワーク到達性は別途確認が必要です。
+`public_key` はサーバーの X25519 公開鍵で、Base64 デコード後 32 バイトです。`mldsa_verify` は対応する空でない Base64 検証鍵です。信頼できる経路で取得してください。`short_id` と `server_name` はサーバーの許可リストと一致させます。
+
+## 通信方式を選ぶ
+
+`transport` は必須で `tcp` または `quic` です。UDP は最終的な値を継承しますが、`udp_transport` で UDP だけ変更できます。TCP は既定で `mux = true`、false で独立 Vision を使用します。
+
+## ローカルアクセスとプロファイル
+
+パスワード認証がないため `socks_listen` は `127.0.0.1:1080` にします。`fingerprint` はハンドシェイクのプロファイルを選択します。`chrome-latest` と `chrome-150-macos` は現在どちらも Chrome 150 で、別名はソフトウェア更新に応じて変わります。
+
+`spider_path` は既定で `/` です。Umbra の認証済みセッションが成立しない場合のサイト動作に使われ、`/` で始まり改行を含まない必要があります。CLI は検証前に対応値を上書きします。性能設定は `[performance]` に置き、まず既定値で接続を確認します。
 
 ## 次のステップ
 
-- [クライアントの接続](/ja/docs/guides/client/)
-- [性能とポリシー](/ja/docs/reference/configuration/)
-- [CLI リファレンス](/ja/docs/reference/cli/)
+- [アプリや Clash 系クライアントを接続する](/ja/docs/guides/client/)
+- [性能と通信パラメーター](/ja/docs/reference/configuration/)
+- [コマンドラインリファレンス](/ja/docs/reference/cli/)

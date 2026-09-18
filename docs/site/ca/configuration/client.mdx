@@ -1,7 +1,7 @@
 ---
 id: "configuration/client"
-title: "Configuració del client"
-description: "Selecció de transport, identitat i escolta local."
+title: "Referència de configuració del client"
+description: "Consulta identitat del servidor, transport i entrada local."
 section: "configuration"
 order: 9
 version: "1.0.0-alpha"
@@ -9,15 +9,11 @@ source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.
 translation: "complete"
 ---
 
-## Visió general
+El TOML del client defineix l'extrem remot i SOCKS5 local.
 
-El TOML del client defineix la identitat remota i l’escolta SOCKS local. Es valida després de combinar les opcions CLI. transport és obligatori i admet tcp o quic. Sense udp_transport, UDP hereta el valor final de transport; indicar-lo modifica les associacions UDP sense canviar les connexions TCP CONNECT.
+## Configuració mínima
 
-## Detalls
-
-public_key ha de descodificar 32 bytes. mldsa_verify ha de ser un base64 no buit procedent de la identitat del servidor. short_id i server_name han de coincidir amb les entrades permeses. fingerprint és obligatori: els noms integrats inclouen chrome-latest i chrome-150-macos. En aquesta versió, chrome-latest encara segueix el perfil històric de Chrome 150 tot i existir una captura més recent.
-
-### Plantilla del client
+Substitueix adreça, domini i identitat:
 
 ```toml
 server = "198.51.100.10:443"
@@ -30,6 +26,7 @@ mldsa_verify = "<MLDSA_VERIFY_BASE64>"
 socks_listen = "127.0.0.1:1080"
 ```
 
+## Camps
 
 | Camp | Valor per defecte / requisit | Significat |
 |---|---|---|
@@ -47,12 +44,22 @@ socks_listen = "127.0.0.1:1080"
 | `padding_scheme` | `"default"` | Política de farciment intern |
 | `tcp_evasion` | `"segment"` | Escriptures ordenades de ClientHello |
 
-## Verificació i límits
+## Verificar la identitat
 
-Vincula socks_listen al bucle local perquè SOCKS no demana contrasenya. mux val true per defecte; false tria Vision dedicat per a TCP. spider_path val /, ha de començar amb / i no admet retorns de carro ni salts de línia. S’utilitza per al comportament de lloc real quan no s’estableix una sessió Umbra autenticada. Una configuració sintàcticament vàlida no garanteix claus coincidents ni una ruta accessible.
+`public_key` és la clau X25519 del servidor, de 32 bytes un cop descodificada. `mldsa_verify` és la clau de verificació Base64 no buida corresponent. Obté-les per un canal de confiança. `short_id` i `server_name` han de coincidir amb les llistes del servidor.
+
+## Triar transports
+
+`transport` és obligatori: `tcp` o `quic`. UDP n'hereta el valor final tret que s'indiqui `udp_transport`, que només afecta UDP. TCP utilitza `mux = true` per defecte; false selecciona Vision dedicat.
+
+## Accés local i perfils
+
+Fes servir `127.0.0.1:1080` a `socks_listen`, perquè no hi ha contrasenya. `fingerprint` tria el perfil de negociació. `chrome-latest` i `chrome-150-macos` fan servir Chrome 150 actualment; els àlies canvien amb les versions.
+
+`spider_path` val `/` per defecte i s'utilitza per al comportament del lloc real quan no s'autentica una sessió Umbra. Ha de començar per `/` i no contenir retorns de carro ni salts de línia. La CLI substitueix camps abans de validar. El rendiment va a `[performance]`; comença amb els valors predeterminats.
 
 ## Passos següents
 
-- [Connectar un client](/ca/docs/guides/client/)
-- [Rendiment i polítiques](/ca/docs/reference/configuration/)
-- [Referència de la CLI](/ca/docs/reference/cli/)
+- [Connectar aplicacions i clients compatibles amb Clash](/ca/docs/guides/client/)
+- [Paràmetres de rendiment i transport](/ca/docs/reference/configuration/)
+- [Referència de la línia d'ordres](/ca/docs/reference/cli/)

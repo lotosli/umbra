@@ -86,7 +86,7 @@ describe('Seven-language presentation', () => {
         'href',
         localePath(locale, 'docs/reference/protocol'),
       );
-      expect(screen.getAllByRole('link', { name: copy.hero.start })[0]).toHaveAttribute(
+      expect(screen.getAllByRole('link', { name: copy.hero.start }).at(-1)!).toHaveAttribute(
         'href',
         localePath(locale, 'docs/getting-started/quick-start'),
       );
@@ -104,7 +104,7 @@ describe('Seven-language presentation', () => {
       for (const name of ['Umbra', 'Xray', 'VLESS', 'REALITY', 'VMess', 'Trojan', 'Shadowsocks', 'Hysteria']) {
         expect(comparisons.join(' ')).toContain(name);
       }
-      expect(screen.getByRole('link', { name: marketingCopy[locale].nav.docs })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: marketingCopy[locale].protocol.read })).toHaveAttribute(
         'href',
         localePath(locale, 'docs/reference/protocol'),
       );
@@ -122,7 +122,7 @@ describe('Seven-language presentation', () => {
     expect(screen.getByText('x86_64 · aarch64')).toBeInTheDocument();
     expect(screen.getByText('v1.0.0-alpha')).toBeInTheDocument();
     for (const link of screen.getAllByRole('link', {
-      name: /view release assets/i,
+      name: marketingCopy.en.download.releases,
     }))
       expect(link).toHaveAttribute(
         'href',
@@ -133,37 +133,25 @@ describe('Seven-language presentation', () => {
     ).toBeInTheDocument();
   });
 
-  it('distinguishes historical browser profiles and design goals from implementation', () => {
+  it('keeps setup guidance on the overview and links to detailed documentation', () => {
     render(<MarketingPage locale="en" page="protocol" />);
-    expect(
-      screen.getByText(
-        /chrome-latest currently follows the historical Chrome 150 profile/,
-      ),
-    ).toHaveTextContent('does not establish full fingerprint equivalence');
-    expect(screen.getByRole('link', { name: 'Documentation' })).toHaveAttribute(
-      'href',
-      '/en/docs/reference/protocol/',
-    );
+    expect(screen.getByText(marketingCopy.en.protocol.caveat)).toHaveTextContent('configuration');
+    expect(screen.getByRole('link', { name: marketingCopy.en.protocol.read })).toHaveAttribute('href', '/en/docs/reference/protocol/');
   });
 
-  it('states alpha, unaudited and unauthenticated SOCKS5 boundaries explicitly', () => {
+  it('explains alpha status, local access and application HTTPS on the security page', () => {
     render(<MarketingPage locale="en" page="security" />);
-    expect(
-      screen.getByText(/not a claim of an independent security audit/),
-    ).toBeInTheDocument();
-    expect(
-      screen.getAllByText(/SOCKS5 listener has no authentication/).length,
-    ).toBeGreaterThan(0);
-    expect(
-      screen.getByText(/Keep application HTTPS enabled/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/no published evidence of a completed independent security audit/)).toBeInTheDocument();
+    expect(screen.getByText(/127.0.0.1:1080/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Continue using HTTPS' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: marketingCopy.en.security.source })).toHaveAttribute('href', 'https://github.com/lotosli/umbra/security');
   });
 
   it('gives paired upgrade guidance for the alpha release', () => {
     render(<MarketingPage locale="en" page="changelog" />);
     expect(screen.getByText('Prerelease')).toBeInTheDocument();
-    expect(screen.getByText(/Upgrade both endpoints/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Documentation' })).toHaveAttribute(
+    expect(screen.getByText(/Update both ends/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: marketingCopy.en.changelog.upgradeRead })).toHaveAttribute(
       'href',
       '/en/docs/guides/upgrade/',
     );
@@ -172,7 +160,7 @@ describe('Seven-language presentation', () => {
   it('links the release summary to a localized detail page with all changes and sources', () => {
     const { rerender } = render(<MarketingPage locale="en" page="changelog" />);
     expect(
-      screen.getByRole('link', { name: 'Read the release notes' }),
+      screen.getByRole('link', { name: marketingCopy.en.changelog.read }),
     ).toHaveAttribute('href', '/en/changelog/1.0.0-alpha/');
     expect(
       screen.queryByText(marketingCopy.en.changelog.changes[0]!),
@@ -181,19 +169,19 @@ describe('Seven-language presentation', () => {
     for (const change of marketingCopy.en.changelog.changes)
       expect(screen.getByText(change)).toBeInTheDocument();
     expect(
-      screen.getByRole('link', { name: 'Read the release notes' }),
+      screen.getByRole('link', { name: marketingCopy.en.changelog.externalRead }),
     ).toHaveAttribute('href', 'https://github.com/lotosli/umbra/releases');
-    expect(screen.getByRole('link', { name: 'README' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: marketingCopy.en.changelog.sourceRead })).toHaveAttribute(
       'href',
       'https://github.com/lotosli/umbra/blob/main/README.md',
     );
     expect(
-      screen.getByRole('link', { name: 'docs/performance.md' }),
+      screen.getByRole('link', { name: marketingCopy.en.changelog.performanceRead }),
     ).toHaveAttribute(
       'href',
       'https://github.com/lotosli/umbra/blob/main/docs/performance.md',
     );
-    expect(screen.getByRole('link', { name: 'Changelog' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: marketingCopy.en.changelog.back })).toHaveAttribute(
       'href',
       '/en/changelog/',
     );

@@ -1,7 +1,7 @@
 ---
 id: "getting-started/quick-start"
 title: "快速開始"
-description: "生成身份材料，連線第一組用戶端與伺服器端。"
+description: "產生金鑰，設定兩端，完成第一次代理連線。"
 section: "getting-started"
 order: 3
 version: "1.0.0-alpha"
@@ -9,24 +9,30 @@ source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crate
 translation: "complete"
 ---
 
-## 概覽
+本指南先建立 TCP 連線。準備一部伺服器、一部用戶端裝置，並在兩端安裝同一版本的 Umbra。用戶端需要能存取伺服器，伺服器需要能存取用於掩護的實際網站。
 
-先準備一臺伺服器端、一臺用戶端，並使用相同版本的 Umbra。用戶端必須能訪問伺服器端地址，伺服器端必須能訪問真實回落目標。下方示例只有佔位值，不能直接投入使用：把 cover.example 換成合適且可達的真實 TLS 1.3 站點，並用自己的 keygen 輸出替換所有身份佔位值。
+## 1. 產生金鑰
 
-## 詳細說明
-
-在私密終端執行 umbra keygen。x25519_private 與 mldsa_seed 只保留在伺服器端；透過可信方式向用戶端分發 x25519_public、mldsa_verify 和選中的 short_id。建立 server.toml 並先啟動伺服器端，確認啟動探測成功。用戶端 server_name 必須屬於伺服器端 server_names，short_id 必須匹配一個 short_ids 條目。
-
-### 生成身份材料
+在伺服器端的終端機中執行：
 
 ```sh
 umbra keygen
 ```
 
-`umbra keygen` 不產生 `short_id`。請自行選擇0–16個字元、長度為偶數的十六進位字串（0–8位元組），並在兩端使用相同值。將文件範例地址 `198.51.100.10` 換成用戶端可連線的實際伺服器地址，連接埠須與伺服器監聽一致。
+輸出包含四項。按下面的對應關係填入設定，保管好原始輸出：
 
+| 輸出名稱 | 設定欄位 | 保存位置 |
+| --- | --- | --- |
+| `x25519_private` | `private_key` | 僅伺服器端 |
+| `mldsa_seed` | `mldsa_seed` | 僅伺服器端 |
+| `x25519_public` | `public_key` | 用戶端 |
+| `mldsa_verify` | `mldsa_verify` | 用戶端 |
 
-### 伺服器端模板
+透過可信管道傳遞用戶端需要的值。另行選擇一個 `short_id`：使用不超過 16 個字元、長度為偶數的十六進制字串，在兩端填入相同值。`keygen` 輸出中不包含這一項。
+
+## 2. 設定並啟動伺服器端
+
+創建 `server.toml`，填入伺服器端金鑰。把 `cover.example` 換成從伺服器可存取、支援 TLS 1.3 的實際網站，並同步修改 `dest` 和 `server_names`。
 
 ```toml
 listen = "0.0.0.0:443"
@@ -38,15 +44,17 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
-
-### 啟動伺服器端
+尖括號中的值都需要替換。設定檔案只向服務執行使用者和管理員開放讀取權限。
 
 ```sh
 umbra server -c server.toml
 ```
 
+啟動時 Umbra 會探測目標網站。確認伺服器端成功啟動，並允許用戶端存取設定的 TCP 連接埠。
 
-### 用戶端模板
+## 3. 設定並啟動用戶端
+
+創建 `client.toml`。把 `198.51.100.10:443` 替換為實際伺服器位址；`server_name` 與伺服器端允許的網站名稱一致。填入第一步產生的公開金鑰、驗證金鑰和選定的 `short_id`。
 
 ```toml
 server = "198.51.100.10:443"
@@ -59,27 +67,26 @@ mldsa_verify = "<MLDSA_VERIFY_BASE64>"
 socks_listen = "127.0.0.1:1080"
 ```
 
-
-### 啟動用戶端
+保留 `socks_listen = "127.0.0.1:1080"`，讓無密碼認證的本機代理只供本機使用。
 
 ```sh
 umbra client -c client.toml
 ```
 
+## 4. 驗證第一次連線
 
-### 驗證連線
+另開一個終端機，透過本機代理髮起 HTTPS 請求：
 
 ```sh
 curl --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
+收到網頁回應後，可以在應用程式中選擇 SOCKS5，位址填 `127.0.0.1`，連接埠填 `1080`。這裡的 `--socks5-hostname` 會把目標網域名稱交給代理處理。
 
-## 驗證與邊界
-
-建立 client.toml 並啟動用戶端，然後把應用代理設為 SOCKS5 127.0.0.1:1080。本地 SOCKS 協商不提供使用者名稱密碼認證，因此應保持迴環繫結。使用 curl 的 --socks5-hostname 選項可檢查完整鏈路，並透過 SOCKS 傳遞目標主機名。前臺程序用 Ctrl-C 結束。先確認 TCP 能用，再按設定示例為同一例項增加 QUIC UDP。
+前景執行的用戶端和伺服器端都可用 `Ctrl-C` 停止。連線失敗時，按[故障排查](/zh-hant/docs/troubleshooting/)逐段檢查；TCP 連通後，再依需求增加 QUIC。
 
 ## 下一步
 
 - [設定伺服器端](/zh-hant/docs/guides/server/)
 - [連線用戶端](/zh-hant/docs/guides/client/)
-- [設定示例](/zh-hant/docs/configuration/examples/)
+- [設定範例](/zh-hant/docs/configuration/examples/)

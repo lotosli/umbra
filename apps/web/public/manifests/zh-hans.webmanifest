@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Umbra",
+  "short_name": "Umbra",
+  "description": "Umbra 是开源的自建代理工具。用自己的服务器连接互联网，以真实网站作为掩护，并通过一个本地代理入口接入常用应用。",
+  "lang": "zh-Hans",
+  "start_url": "/zh-hans/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fafafa",
+  "theme_color": "#fafafa",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

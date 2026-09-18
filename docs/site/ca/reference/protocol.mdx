@@ -1,7 +1,7 @@
 ---
 id: "reference/protocol"
-title: "Umbra i les principals solucions de servidor intermediari"
-description: "Compara Xray, VMess, Trojan, Shadowsocks i Hysteria 2: cobertura amb llocs reals, certificats, camins TCP/UDP i connexió de clients."
+title: "Comparar solucions de servidor intermediari"
+description: "Compara desplegament, transports i integració amb aplicacions."
 section: "reference"
 order: 16
 version: "1.0.0-alpha"
@@ -9,94 +9,42 @@ source: ["README.md", "docs/usage.md", "docs/performance.md", "crates/umbra-core
 translation: "complete"
 ---
 
-## Visió general
+Parteix de la xarxa, del manteniment que vols assumir i de les aplicacions. Umbra reuneix cobertura web, TCP/Vision, QUIC i SOCKS5. Es compara Umbra 1.0.0-alpha; Xray es refereix a VLESS + REALITY + Vision per TCP.
 
-Per triar una solució de servidor intermediari, valora primer si s’adapta a la teva xarxa, a les aplicacions i a la manera de mantenir-la, no pas el nombre d’algorismes ni la cobertura de les proves. Umbra es planteja com un transport de privadesa autoallotjat: reuneix la cobertura amb un lloc real, TCP/Vision, QUIC i una entrada SOCKS5 local en un mateix conjunt de client i servidor.
+## Desplegament i transport
 
-**Abast de la comparació:** Umbra 1.0.0-alpha; per als altres projectes, s’utilitza la documentació oficial consultada el 2026-09-16. És una comparació de funcions i formes de desplegament, no una prova de velocitat, una classificació de seguretat ni una garantia d’anonimat. Les versions posteriors i els diferents clients poden canviar els comportaments concrets.
-
-Xray és una plataforma de servidor intermediari amb suport per a múltiples protocols i encaminament; VMess, VLESS i Trojan són protocols. Per fer una comparació coherent, aquí Xray es limita explícitament a la combinació habitual **VLESS + REALITY + Vision, amb transport exterior RAW/TCP**. No es poden atribuir les limitacions d’una configuració a tota la plataforma Xray.
-
-## Comparació ràpida
-
-| Solució | Connexió exterior i comportament del lloc | Desplegament i manteniment | TCP i UDP |
+| Solució | Característiques | Desplegament | TCP i UDP |
 | --- | --- | --- | --- |
-| **Umbra** | Cobertura amb un lloc real de tipus REALITY; les connexions no autenticades es reenvien al lloc de destinació | Allotjar els dos extrems, gestionar les claus d’identitat i disposar d’un lloc real accessible; no cal obtenir un certificat d’AC per al node; actualment en alpha | TCP/Vision, mux TCP o QUIC; una sola entrada SOCKS5 permet triar per separat el transport exterior de TCP i UDP |
-| **Xray + VLESS + REALITY + Vision** | Utilitza la identitat d’un lloc real; Vision tracta el trànsit TLS intern que compleix els requisits | Mantenir la configuració Xray, les claus i el lloc de destinació; no cal obtenir un certificat propi per al node REALITY | Aquí es compara el transport exterior TCP; també pot retransmetre peticions UDP, segons el flow i la configuració del client |
-| **VMess AEAD** | Proporciona per si mateix un servidor intermediari xifrat; TLS, WebSocket i altres transports es configuren per separat | VMess no exigeix per si mateix un certificat web; si s’hi afegeix TLS, cal configurar l’autenticació corresponent | Admet peticions TCP i UDP; el transport exterior real depèn de la configuració |
-| **Trojan (solució TLS original)** | Negociació TLS real; una autenticació fallida o una petició no Trojan pot derivar-se a un servei HTTP | En un desplegament habitual cal mantenir el domini, el certificat TLS i la clau privada; un certificat no ha de ser necessàriament de pagament | Pot retransmetre peticions TCP i UDP; UDP s’encapsula dins de TLS/TCP |
-| **Shadowsocks AEAD / 2022** | TCP/UDP xifrats de manera nativa; el TLS de navegador i la cobertura amb llocs reals no són funcions pròpies del protocol base | No cal un domini web ni un certificat TLS; cal gestionar les claus i els clients compatibles, amb complements configurats per separat | Suport natiu per a TCP/UDP; un complement SIP003 que només reenvia TCP no es pot considerar camuflatge per a UDP |
-| **Hysteria 2** | QUIC/UDP; comportament de lloc web HTTP/3 quan no hi ha autenticació | Requereix un camí UDP disponible i configuració TLS; pot utilitzar fitxers de certificat o ACME | TCP utilitza fluxos QUIC i UDP datagrames no fiables; no és una solució amb transport exterior TCP |
+| Umbra | Cobertura web i una entrada local | Dos extrems, claus i lloc; sense certificat CA del node | Mux TCP o Vision; QUIC separat per a UDP |
+| Xray + VLESS + REALITY + Vision | REALITY i Vision per TCP | Configurar Xray, identitat, lloc i client compatible | Exterior TCP aquí; UDP segons flow i client |
+| VMess AEAD | Protocol xifrat amb transports a triar | Client i transport compatibles; identitat TLS si s’afegeix | Peticions TCP/UDP; transport segons configuració |
+| Trojan | TLS amb retorn a un lloc | Habitualment domini, certificat i clau privada | TCP i UDP dins de TLS/TCP |
+| Shadowsocks AEAD / 2022 | Intermediari xifrat amb claus | Claus i clients compatibles; connectors a part | TCP/UDP natius; verificar cada connector |
+| Hysteria 2 | QUIC; lloc HTTP/3 abans d’autenticar | UDP accessible i configuració TLS | TCP en fluxos fiables; UDP en datagrames no fiables |
 
-## Avantatges i limitacions
+## Què simplifica Umbra
 
-Cada opció ajuda en algun punt i en costa un altre. La llista següent condensa els avantatges i les limitacions de cada opció perquè puguis adaptar-les a les condicions de la teva xarxa i al manteniment que vulguis assumir.
+Amb `transport = "tcp"`, `udp_transport = "quic"` i `mux = false`, una entrada local porta TCP per Vision i UDP per QUIC. N'hi ha prou amb un procés a cada extrem. Les claus i el certificat temporal eviten sol·licitar i renovar un certificat públic per al node. Mantén les claus i un lloc real accessible, amb QUIC si l'utilitzes.
 
-- **Umbra** — Avantatges: una sola entrada porta els dos camins (TCP Vision i QUIC UDP) darrere d’un únic node SOCKS5 local; les claus d’identitat i la vinculació amb certificats temporals eliminen els tràmits de certificats públics; cobertura, transports i SOCKS5 arriben com un parell client-servidor provat que administres d’extrem a extrem. Limitacions: avui és alpha i només CLI; no importa nodes VLESS, VMess ni Trojan; els canvis de protocol entre versions exigeixen actualitzar els dos extrems alhora.
-- **Xray + VLESS + REALITY + Vision** — Avantatges: plataforma multiprotocol madura, amb encaminament ric, molts clients a punt per fer servir i documentació comunitària extensa; REALITY i Vision són tan disponibles aquí com arreu. Limitacions: muntar i mantenir la pila és feina teva: configuració del nucli, capes de transport, regles d’encaminament i clients compatibles; compartir mecanismes no el fa interoperable amb Umbra.
-- **VMess AEAD** — Avantatges: suport de clients molt ampli a totes les plataformes, inclosos equips antics o de baix consum. Limitacions: el protocol xifra però no camufla: la cobertura depèn del transport que hi afegeixis; els modes antics sense AEAD estan obsolets, així que tria clients que implementin AEAD.
-- **Trojan (solució TLS original)** — Avantatges: negociació TLS real, amb un comportament de derivació documentat i un disseny estable des de fa anys. Limitacions: els desplegaments habituals mantenen un domini i renoven un certificat de confiança pública; UDP viatja dins de TLS sobre TCP, de manera que la temporització de UDP segueix el camí TCP.
-- **Shadowsocks AEAD / 2022** — Avantatges: peces mínimes: claus i un client compatible, sense domini ni certificat; suport natiu de TCP i UDP. Limitacions: els protocols base ofereixen xifratge, no camuflatge; els complements són una superfície a part per avaluar, i un complement SIP003 només per a TCP no es pot tractar com a camuflatge per a UDP.
-- **Hysteria 2** — Avantatges: un camí UDP de datagrames no fiables dissenyat per a xarxes amb pèrdues, amb control de congestió ajustat a condicions adverses; es comporta com un lloc web HTTP/3 sense autenticació. Limitacions: un UDP bloquejat o restringit li treu l’avantatge principal; TCP encara viatja com a fluxos QUIC, de manera que les pèrdues poden aturar fluxos com en qualsevol transport fiable, i el seu disseny no garanteix més velocitat a la teva xarxa.
+SOCKS5 permet conservar aplicacions i regles. Mux redueix obertures repetides; Vision redueix xifratge extern per a TLS 1.3 apte.
 
-## Què pot fer interessant Umbra
+## Segons l'entorn
 
-### Reunir dos camins de transport en una sola entrada
+Amb Xray/REALITY, compara rutes, clients i manteniment amb l'entrada dual d'Umbra. Amb VMess, revisa el transport abans de migrar. Trojan ofereix desplegament TLS convencional; Shadowsocks, un intermediari xifrat basat en claus i connectors segons les necessitats. Per a QUIC, compara Hysteria 2 amb les teves aplicacions UDP. Umbra és una CLI Alpha: considera també interfície gràfica, mòbil i subscripcions si et calen.
 
-Un client Umbra pot combinar `transport = "tcp"`, `udp_transport = "quic"` i `mux = false` perquè TCP utilitzi Vision i UDP utilitzi QUIC; el mateix servidor obre TCP i UDP alhora. El client existent només es connecta a un node SOCKS5 local, sense haver de separar els dos camins en dos conjunts de processos Umbra.
+## Una diferència important per a UDP
 
-És una comoditat de configuració i d’ús, no vol dir que altres plataformes no puguin aconseguir resultats semblants amb sortides o rutes diferents. Umbra no determina automàticament quin camí és més ràpid ni ofereix commutació automàtica entre TCP i QUIC en cas de fallada.
+Hysteria 2 utilitza datagrames no fiables. Umbra fa servir fluxos QUIC fiables per a les associacions UDP: les dades perdudes poden retardar les següents. Compara latència i pèrdues en trucades, jocs i altres usos en temps real.
 
-### Reduir el processament duplicat del trànsit que compleix els requisits
+## Més informació
 
-Després de l’intercanvi autenticat que estableix el límit de canvi de reenviament, TCP/Vision pot transmetre directament els registres TLS 1.3 interns xifrats que compleixen els requisits, sense continuar amb el xifratge TLS exterior ni l’encapsulació addicional. El trànsit no TLS i el TLS no admès continuen xifrats. El mux TCP, en canvi, permet que diverses peticions comparteixin una connexió exterior i redueix la necessitat d’establir connexions repetidament.
+L'arquitectura explica el recorregut i el model de seguretat els perfils i la negociació criptogràfica. Geneva DSL, 0-RTT i preconnexió de reserva no estan disponibles. Compara velocitat i estabilitat amb la mateixa càrrega i ruta.
 
-Ni REALITY ni Vision són conceptes exclusius d’Umbra i no justifiquen afirmar que sigui superior a Xray en tots els aspectes. Aquí el reenviament es fa en espai d’usuari, no amb còpia zero al nucli; sense proves comparatives en un entorn comú, no es pot quantificar cap avantatge de velocitat.
-
-### No haver de mantenir un certificat públic propi per al node
-
-Umbra utilitza claus d’identitat i vinculació criptogràfica amb certificats temporals; el desplegament no exigeix sol·licitar ni renovar un certificat d’una AC pública. Encara has de gestionar els secrets del servidor, les credencials del client i un lloc real de destinació accessible. Activar QUIC també exigeix un lloc QUIC real de reserva i connectivitat UDP.
-
-La combinació REALITY també redueix aquest manteniment de certificats, i un desplegament natiu de Shadowsocks tampoc no depèn de certificats web. És una contrapartida de desplegament, no un avantatge exclusiu d’Umbra.
-
-## Cal migrar des de la teva solució actual?
-
-- **Ja utilitzes Xray / VLESS / REALITY:** si depens de múltiples protocols, encaminament complex i l’ecosistema de clients existent, no cal migrar només per un mecanisme de cobertura semblant. Tria Umbra si el seu model de dos transports en una sola instància s’adapta al teu ús, no perquè «REALITY sigui més avançat».
-- **Ja utilitzes VMess:** comprova primer quins transports fas servir realment: TLS, WebSocket o altres. El nom VMess no permet deduir que el trànsit sigui en clar, que no tingui camuflatge o que no pugui transportar UDP. Umbra no pot importar directament nodes VMess.
-- **Vols mantenir un servei TLS estàndard:** el TLS real de Trojan i el seu mecanisme de derivació tenen formes de desplegament ben definides; no s’ha de presentar com una solució sense resistència als sondejos. Entre les diferències amb Umbra hi ha el manteniment dels certificats i el camí de transport UDP.
-- **Només necessites un servidor intermediari xifrat lleuger:** Shadowsocks pot ajustar-se millor a les teves necessitats. Cal parlar d’AEAD i de 2022 segons la versió; 2022 inclou protecció completa contra la reproducció de missatges. Les funcions dels complements no són les del protocol base.
-- **Prioritzes QUIC i les xarxes amb pèrdues:** també pots avaluar Hysteria 2. Utilitza datagrames no fiables per a UDP, mentre que Umbra actualment encapsula les dades de les associacions UDP dins de fluxos QUIC fiables; si es perden paquets, un mateix flux encara pot haver d’esperar una retransmissió. Per tant, no es pot anunciar que «tot el trànsit UDP està lliure de bloqueig de cap de línia». Per saber si és més adequat per a jocs, trucades o descàrregues, cal provar el camí de xarxa real.
-- **Necessites una interfície gràfica consolidada, un client mòbil o subscripcions preparades:** comprova primer el client concret i la seva versió. Umbra és actualment una eina de transport de línia d’ordres; es pot connectar a clients amb regles compatibles amb SOCKS5, però no incorpora aquestes capacitats d’ecosistema.
-
-## Procés de connexió implementat
-
-1. **Establir la negociació exterior.** El client TCP construeix el ClientHello TLS 1.3 i els registres; QUIC natiu utilitza Quinn. Les dades d’autenticació es vinculen al ClientHello i es col·loquen a `legacy_session_id`.
-2. **Comprovar la identitat de la connexió.** El servidor verifica les dades abans de seleccionar el camí de transport autenticat; les connexions no autenticades van a la destinació real configurada. El client verifica la informació de vinculació del certificat temporal per no confondre un lloc real ordinari amb un servidor Umbra.
-3. **Transportar les peticions de les aplicacions.** Segons el mode, la connexió autenticada transporta adreces, fluxos i farciment; Vision només canvia el mode de reenviament quan es compleixen les condicions i s’ha acabat la negociació.
-
-La derivació a un lloc real no garanteix ser indetectable per sempre. Les fallades del lloc de destinació, les condicions de xarxa, els temps d’espera i les capacitats de l’observador afecten el comportament real; la IP del servidor també es pot bloquejar directament.
-
-## Límits de les empremtes de navegador i de la criptografia postquàntica
-
-- `chrome-latest` encara utilitza un perfil històric de Chrome 150. L’ordre de les extensions, GREASE, les comprovacions JA3/JA4 i les captures reals de Chrome 153 no demostren, per si sols, una equivalència completa amb el navegador actual.
-- ML-DSA-65 s’utilitza per vincular amb una signatura la clau pública del certificat temporal; això no converteix totes les etapes d’autenticació en autenticació postquàntica.
-- El codi disposa d’un camí d’intercanvi híbrid X25519 + ML-KEM-768, però només s’utilitza el secret compartit corresponent quan es negocia realment un grup híbrid. A la CLI estàndard actual, el sondeig del lloc de destinació fa servir el proveïdor ring, que no admet ML-KEM, i el servidor segueix el grup detectat. Per tant, no es pot afirmar que les connexions per defecte ja activin l’intercanvi híbrid postquàntic.
-- La configuració oficial actual de Xray REALITY també inclou ML-DSA opcional i suport d’intercanvi híbrid vinculat al grup negociat amb el lloc de destinació. Les capacitats postquàntiques no s’han de presentar com a exclusives d’Umbra.
-- Actualment Umbra no admet l’enviament segons Geneva DSL, 0-RTT ni la preconnexió de reserva; els plans del disseny del protocol no equivalen a funcions ja disponibles en el producte.
-
-## Fonts oficials de la comparació
-
-Els enllaços següents fonamenten la informació sobre les altres solucions d’aquesta pàgina i es van consultar el **2026-09-16**. Les fonts d’Umbra són el README, la guia d’ús, les notes de rendiment i el codi d’execució indicats a les metadades de la pàgina.
-
-- Xray: [exemples oficials de REALITY (revisió fixada)](https://github.com/XTLS/REALITY/blob/431b6ff8c67cc18811d48b18df9ec28e1ecf57f7/README.md), [configuració REALITY i opcions postquàntiques (revisió fixada)](https://github.com/XTLS/Xray-docs-next/blob/9125d3237c2f1717425dc94f1b54d2743ec1797a/docs/config/transports/reality.md), [configuració VLESS / Vision](https://xtls.github.io/config/outbounds/vless.html), [encaminament](https://xtls.github.io/config/routing.html).
-- VMess: [descripció del protocol de V2Fly](https://www.v2fly.org/developer/protocols/vmess.html), [capes de transport de Xray](https://github.com/XTLS/Xray-docs-next/blob/main/docs/config/transport.md).
-- Trojan: [protocol](https://trojan-gfw.github.io/trojan/protocol), [TLS i configuració del servidor](https://trojan-gfw.github.io/trojan/config).
-- Shadowsocks: [AEAD](https://shadowsocks.org/doc/aead.html), [2022 / SIP022](https://shadowsocks.org/doc/sip022.html), [límits dels complements SIP003](https://shadowsocks.org/doc/sip003.html).
-- Hysteria 2: [especificació del protocol](https://v2.hysteria.network/docs/developers/Protocol/), [desplegament del servidor](https://v2.hysteria.network/docs/getting-started/Server/), [modes del client](https://v2.hysteria.network/docs/advanced/Full-Client-Config/).
+[Xray](https://xtls.github.io/config/outbounds/vless.html) · [VMess](https://www.v2fly.org/developer/protocols/vmess.html) · [Trojan](https://trojan-gfw.github.io/trojan/protocol) · [Shadowsocks](https://shadowsocks.org/doc/sip022.html) · [Hysteria 2](https://v2.hysteria.network/docs/developers/Protocol/)
 
 ## Passos següents
 
-- [Valorar si Umbra et convé](/ca/docs/getting-started/introduction/)
-- [Triar un mode de transport](/ca/docs/concepts/transports/)
-- [Connectar aplicacions i clients existents](/ca/docs/guides/client/)
-- [Entendre el model de seguretat](/ca/docs/concepts/security-model/)
+- [Coneix Umbra](/ca/docs/getting-started/introduction/)
+- [Triar TCP, Vision o QUIC](/ca/docs/concepts/transports/)
+- [Connectar aplicacions i clients compatibles amb Clash](/ca/docs/guides/client/)
+- [Model de seguretat](/ca/docs/concepts/security-model/)

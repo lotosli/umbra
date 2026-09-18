@@ -1,30 +1,46 @@
 ---
 id: "concepts/security-model"
 title: "Model de seguretat"
-description: "Entén l’autenticació, els secrets i els límits de protecció."
+description: "Entén l'autenticació, la cobertura web i què cal protegir."
 section: "concepts"
 order: 13
 version: "1.0.0-alpha"
-source: ["README.md", "crates/umbra-core/src/socks.rs"]
+source: ["README.md", "crates/umbra-core/src/socks.rs", "crates/umbra-core/src/runtime.rs", "crates/umbra-reality/src/cert.rs", "crates/umbra-tls/src/server.rs"]
 translation: "complete"
 ---
 
-## Visió general
+Umbra verifica identitats, protegeix el transport i reenvia connexions sense autenticar a un web real. Tu gestiones claus, dispositius i servidor.
 
-Umbra combina autenticació anterior a la primera resposta amb retorn a un lloc real. Les connexions no autenticades es transmeten a aquella destinació sense rebre un error de proxy recognoscible. Els clients autenticats verifiquen la identitat esperada. La memòria cau contra repetició té límits de capacitat i temps i no representa una defensa il·limitada contra l’esgotament de recursos.
+## Autenticació i cobertura
 
-## Detalls
+El servidor comprova l'autenticació abans de respondre. El client verifica el vincle del certificat temporal amb la identitat esperada. Les altres connexions van al lloc de cobertura. Una memòria cau amb límits de mida i durada detecta repeticions. La criptografia utilitza comparacions en temps constant i mecanismes específics per desar i esborrar secrets.
 
-El codi concentra verificacions en temps constant i esborrament de secrets. Conserva private_key i mldsa_seed al servidor i distribueix la configuració client amb cura. Exclou claus, destinacions i contingut dels informes públics. SOCKS local no autentica l’usuari, per això cal vincular-lo al bucle local. Les aplicacions han de mantenir HTTPS o el seu propi xifratge autenticat d’extrem a extrem.
+## Claus i accés local
 
-[GitHub Security](https://github.com/lotosli/umbra/security)
+Desa `private_key` i `mldsa_seed` al servidor. Comparteix configuració per un canal de confiança, limita permisos i elimina credencials dels registres públics. SOCKS5 no té contrasenya: escolta a `127.0.0.1:1080`. Configura controls d'accés abans d'obrir-lo a altres dispositius.
 
-## Verificació i límits
+## Xifratge de les aplicacions
 
-Un transport privat no repara dispositius compromesos ni proporciona l’anonimat d’una xarxa de diversos salts. Aquesta alpha no afirma disposar d’una auditoria independent ni d’equivalència completa amb Chrome actual. chrome-latest segueix Chrome 150; una captura Chrome 153 no demostra conformitat total. Consulta la informació de seguretat publicada pel projecte abans de comunicar detalls sensibles, sense revelar secrets en una incidència pública ordinària.
+Continua utilitzant HTTPS. Vision reenvia dades ja protegides quan correspon. La seguretat de dispositius, comptes i destinacions necessita mesures pròpies.
+
+## Abast de la cobertura
+
+Les visites i sondes no autenticades reben respostes del lloc. Adreces, horaris i volums continuen sent observables, i la IP es pot bloquejar. Umbra és un servidor intermediari autogestionat, sense la separació d'identitat d'una xarxa anònima de diversos salts.
+
+## Perfils de navegador
+
+`chrome-latest` utilitza Chrome 150; el repositori també inclou captures Chrome 153 TCP/QUIC. Perfils, captures i JA3/JA4 comproven característiques concretes; no s'ha verificat equivalència completa amb el comportament de xarxa del Chrome actual.
+
+## Algoritmes postquàntics
+
+ML-DSA-65 vincula la clau pública del certificat temporal. X25519 + ML-KEM-768 només s'utilitza si es negocia. La sonda de destinació de la CLI utilitza ring, sense ML-KEM, i el servidor segueix el grup observat. Avalua la negociació real del desplegament.
+
+## Versió i avisos de seguretat
+
+La versió **1.0.0-alpha** no té evidència pública d'una auditoria independent acabada. Per a usos sensibles, revisa implementació, versions i desplegament. Consulta [GitHub Security](https://github.com/lotosli/umbra/security) abans d'informar d'una vulnerabilitat. No publiquis detalls explotables, credencials ni infraestructura sensible.
 
 ## Passos següents
 
-- [Referència del protocol](/ca/docs/reference/protocol/)
-- [Resolució de problemes](/ca/docs/troubleshooting/)
-- [Contribuir](/ca/docs/contributing/)
+- [Comparar solucions de servidor intermediari](/ca/docs/reference/protocol/)
+- [Resoldre problemes](/ca/docs/troubleshooting/)
+- [Contribuir a Umbra](/ca/docs/contributing/)

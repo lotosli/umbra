@@ -1,7 +1,7 @@
 ---
 id: "concepts/transports"
-title: "Comment choisir entre TCP, Vision et QUIC"
-description: "Choisissez le mode adapté au réseau et au trafic applicatif, avec des chemins TCP et UDP distincts derrière une même entrée SOCKS5."
+title: "Choisir TCP, Vision ou QUIC"
+description: "Sélectionnez le transport de chaque type de requête."
 section: "concepts"
 order: 12
 version: "1.0.0-alpha"
@@ -9,21 +9,11 @@ source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
 ---
 
-## Vue d’ensemble
+`transport` choisit le transport des requêtes TCP. `udp_transport` peut définir un trajet distinct pour UDP ; sinon UDP reprend `transport`.
 
-Distinguez d’abord deux questions : l’application envoie-t-elle du TCP ou de l’UDP ? Umbra utilise-t-il TCP ou QUIC pour acheminer ce trafic au serveur ? Le type de trafic applicatif et le transport extérieur sont deux choses différentes. `transport` sélectionne le transport extérieur principal ; `udp_transport` permet de choisir séparément celui des requêtes UDP et, s’il est omis, reprend la valeur de `transport`.
+## Par où commencer ?
 
-## Choisir selon vos besoins
-
-| Besoin ou condition réseau | Point de départ | À prendre en compte |
-| --- | --- | --- |
-| Établir d’abord la connexion, ou contourner un filtrage d’UDP par le réseau | `transport = "tcp"` | Ouvrez le port TCP sur le serveur ; mux est activé par défaut |
-| Réutiliser une connexion existante pour plusieurs requêtes TCP simultanées | TCP + `mux = true` | Les flux partagent le TCP extérieur ; les pertes de paquets peuvent toujours affecter les autres flux |
-| Réduire le double chiffrement du trafic éligible, principalement HTTPS | TCP + `mux = false` | Utilise des connexions Vision dédiées ; tous les trafics TLS ne peuvent pas bénéficier du transfert direct |
-| Subir des réinitialisations TCP RST fréquentes alors qu’UDP est accessible | `transport = "quic"` | QUIC doit être disponible aux deux extrémités ; UDP peut lui aussi être limité ou bloqué |
-| Garder TCP sur Vision et acheminer UDP séparément par QUIC | TCP + `udp_transport = "quic"` + `mux = false` | Activez les écoutes TCP et UDP sur le même serveur |
-
-Aucun mode n’est le plus rapide sur tous les réseaux. Vérifiez d’abord la connectivité, puis comparez la latence, la stabilité et le débit de vos applications réelles ; ne modifiez pas plusieurs paramètres à la fois. Ces choix n’entraînent ni détection automatique du réseau ni changement automatique de transport.
+Choisissez TCP pour la première connexion ou si UDP est indisponible. Activez mux pour réutiliser les connexions, ou désactivez-le pour Vision dédié. Essayez QUIC si UDP fonctionne, notamment lorsque TCP subit des réinitialisations injectées. Pour combiner les chemins, utilisez TCP et `udp_transport = "quic"`. Testez d'abord l'accès, puis la latence, la stabilité et le débit avec la même application.
 
 ## Multiplexage TCP
 
@@ -32,9 +22,7 @@ transport = "tcp"
 mux = true
 ```
 
-Plusieurs requêtes partagent une connexion extérieure chiffrée, ce qui réduit les besoins de rétablissement de connexions. La version actuelle ajuste les fenêtres selon la consommation réelle de trafic et le temps aller-retour, dans les limites d’un budget mémoire. Ce mode peut convenir aux requêtes simultanées, mais il ne supprime pas le blocage en tête de ligne au niveau du transport TCP.
-
-Le mux adaptatif exige des versions compatibles aux deux extrémités ; lors du passage à 1.0.0-alpha, mettez à jour le client et le serveur ensemble. Les paramètres de ressources figurent dans la [référence de configuration](/fr/docs/reference/configuration/).
+Les requêtes partagent des connexions chiffrées. Les fenêtres adaptatives suivent consommation et temps aller-retour dans les budgets mémoire. Une perte TCP peut faire attendre les requêtes partageant la connexion. Les deux extrémités doivent être compatibles.
 
 ## TCP / Vision dédié
 
@@ -43,9 +31,7 @@ transport = "tcp"
 mux = false
 ```
 
-Pour le trafic TLS 1.3 interne éligible, une fois la frontière de transfert négociée de manière authentifiée, les enregistrements TLS déjà chiffrés peuvent être transmis sans poursuivre le chiffrement TLS extérieur ni l’encapsulation supplémentaire. Le trafic non TLS ou TLS non pris en charge reste chiffré : activer Vision ne transmet pas les données applicatives en clair.
-
-Vision utilise des entrées-sorties en espace utilisateur, pas le zéro copie du noyau. La réduction des traitements redondants est un avantage du mécanisme, pas un gain de vitesse mesuré face à la concurrence. Continuez à utiliser HTTPS au niveau applicatif.
+Chaque requête a sa connexion. Après négociation authentifiée, les enregistrements TLS 1.3 admissibles sont transmis sans chiffrement externe ni encapsulation supplémentaire. Les autres données restent chiffrées. Conservez HTTPS dans les applications. Le relais s'effectue en espace utilisateur ; le débit dépend de l'appareil et du réseau.
 
 ## QUIC
 
@@ -53,13 +39,13 @@ Vision utilise des entrées-sorties en espace utilisateur, pas le zéro copie du
 transport = "quic"
 ```
 
-QUIC fonctionne sur UDP. Il permet d’éviter l’injection de TCP RST ainsi que le blocage en tête de ligne entre différents flux QUIC dû aux retransmissions de la couche transport ; au sein d’un même flux fiable, la livraison reste ordonnée, et tous les flux partagent la capacité du chemin et le contrôle de congestion. Le serveur doit activer `udp_listen`, ouvrir le port UDP dans le pare-feu et pouvoir joindre le véritable site QUIC de repli configuré.
+QUIC utilise UDP. Activez `udp_listen`, ouvrez le port et choisissez un site de couverture QUIC accessible. Les flux distincts récupèrent leurs pertes séparément ; chaque flux fiable conserve l'ordre des données. Umbra transporte aussi les associations UDP dans des flux QUIC fiables : une perte peut y retarder les données suivantes.
 
-Quinn BBR est actuellement utilisé par défaut ; `cubic` et `new-reno` sont également disponibles. Ces réglages concernent QUIC et ne modifient pas le contrôle de congestion TCP de Linux. Si le réseau limite UDP, QUIC n’est pas un substitut fiable à TCP.
+Quinn BBR est utilisé par défaut ; `cubic` et `new-reno` sont disponibles. Ce choix concerne l'envoi QUIC local, séparément des paramètres TCP du système.
 
-### TCP / Vision + QUIC UDP
+## Deux chemins, un proxy local
 
-Ajoutez à votre configuration client complète :
+Client :
 
 ```toml
 transport = "tcp"
@@ -68,23 +54,21 @@ mux = false
 socks_listen = "127.0.0.1:1080"
 ```
 
-Sur le même serveur, configurez simultanément :
+Serveur :
 
 ```toml
 listen = "0.0.0.0:443"
 udp_listen = "0.0.0.0:443"
 ```
 
-Ces extraits sont à intégrer à une configuration complète : ils ne remplacent ni les clés, ni le véritable site de destination, ni les autres champs obligatoires. Un client, un serveur et un point d’entrée SOCKS5 local suffisent pour ces deux chemins. Dans un client de type Clash, `udp: true` autorise simplement les requêtes UDP ; il ne force pas les requêtes TCP ordinaires à passer par QUIC.
+Conservez les autres champs de la configuration complète. Les applications gardent une seule entrée SOCKS5. `udp: true` autorise UDP dans Clash ; TCP suit `transport`. Modifiez les réglages lorsque le réseau change : le basculement TCP/QUIC reste manuel.
 
-## Remplissage et stratégie d’écriture TCP
+## Remplissage et écriture de la négociation
 
-Le remplissage par défaut ajoute des données de longueur aléatoire au début de la connexion, puis en réduit la fréquence. Il vise à perturber l’identification directe de la négociation interne à partir de la longueur des enregistrements. Il consomme de la bande passante supplémentaire et ne promet pas d’effacer toutes les caractéristiques du trafic. Conservez généralement `padding_scheme = "default"` et ne le modifiez que sur la base de tests précis.
-
-`tcp_evasion = "segment"` ne fait que découper le ClientHello en écritures applicatives ordonnées ; il ne garantit pas les limites des paquets TCP effectivement émis par le système d’exploitation. En cas de problème de compatibilité, vous pouvez tester `off`. Geneva DSL n’est pas pris en charge actuellement et ne doit pas être déployé comme une fonctionnalité disponible.
+Le remplissage ajoute des données de taille aléatoire au début, puis moins souvent, pour atténuer les motifs de longueur fixes, au prix de bande passante supplémentaire. `tcp_evasion = "segment"` divise ClientHello en écritures ordonnées ; le système décide des limites des paquets. Testez `off` en cas d'incompatibilité. Geneva DSL n'est pas pris en charge.
 
 ## Pour continuer
 
-- [Connecter vos applications à Umbra](/fr/docs/guides/client/)
-- [Exemples de configuration complets](/fr/docs/configuration/examples/)
-- [Comparaison avec les principales solutions proxy](/fr/docs/reference/protocol/)
+- [Connecter les applications et les clients de type Clash](/fr/docs/guides/client/)
+- [Exemples de configuration](/fr/docs/configuration/examples/)
+- [Comparer les solutions proxy](/fr/docs/reference/protocol/)

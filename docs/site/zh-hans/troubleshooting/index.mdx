@@ -1,7 +1,7 @@
 ---
 id: "troubleshooting"
 title: "故障排查"
-description: "定位配置、连接和传输问题。"
+description: "按失败阶段定位问题，逐步恢复连接。"
 section: "troubleshooting"
 order: 17
 version: "1.0.0-alpha"
@@ -9,28 +9,51 @@ source: ["docs/usage.md", "README.md"]
 translation: "complete"
 ---
 
-## 概览
+先记录两端版本、平台和错误信息，再用一个简单请求复现。一次只修改一个设置，便于确认问题在哪一段。
 
-排查先确认安装版本、失败阶段和去除所有秘密的最小配置描述。先复现一个请求，再调整设置。需要区分应用绕过 SOCKS、客户端到服务端失败，以及服务端到回落目标或业务目标失败；这些现象的检查位置不同，不能只凭页面打不开认定协议失败。
-
-## 详细说明
-
-服务端立即退出时，检查 TOML 语法、必填项、监听冲突和启动目标探测。解析错误保留安全的类别和行列位置，不回显秘密。客户端认证失败时，通过可信渠道核对公钥、short ID 与 server_name。先同步两端系统时钟，再考虑 max_time_diff。检查实际 TCP 公网端口；使用 QUIC 时还要检查 UDP。
-
-### 验证连接
+## 先做一次直接连接测试
 
 ```sh
 umbra --help
 curl --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
+如果直接使用 SOCKS5 可以访问，而通过规则客户端失败，优先检查节点选择、分流规则、DNS 和代理循环。
 
-## 验证与边界
+## 服务端启动后立即退出
 
-探测看到真实目标证书对未认证连接是正常现象。仅 UDP 失败则核对 udp_transport、udp_listen、防火墙和目标真实 QUIC 服务。性能问题应使用固定负载和按需诊断，不要把逻辑内存、已接受写入当成远端交付指标。报告中提供脱敏命令、版本、平台和错误类别，不附真实配置、私钥、含用户内容的抓包或实时基础设施细节。
+检查 TOML 语法、必填字段、文件读取权限和监听端口冲突。启动时会探测掩护网站；同时检查 `dest`、网站名称和服务器到该网站的连接。
+
+## 客户端无法认证
+
+通过可信渠道核对 `public_key`、`mldsa_verify`、`short_id` 和 `server_name`，并确认对应的是正在运行的服务端配置。
+
+检查两端系统时间，先修正时钟，再评估时间容差。随后检查客户端能否访问实际配置的服务器端口。
+
+## 应用仍然无法访问
+
+确认应用确实使用 `127.0.0.1:1080` 的 SOCKS5 代理。再检查服务端到应用目标的 DNS 和网络连接。使用 `socks5h` 或 `--socks5-hostname` 测试时，域名会交给代理处理。
+
+## TCP 正常，UDP 失败
+
+检查客户端的 `udp_transport`。使用 QUIC 时，确认服务端已启用 `udp_listen`、防火墙允许 UDP，而且 `dest` 提供可达的真实 QUIC/HTTP/3 服务。
+
+在规则客户端中启用 UDP，并测试实际 UDP 应用。浏览网页通常只能验证相应的网页连接路径。
+
+## 连接到的是掩护网站
+
+普通浏览器或未认证 TLS 探测收到掩护网站的证书和响应，属于预期行为。验证代理功能时，请使用配置正确的 Umbra 客户端和本地 SOCKS5 入口。
+
+## 连接可用，但速度不理想
+
+保持相同目标、负载和网络路径，对比不同传输设置。必要时开启数值诊断，观察窗口、排队和内存预算，并结合系统 CPU、内存指标判断。具体解释见[性能与传输参数](/zh-hans/docs/reference/configuration/)。
+
+## 提交问题时提供什么
+
+提供版本、操作系统、失败阶段、脱敏后的命令与错误类别，以及最小复现步骤。分享前移除密钥、凭据、实际部署地址和用户内容。涉及安全漏洞时，按[安全模型](/zh-hans/docs/concepts/security-model/)中的方式报告。
 
 ## 下一步
 
-- [服务端配置](/zh-hans/docs/configuration/server/)
-- [客户端配置](/zh-hans/docs/configuration/client/)
-- [性能与策略参考](/zh-hans/docs/reference/configuration/)
+- [服务端配置参考](/zh-hans/docs/configuration/server/)
+- [客户端配置参考](/zh-hans/docs/configuration/client/)
+- [性能与传输参数](/zh-hans/docs/reference/configuration/)

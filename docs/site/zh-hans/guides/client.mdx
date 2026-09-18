@@ -1,7 +1,7 @@
 ---
 id: "guides/client"
 title: "接入应用与 Clash 类客户端"
-description: "用本地 SOCKS5 接入已有应用和规则客户端，并为 TCP 与 UDP 分别选择传输。"
+description: "通过本地 SOCKS5 使用 Umbra，保留已有应用和分流规则。"
 section: "guides"
 order: 5
 version: "1.0.0-alpha"
@@ -9,13 +9,11 @@ source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crate
 translation: "complete"
 ---
 
-## 概览
+Umbra 客户端在设备上提供一个本地 SOCKS5 代理。应用把请求交给这个入口，再由 Umbra 连接远端服务端。你可以直接设置应用，也可以通过现有代理客户端统一管理规则。
 
-Umbra 客户端在本机提供 SOCKS5 入口。应用或现有代理客户端把请求交给它，再由 Umbra 连接远端的 Umbra 服务端。规则分流、界面和系统代理可以继续由你熟悉的客户端负责；Umbra 本身不是 TUN 接口，安装二进制不会自动代理其他应用。
+## 1. 启动 Umbra 客户端
 
-## 1. 配置并启动 Umbra
-
-先按[服务端指南](/zh-hans/docs/guides/server/)准备好服务端。把匹配的身份材料填写到 `client.toml`；下面的占位符必须替换，不是真实凭证：
+先完成[服务端设置](/zh-hans/docs/guides/server/)。在 `client.toml` 中填写服务器地址和匹配的身份信息，替换所有占位值：
 
 ```toml
 server = "198.51.100.10:443"
@@ -28,29 +26,29 @@ mldsa_verify = "<MLDSA_VERIFY_BASE64>"
 socks_listen = "127.0.0.1:1080"
 ```
 
-`server` 是你的 Umbra 服务器地址；`server_name` 是与服务端一致的真实站点 SNI，不是任意填写的伪装域名。确认后运行：
+`server` 填 Umbra 服务器地址；`server_name` 填服务端允许的掩护网站域名。
 
 ```sh
 umbra client -c client.toml
 ```
 
-保留回环绑定。本地 SOCKS5 不提供密码认证，不能直接暴露到公网或不可信局域网。
+保持监听 `127.0.0.1:1080`。此入口不要求用户名或密码，仅供本机应用使用。
 
-## 2. 直接连接支持 SOCKS5 的应用
+## 2. 直接接入应用
 
-在应用的代理设置中选择 SOCKS5，地址填 `127.0.0.1`，端口填 `1080`，不填写用户名和密码。应用必须与 Umbra 运行在同一设备或同一可访问该回环入口的网络命名空间。
+在应用代理设置中选择 **SOCKS5**，服务器填 `127.0.0.1`、端口填 `1080`，用户名和密码留空。应用与 Umbra 客户端应运行在同一设备；容器等隔离环境还需确认能够访问该入口。
 
-验证一次 HTTPS 请求时，可把下面地址替换为你要测试的站点：
+用 curl 验证一次连接：
 
 ```sh
 curl --proxy socks5h://127.0.0.1:1080 https://example.com/
 ```
 
-`socks5h` 让 curl 把目标域名交给代理处理，而不是先在本地解析。其他应用的 DNS 行为由其自身设置决定；仅配置 SOCKS5 不代表设备上的所有 DNS 查询都会经过代理。
+`socks5h` 会把域名交给代理处理。其他应用可在各自的代理或 DNS 设置中选择相应行为。
 
-## 3. 使用 Clash 类客户端保留规则
+## 3. 在 Clash 类客户端中添加节点
 
-将以下节点合并进现有客户端配置的 `proxies` 列表，并在你使用的代理组中选择它。不要直接覆盖完整配置：
+将下面节点加入现有 `proxies` 列表，再加入你使用的代理组并选中它：
 
 ```yaml
 proxies:
@@ -61,13 +59,13 @@ proxies:
     udp: true
 ```
 
-规则仍由现有客户端执行，远端连接由本地 Umbra 完成。确保远端 Umbra 服务器地址不再次被规则送回 `Umbra Local`，否则可能形成代理循环。具体规则、DNS 和 TUN 设置以你使用的客户端为准。
+保留已有规则和其他节点。规则客户端继续决定哪些流量走代理，Umbra 负责远端连接。将 Umbra 服务器地址设为直连，避免它再次经过 `Umbra Local` 形成循环。
 
-这里使用的是标准 SOCKS5 节点，不是原生 Umbra 协议支持。VLESS / VMess / Trojan 节点和订阅不能直接改一个名称就变成 Umbra 节点；连接两端都需要匹配的 Umbra 程序与身份材料。
+这种接法使用标准 SOCKS5。远端仍需运行 Umbra；已有 VLESS、VMess 或 Trojan 订阅继续由相应客户端处理。系统代理和 TUN 按你现有客户端的方式设置。
 
-## 4. 可选：TCP 使用 Vision，UDP 使用 QUIC
+## 4. 分别配置 TCP 与 UDP
 
-向已有 `client.toml` 合并：
+要让 TCP 使用 Vision、UDP 使用 QUIC，在完整客户端配置中设置：
 
 ```toml
 transport = "tcp"
@@ -75,16 +73,13 @@ udp_transport = "quic"
 mux = false
 ```
 
-服务端同时开启 `listen` 和 `udp_listen`，防火墙允许相应 TCP 与 UDP 端口。`udp: true` 允许 Clash 类客户端发送 UDP 请求，不会改变 TCP 请求的传输。UDP 中继端点由 SOCKS 协商，不要求固定监听 UDP 1080。
+服务端同时配置 `listen` 和 `udp_listen`，开放相应 TCP、UDP 端口，并选择支持 QUIC 的掩护网站。
 
-如果 UDP 不可达，先用 TCP 验证普通应用请求。这里没有自动 QUIC 到 TCP 的故障切换，具体选择见[传输模式](/zh-hans/docs/concepts/transports/)。
+Clash 节点中的 `udp: true` 用于启用 UDP 请求。UDP 中继地址通过 SOCKS5 协商，无需固定配置为 UDP 1080。TCP 与 UDP 的传输方式由 Umbra 配置分别决定。
 
-## 验证与排查
+## 检查接入结果
 
-1. 先直接用 SOCKS5 测试一个应用，再接入规则客户端，避免把规则问题误认为传输失败。
-2. 对照两端的公钥、验证密钥、short ID、SNI 与服务器地址，检查系统时间和防火墙。
-3. 分别验证 TCP 与 UDP；网页打开成功不代表 UDP 已经可用。
-4. 一次只调整一个传输或性能选项；升级自适应 mux 时同步升级两端。
+先直接使用 SOCKS5 验证请求，再接入规则客户端，便于区分连接问题和规则问题。需要 UDP 时，单独验证实际使用的 UDP 应用。若当前网络无法使用 UDP，可手动调整传输配置；Umbra 按配置运行，不会自动切换 TCP 与 QUIC。
 
 ## 下一步
 

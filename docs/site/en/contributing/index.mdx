@@ -1,7 +1,7 @@
 ---
 id: "contributing"
-title: "Contributing"
-description: "Contribute through specifications, review and meaningful tests."
+title: "Contribute to Umbra"
+description: "Help improve documentation, report problems or work on code."
 section: "contributing"
 order: 18
 version: "1.0.0-alpha"
@@ -9,13 +9,16 @@ source: ["CONTRIBUTING.md", "README.md", "LICENSE"]
 translation: "complete"
 ---
 
-## Overview
+Read `CONTRIBUTING.md` and `AGENTS.md` before starting.
 
-Umbra follows specification-driven development. Before implementing a capability, propose an OpenSpec change and have its requirements reviewed and approved. Implement the approved tasks with tests mapped to scenarios. Existing Rust code, public APIs and protocol behavior remain subject to the repository's AGENTS.md and contribution rules.
+## Agree on the change
 
-## Details
+Feature work uses OpenSpec: propose the change, define requirements and verification scenarios, obtain human approval, then implement the task list. Documentation should match current source and retain stable IDs across all seven languages.
 
-Run formatting, strict linting, tests, dependency checks and the coverage gate for relevant changes. Line coverage must remain at least 90%; do not lower thresholds or add tests without meaningful assertions to satisfy a number. Network parsers need boundary/error coverage, and cryptographic or fingerprint changes require the applicable vectors and capture-based evidence. Keep dependencies in the workspace catalog and preserve the one-way crate dependency structure.
+## Verify your work
+
+Run formatting, lint, tests, dependency and coverage checks appropriate to the change. Rust line coverage must remain at least 90%. Parsers need boundary and error cases; cryptographic and fingerprint changes need matching vectors or capture evidence.
+
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -25,12 +28,14 @@ cargo xtask coverage
 npx --yes @fission-ai/openspec@latest validate --all --strict
 ```
 
-## Verify
+The website has separate build, check, tests and coverage requirements in `docs/website-development.md`. Declare dependencies centrally and check license compatibility.
 
-Documentation changes should cite current public sources, preserve stable document IDs and update all seven published translations. Distinguish implemented behavior from design goals, and never include real keys, addresses of private infrastructure or unpublished vulnerability details. AI-assisted contributions must be understood, reviewed and tested by a responsible human contributor; disclose substantial generation in the PR or commit trailer. Use Conventional Commits and follow the repository branch and review conventions. The project is MIT licensed; review dependency license compatibility before introducing a package.
+## Submit a reviewable change
+
+Use Conventional Commits and explain the problem, scope and validation in the PR. Contributors must understand, review and test AI-assisted work; disclose substantial generated content and its tool in the PR or commit. Remove real credentials, private infrastructure and unpublished vulnerability details. Umbra is released under MIT.
 
 ## Next steps
 
-- [Architecture](/en/docs/concepts/architecture/)
-- [Protocol reference](/en/docs/reference/protocol/)
-- [Introduction](/en/docs/getting-started/introduction/)
+- [Architecture and request flow](/en/docs/concepts/architecture/)
+- [Compare proxy setups](/en/docs/reference/protocol/)
+- [Meet Umbra](/en/docs/getting-started/introduction/)

@@ -1,7 +1,7 @@
 ---
 id: "guides/server"
 title: "設定伺服器端"
-description: "設定真實目標站點並啟動伺服器端。"
+description: "選擇掩護網站，設定身分資訊，並驗證伺服器端連線。"
 section: "guides"
 order: 4
 version: "1.0.0-alpha"
@@ -9,15 +9,17 @@ source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crate
 translation: "complete"
 ---
 
-## 概覽
+伺服器端負責接收用戶端連線、驗證身分，並連線應用程式要存取的目標。一般網站瀏覽則轉發到 `dest` 指定的掩護網站。
 
-伺服器端接收已認證的 Umbra 連線，並把其他流量轉發到固定的真實目標。目標需要支援 TLS 1.3，且從執行 Umbra 的主機可達。目標身份、允許的 server_names 和用戶端 SNI 應保持一致。本文使用的佔位域名不是部署推薦，也不代表該域名具有可用服務。
+## 選擇掩護網站
 
-## 詳細說明
+從執行 Umbra 的伺服器確認網站可存取，並支援 TLS 1.3。設定中的 `server_names` 和用戶端的 `server_name` 使用與該網站對應的網域名稱。
 
-生成新身份，在 server.toml 中填寫必填欄位，並保護包含私鑰和簽名種子的設定檔案。listen 是 TCP 監聽地址；只有需要原生 QUIC 時才新增 udp_listen。TCP 和 UDP 可以使用相同埠號，但屬於不同協議。QUIC 回落還要求 dest 提供可用的真實 QUIC/HTTP3 服務，僅有 TCP HTTPS 不夠。
+如果準備啟用 QUIC，該網站還需要提供可用的 QUIC/HTTP/3 服務。僅能通過 TCP 打開 HTTPS 頁面，尚不足以驗證 QUIC 路徑。
 
-### 伺服器端模板
+## 填寫設定
+
+先執行 `umbra keygen`，按[快速開始](/zh-hant/docs/getting-started/quick-start/)取得金鑰並選擇 `short_id`。將下面內容保存為 `server.toml`，替換所有預留值和 `cover.example`：
 
 ```toml
 listen = "0.0.0.0:443"
@@ -29,13 +31,32 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
+`listen` 指定 TCP 接聽位址。設定包含私密金鑰和簽章種子，請限制讀取權限。
 
-## 驗證與邊界
+## 啟動並驗證
 
-先在前臺啟動伺服器端。啟動時總會探測目標；prebuild=false 只關閉週期重新整理，並不跳過啟動探測。探測失敗會中止啟動。確認監聽地址和網路規則後，再連線匹配的用戶端。未認證 TLS 探測看到目標站點的真實證書屬於預期行為，不能單憑這一現象判斷認證路徑失敗。基礎鏈路驗證成功後，再設定程序管理服務。
+```sh
+umbra server -c server.toml
+```
+
+Umbra 啟動時會先探測目標網站；探測失敗時會停止啟動。檢查目標位址、網域名稱和伺服器的網路連線後再重試。`prebuild = false` 只關閉後續週期更新，啟動探測仍會執行。
+
+確認接聽連接埠已開放，然後用匹配的 Umbra 用戶端測試一次請求。普通瀏覽器或 TLS 探測工具看到掩護網站的憑證，是網站轉發路徑的正常結果。
+
+## 依需求開啟 QUIC
+
+在完整設定中增加：
+
+```toml
+udp_listen = "0.0.0.0:443"
+```
+
+TCP 和 UDP 可以使用同一連接埠號。為實際設定的 UDP 連接埠設定防火牆規則，並驗證實際網站的 QUIC 可達性。
+
+前景執行驗證成功後，可繼續設定[背景服務](/zh-hant/docs/guides/deployment/)。
 
 ## 下一步
 
-- [伺服器端設定](/zh-hant/docs/configuration/server/)
+- [伺服器端設定參考](/zh-hant/docs/configuration/server/)
 - [部署與運維](/zh-hant/docs/guides/deployment/)
 - [安全模型](/zh-hant/docs/concepts/security-model/)

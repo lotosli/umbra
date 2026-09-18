@@ -1,7 +1,7 @@
 ---
 id: "configuration/server"
-title: "Configuració del servidor"
-description: "Camps obligatoris, valors per defecte i validació del servidor."
+title: "Referència de configuració del servidor"
+description: "Consulta camps, valors predeterminats i regles de validació."
 section: "configuration"
 order: 8
 version: "1.0.0-alpha"
@@ -9,15 +9,11 @@ source: ["crates/umbra-core/src/config.rs", "README.md", "crates/umbra/src/main.
 translation: "complete"
 ---
 
-## Visió general
+El servidor utilitza TOML. Per a la primera instal·lació, segueix la guia del servidor.
 
-El servidor es configura amb TOML. Tots els valors obligatoris han d’existir després d’aplicar les opcions CLI. Es rebutgen camps desconeguts i tipus incorrectes. Les escoltes fan servir IP:port numèrica, amb claudàtors per a IPv6; dest utilitza host:port. La taula cobreix els camps principals, mentre que performance s’explica en una referència separada.
+## Configuració mínima
 
-## Detalls
-
-private_key i mldsa_seed han de descodificar exactament 32 bytes cadascun des de base64. No utilitzis literalment els marcadors en una instal·lació. short_ids ha de tenir almenys una entrada; cada cadena hexadecimal de longitud parella codifica entre zero i vuit bytes. Es permet una cadena buida. max_time_diff admet ms, s, m, h o segons sense sufix i ha de representar almenys un segon.
-
-### Plantilla del servidor
+Substitueix els marcadors i `cover.example`:
 
 ```toml
 listen = "0.0.0.0:443"
@@ -29,6 +25,7 @@ max_time_diff = "120s"
 mldsa_seed = "<MLDSA_SEED_BASE64>"
 ```
 
+## Camps
 
 | Camp | Valor per defecte / requisit | Significat |
 |---|---|---|
@@ -44,12 +41,26 @@ mldsa_seed = "<MLDSA_SEED_BASE64>"
 | `padding_scheme` | `"default"` | Política de farciment intern |
 | `tcp_evasion` | `"segment"` | Escriptures ordenades de ClientHello |
 
-## Verificació i límits
+Posa els paràmetres de rendiment a `[performance]`.
 
-server_names no pot estar buit. Cada nom passa comprovacions de longitud, ASCII i absència d’espais; això no demostra que la destinació existeixi o tingui un SNI adequat. La comprovació inicial sempre és necessària. Les opcions CLI fan servir guionets, com --udp-listen, i substitueixen només allò indicat. Desa els secrets en un fitxer protegit, no a l’historial del shell ni en arguments visibles.
+## Adreces i dominis
+
+`listen` i `udp_listen` necessiten IP numèrica i port: `0.0.0.0:443` o `[::]:443`. `dest` admet un nom d'amfitrió. `server_names` necessita almenys un nom que compleixi longitud i sintaxi ASCII, sense espais. Utilitza dominis del lloc real; el client en tria un.
+
+## Claus i identificadors
+
+`private_key` i `mldsa_seed` són Base64 i es descodifiquen en 32 bytes cadascun. Utilitza les sortides de `keygen`. `short_ids` conté almenys una cadena hexadecimal de longitud parella, fins a 16 caràcters; també s'accepta la cadena buida. El valor del client ha de coincidir.
+
+## Hora i actualització del lloc
+
+`max_time_diff` admet `ms`, `s`, `m`, `h`, o segons sense sufix; la durada final és d'almenys un segon. Revisa els rellotges abans d'ampliar la tolerància. El lloc es comprova a cada arrencada; `prebuild`, actiu per defecte, controla les actualitzacions posteriors.
+
+## Opcions de línia d'ordres
+
+Les opcions proporcionades substitueixen els camps abans de validar valors obligatoris, tipus i camps desconeguts. La CLI usa guionets, com `--udp-listen`; TOML, guions baixos. Desa secrets en fitxers protegits per evitar l'historial i els arguments de processos.
 
 ## Passos següents
 
-- [Configurar un servidor](/ca/docs/guides/server/)
-- [Rendiment i polítiques](/ca/docs/reference/configuration/)
-- [Referència de la CLI](/ca/docs/reference/cli/)
+- [Preparar el servidor](/ca/docs/guides/server/)
+- [Paràmetres de rendiment i transport](/ca/docs/reference/configuration/)
+- [Referència de la línia d'ordres](/ca/docs/reference/cli/)

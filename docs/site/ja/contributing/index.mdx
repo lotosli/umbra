@@ -1,7 +1,7 @@
 ---
 id: "contributing"
-title: "開発への参加"
-description: "仕様、レビュー、有効なテストを通じて貢献します。"
+title: "開発に参加する"
+description: "文書の改善、問題報告、コードの変更で協力できます。"
 section: "contributing"
 order: 18
 version: "1.0.0-alpha"
@@ -9,13 +9,16 @@ source: ["CONTRIBUTING.md", "README.md", "LICENSE"]
 translation: "complete"
 ---
 
-## 概要
+開始前に `CONTRIBUTING.md` と `AGENTS.md` を読んでください。
 
-Umbra は仕様駆動開発を採用しています。実装前に OpenSpec 変更を提案し、要件のレビューと承認を受けます。承認済みタスクを実装し、各シナリオに対応するテストを用意します。Rust コード、公開 API、プロトコルには引き続き AGENTS.md と貢献規則が適用されます。
+## 変更内容を合意
 
-## 詳細
+機能開発は OpenSpec に従い、提案、要件と検証シナリオ、人による承認、実装の順で進めます。文書は現在のコードに合わせ、七言語で共通 ID を維持します。
 
-変更範囲に応じて整形、厳格 lint、テスト、依存関係検査、カバレッジを実行します。行カバレッジは90%以上を維持し、閾値を下げたり意味のないアサーションで数を稼いだりしません。ネットワーク解析は境界・異常系、暗号と指紋は標準ベクトルや実採取資料が必要です。依存関係を workspace へ集約し、クレートの循環を避けます。
+## 変更を検証
+
+範囲に応じて整形、lint、テスト、依存関係、カバレッジを確認します。Rust の行カバレッジは 90% 以上が必要です。解析器は境界・エラーケース、暗号や指紋は対応ベクトル・キャプチャーで検証します。
+
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -25,12 +28,14 @@ cargo xtask coverage
 npx --yes @fission-ai/openspec@latest validate --all --strict
 ```
 
-## 確認と制約
+Web サイト固有の検査は `docs/website-development.md` にあります。依存関係は一元管理し、ライセンスを確認します。
 
-文書は安定した ID、現行の公開ソース、七言語の完全な翻訳を保ち、計画と実装済みを区別します。実際の鍵、非公開設備、未公開脆弱性は含めません。AI 支援の貢献は責任を持つ人間が理解、レビュー、テストし、大規模な生成を PR やコミットで開示します。Conventional Commits とレビュー規則を守り、MIT ライセンスと依存ライセンスの適合も確認してください。
+## レビューに提出
+
+Conventional Commits を使い、PR に問題、範囲、検証を記載します。AI 支援の成果も提出者が理解・確認・テストし、大きな生成部分を明示します。実際の認証情報、非公開構成、未公表の脆弱性は除いてください。Umbra は MIT ライセンスです。
 
 ## 次のステップ
 
-- [アーキテクチャ](/ja/docs/concepts/architecture/)
-- [プロトコルリファレンス](/ja/docs/reference/protocol/)
-- [Umbra について](/ja/docs/getting-started/introduction/)
+- [アーキテクチャと通信の流れ](/ja/docs/concepts/architecture/)
+- [プロキシ構成を比較する](/ja/docs/reference/protocol/)
+- [Umbra とは](/ja/docs/getting-started/introduction/)

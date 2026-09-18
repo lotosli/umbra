@@ -1,7 +1,7 @@
 ---
 id: "guides/deployment"
 title: "部署与运维"
-description: "将服务端作为服务运行并管理资源。"
+description: "设置后台服务，管理端口、配置和运行资源。"
 section: "guides"
 order: 6
 version: "1.0.0-alpha"
@@ -9,17 +9,23 @@ source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
 ---
 
-## 概览
+先在前台完成一次客户端到服务端的连接，再设置后台运行。以下示例使用 Linux systemd 管理服务端，通过 journald 查看日志。
 
-先用相同版本的两端验证前台运行。在 Linux 上，可用 systemd 管理服务端，并由 journald 收集标准错误输出。二进制与 server.toml 都使用绝对路径。配置文件只允许服务身份和管理员读取；服务身份、文件所有权和低端口绑定权限需要按主机环境设置，不能假定各发行版默认值一致。
+## 准备程序和配置
 
-## 详细说明
+创建专用用户 `umbra`，将程序安装到 `/usr/local/bin/umbra`，配置保存到 `/etc/umbra/server.toml`。配置文件仅向服务用户和管理员开放读取权限。
 
-开放实际配置的公网 TCP 端口。只有开启 udp_listen 并使用原生 QUIC 时才开放对应 UDP 端口。如果公网端口由独立四层入口占用，把 Umbra 后端绑定到回环地址，并在入口配置透明 TCP/QUIC 转发；内部后端端口无需开放到公网。普通 HTTP 反向代理不能代替 Umbra 所需的传输层转发。
+如果使用其他路径或用户，请同步修改下面的服务单元。程序和配置都使用绝对路径。
 
-### 服务单元示例
+## 配置监听与防火墙
 
-将该单元保存为 `/etc/systemd/system/umbra-server.service`。示例假定已经创建专用 Linux 用户 `umbra`，二进制已安装到 `/usr/local/bin/umbra`，且该用户可以读取 `/etc/umbra/server.toml`。启用单元前，先用主机的管理工具创建服务身份并安装这些文件；部署方式不同则相应修改路径和用户。
+开放 `listen` 对应的公网 TCP 端口。启用 QUIC 时，还需配置 `udp_listen` 并开放对应 UDP 端口。
+
+如果前面已有四层转发服务占用公网端口，可将 Umbra 绑定到回环地址，由入口透明转发 TCP 和 QUIC。内部端口保持仅本机可访问。此类转发需要支持相应传输协议，常规 HTTP 反向代理配置不适用。
+
+## 创建 systemd 服务
+
+保存为 `/etc/systemd/system/umbra-server.service`：
 
 ```ini
 [Unit]
@@ -41,8 +47,9 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 ```
 
+`CAP_NET_BIND_SERVICE` 允许服务用户绑定 443 等低端口。启用前确认用户、文件路径及权限已经就绪。
 
-### 服务管理命令
+## 启动并查看日志
 
 ```sh
 sudo systemctl daemon-reload
@@ -50,13 +57,16 @@ sudo systemctl enable --now umbra-server
 sudo journalctl -u umbra-server -f
 ```
 
+服务启动后，再从客户端发起请求，确认后台运行正常。
 
-## 验证与边界
+## 安排资源与日常维护
 
-给操作系统预留内存。吞吐设计假定服务端至少有 1 GiB 物理内存；performance.memory_mib 是应用逻辑承诺上限，不是进程 RSS 硬限制。诊断默认关闭，排查时才启用有限周期，并注意写入接收计数不等于远端已经收到。修改配置后安排重启，保留之前验证过的二进制用于回退。服务化不会自动验证目的站点或替你完成防火墙配置。
+当前吞吐优化以至少 1 GiB 物理内存的服务端为运行前提。设置应用内存预算时，为操作系统、内核缓冲和其他服务留出空间；具体参数见[性能与传输参数](/zh-hans/docs/reference/configuration/)。
+
+运行诊断默认关闭，需要排查时再启用。修改配置后重启服务，并验证连接。升级时保留上一版程序和配置，方便回退。
 
 ## 下一步
 
-- [性能与策略参考](/zh-hans/docs/reference/configuration/)
+- [性能与传输参数](/zh-hans/docs/reference/configuration/)
 - [故障排查](/zh-hans/docs/troubleshooting/)
 - [升级 Umbra](/zh-hans/docs/guides/upgrade/)

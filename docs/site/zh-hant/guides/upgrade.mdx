@@ -1,7 +1,7 @@
 ---
 id: "guides/upgrade"
 title: "升級 Umbra"
-description: "為當前 alpha 版本安排相容的兩端升級。"
+description: "同步更新用戶端與伺服器端，並保留可還原的版本。"
 section: "guides"
 order: 7
 version: "1.0.0-alpha"
@@ -9,15 +9,13 @@ source: ["docs/performance.md", "README.md"]
 translation: "complete"
 ---
 
-## 概覽
+升級前查看目標版本的說明，記錄兩端目前使用的版本，備份設定，並保留已經驗證可用的程式。安排兩端的升級時間，避免協議變化導致連線中斷。
 
-當前原始碼版本為 1.0.0-alpha。升級前閱讀目標釋出說明，記錄用戶端和伺服器端版本，妥善備份設定，並保留已經驗證的舊二進位制。涉及線格式變化時需要按兩端一起升級來安排。網站顯示新版本，不代表遠端機器已經執行該版本，也不應替代實際驗證。
+## 升級到 1.0.0-alpha
 
-## 詳細說明
+這一版本改進了加密處理、共享連線排程與 QUIC 資料接收。TCP 多路重複使用預設使用自適應流控：它會根據資料消耗和往返時間調整接收視窗，同時遵守記憶體預算。
 
-0.0.8 修正了 X25519MLKEM768 的金鑰份額和共享秘密順序，舊的反向順序不再支援，因此兩端必須升級。當前 alpha 增加可複用的硬體加速 TLS 密碼上下文、按就緒流排程的 mux、受預算約束的啟動視窗和 QUIC 批次入隊。新 TCP mux 會話預設啟用 adaptive_mux=true，需要升級後的伺服器端；設為 false 可明確選用舊 mux，但不會自動重放業務或降級。
-
-### 可選效能設定表
+使用自適應 mux 時，用戶端與伺服器端需要一起升級。
 
 ```toml
 [performance]
@@ -25,13 +23,26 @@ adaptive_mux = true
 quic_congestion = "bbr"
 ```
 
+`adaptive_mux = false` 可顯式選擇舊 mux 模式。該設定適用於 TCP 多路重複使用；`mux = false` 仍選擇獨立 Vision 連線，`udp_transport` 仍單獨決定 UDP 的傳輸方式。
 
-## 驗證與邊界
+## 從更早版本升級
 
-沒有輪換要求時，身份金鑰、short ID 和 SNI 可繼續使用。mux=false 仍選擇獨立 Vision，udp_transport 仍單獨控制 UDP。升級後檢查普通 TCP 請求、已設定的 UDP 和退出重啟行為。比較效能時應保持路徑與負載可比。QUIC 預設 Quinn BBR 與 Linux TCP 擁塞控制相互獨立，不能據此保證吞吐提升。
+0.0.8 調整了 X25519MLKEM768 混合金鑰交換的資料順序。涉及該變化時，舊端點與新端點需要同步更新。查閱中間版本說明，確認是否還有設定或協議變化。
+
+沒有金鑰輪換要求時，可以繼續使用原有身分金鑰、`short_id` 和網站名稱。
+
+## 升級後驗證
+
+1. 確認兩端實際執行的是剛安裝的程式。
+2. 透過本機 SOCKS5 完成一次 HTTPS 請求。
+3. 如果設定了 UDP，測試實際使用的 UDP 應用程式。
+4. 檢查程序重啟後能否恢復連線。
+5. 若要比較效能，保持網路路徑、應用程式負載和測試方法一致。
+
+QUIC 預設使用 BBR；其設定作用於 QUIC 發送，與操作系統的 TCP 擁塞控制分別管理。出現問題時，保留錯誤資訊並按對應版本的兼容要求還原兩端。
 
 ## 下一步
 
-- [傳輸與流量模式](/zh-hant/docs/concepts/transports/)
-- [效能與策略參考](/zh-hant/docs/reference/configuration/)
+- [選擇 TCP、Vision 與 QUIC](/zh-hant/docs/concepts/transports/)
+- [效能與傳輸參數](/zh-hant/docs/reference/configuration/)
 - [故障排查](/zh-hant/docs/troubleshooting/)

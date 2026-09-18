@@ -1,7 +1,7 @@
 ---
 id: "reference/cli"
-title: "CLI reference"
-description: "The server, client and keygen commands and their flags."
+title: "Command-line reference"
+description: "Find options for server, client and keygen."
 section: "reference"
 order: 14
 version: "1.0.0-alpha"
@@ -9,15 +9,9 @@ source: ["crates/umbra/src/main.rs", "README.md"]
 translation: "complete"
 ---
 
-## Overview
+`server` starts the server, `client` starts the local SOCKS5 proxy, and `keygen` generates identity keys.
 
-Umbra exposes three subcommands: server starts listeners and the server runtime, client starts a local SOCKS proxy, and keygen writes new identity material to stdout. Run umbra --help and the relevant subcommand --help for the installed binary's own option list. A version-specific binary remains the authority when it differs from documentation for another release.
-
-## Details
-
-Use -c or --config to read a TOML file. Command-line values override matching file fields; omitted options keep the file value. Server short IDs and server names accept comma-separated lists. Boolean options such as --mux and --prebuild take an explicit boolean value. Performance settings belong in the TOML performance table; this CLI does not expose a flag for every nested performance field.
-
-### Help and identity generation
+## Get help
 
 ```sh
 umbra --help
@@ -26,8 +20,13 @@ umbra client --help
 umbra keygen
 ```
 
+Use each installed command's `--help` for its supported options.
 
-### umbra server
+## Read and override configuration
+
+Use `-c` or `--config` for TOML. Explicit CLI options override matching fields; omitted values stay as configured. Server short IDs and names accept comma-separated lists. Boolean options such as `--mux` and `--prebuild` need `true` or `false`. Put performance settings in the TOML `[performance]` table.
+
+## Server options
 
 | Command / option | Purpose |
 |---|---|
@@ -44,8 +43,7 @@ umbra keygen
 | `--padding-scheme` | Inner padding policy |
 | `--tcp-evasion` | Ordered ClientHello write policy |
 
-
-### umbra client
+## Client options
 
 | Command / option | Purpose |
 |---|---|
@@ -64,13 +62,12 @@ umbra keygen
 | `--padding-scheme` | Inner padding policy |
 | `--tcp-evasion` | Ordered ClientHello write policy |
 
+## Generate keys
 
-## Verify
-
-keygen has no extra options and prints x25519_private, x25519_public, mldsa_seed and mldsa_verify as base64 values. Its output contains secrets: generate in a private terminal and place the values in protected files. Prefer a configuration file over secret-bearing flags, which may appear in shell history or process listings. The flag table below covers configuration names; there is no login, cloud account, database migration or service installer command.
+`umbra keygen` takes no extra options and outputs four Base64 values: `x25519_private`, `x25519_public`, `mldsa_seed` and `mldsa_verify`. Assign them as shown in the quick start. The output contains secrets; save it in a protected file and prefer configuration files over secret command-line arguments.
 
 ## Next steps
 
 - [Server configuration](/en/docs/configuration/server/)
 - [Client configuration](/en/docs/configuration/client/)
-- [Performance and policy reference](/en/docs/reference/configuration/)
+- [Performance and transport settings](/en/docs/reference/configuration/)

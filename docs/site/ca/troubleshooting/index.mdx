@@ -1,7 +1,7 @@
 ---
 id: "troubleshooting"
-title: "Resolució de problemes"
-description: "Diagnostica problemes de configuració i connectivitat."
+title: "Resoldre problemes"
+description: "Localitza el punt de fallada i recupera la connexió."
 section: "troubleshooting"
 order: 17
 version: "1.0.0-alpha"
@@ -9,28 +9,47 @@ source: ["docs/usage.md", "README.md"]
 translation: "complete"
 ---
 
-## Visió general
+Anota versions, plataforma i error. Reprodueix una petició i canvia un ajust cada vegada.
 
-Comença per la versió instal·lada, l’etapa que falla i una descripció mínima sense secrets. Reprodueix una petició abans de canviar diversos ajustos. Distingeix una aplicació que omet SOCKS, una fallada client/servidor i una fallada entre el servidor i el lloc de retorn o la destinació d’aplicació: demanen comprovacions diferents.
-
-## Detalls
-
-Si el servidor acaba immediatament, revisa TOML, camps obligatoris, conflictes de port i comprovació inicial. Els errors conserven categoria i posició sense reproduir secrets. En una fallada d’autenticació, compara identitat pública, short ID i server_name per un canal fiable. Sincronitza els rellotges abans d’ampliar max_time_diff. Comprova el port públic TCP i també UDP quan utilitzis QUIC.
-
-### Verificar la connexió
+## Prova directa
 
 ```sh
 umbra --help
 curl --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
+Si SOCKS5 funciona i el client de regles no, revisa node, regles, DNS i bucles.
 
-## Verificació i límits
+## El servidor es tanca en arrencar
 
-Veure el certificat real de la destinació és normal en una prova no autenticada. Si només falla UDP, comprova udp_transport, udp_listen, tallafoc i servei QUIC de la destinació. Per al rendiment, fes servir càrrega repetible i diagnòstics opcionals. Un informe útil inclou versió, plataforma, ordre sense secrets i categoria d’error; evita configuracions reals, claus privades, captures amb trànsit d’usuaris i detalls d’infraestructura activa.
+Comprova TOML, camps obligatoris, permisos i ports ocupats. La comprovació inicial necessita `dest`, domini i connectivitat vàlids.
+
+## Falla l'autenticació
+
+Contrasta `public_key`, `mldsa_verify`, `short_id` i `server_name` per un canal de confiança amb la configuració activa. Corregeix rellotges abans de toleràncies i comprova el port real.
+
+## L'aplicació no connecta
+
+Confirma SOCKS5 a `127.0.0.1:1080`, després DNS i accés del servidor a la destinació. `socks5h` passa el domini a l'intermediari.
+
+## TCP funciona, UDP no
+
+Revisa `udp_transport`. QUIC necessita `udp_listen`, port UDP obert i lloc QUIC/HTTP/3 accessible. Activa UDP al client i prova una aplicació UDP a part.
+
+## Apareix el lloc de cobertura
+
+És normal en un navegador o una sonda sense autenticar. Prova amb el client Umbra configurat i SOCKS5 local.
+
+## La connexió és lenta
+
+Compara destinació, càrrega i ruta idèntiques. Consulta diagnòstics, finestres, cues i pressupostos al costat de CPU i memòria del sistema. La referència de rendiment explica les mètriques.
+
+## Informar del problema
+
+Inclou versions, sistema, fase, ordres i errors sense secrets i passos mínims. Retira claus, credencials, adreces i contingut d'usuaris. Per a vulnerabilitats, segueix el canal de seguretat.
 
 ## Passos següents
 
-- [Configuració del servidor](/ca/docs/configuration/server/)
-- [Configuració del client](/ca/docs/configuration/client/)
-- [Rendiment i polítiques](/ca/docs/reference/configuration/)
+- [Referència de configuració del servidor](/ca/docs/configuration/server/)
+- [Referència de configuració del client](/ca/docs/configuration/client/)
+- [Paràmetres de rendiment i transport](/ca/docs/reference/configuration/)

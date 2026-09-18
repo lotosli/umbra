@@ -1,7 +1,7 @@
 ---
 id: "guides/deployment"
-title: "Despliegue y operación"
-description: "Supervisa el servidor y administra sus recursos."
+title: "Desplegar y mantener Umbra"
+description: "Gestiona el servicio, los puertos, la configuración y los recursos."
 section: "guides"
 order: 6
 version: "1.0.0-alpha"
@@ -9,17 +9,19 @@ source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
 ---
 
-## Descripción general
+Valida una conexión en primer plano antes de crear el servicio. En Linux, systemd gestiona el proceso y journald recoge los registros.
 
-Primero valida un cliente y un servidor en primer plano con la misma versión. En Linux, systemd puede supervisar el proceso y journald recoger stderr. Utiliza rutas absolutas para el binario y server.toml. Restringe la lectura del archivo al usuario del servicio y a los administradores. Configura ese usuario y los permisos para puertos bajos según tu sistema.
+## Preparar archivos y usuario
 
-## Detalles
+Crea el usuario `umbra`, instala el programa en `/usr/local/bin/umbra` y la configuración en `/etc/umbra/server.toml`. Solo el usuario del servicio y los administradores deben leerla. Adapta usuario y rutas absolutas a tu instalación.
 
-Abre el puerto TCP público configurado. Abre UDP únicamente si udp_listen está activo para QUIC. Si un frontal de capa 4 ocupa el puerto público, vincula Umbra al bucle local y configura reenvío transparente TCP/QUIC. Los puertos internos no necesitan reglas públicas. Un proxy inverso HTTP corriente no sustituye el reenvío de transporte requerido por Umbra.
+## Configurar la red
 
-### Ejemplo de unidad de servicio
+Abre el puerto TCP de `listen`; con QUIC, configura `udp_listen` y abre UDP. Si una entrada de capa 4 ocupa el puerto público, enlaza Umbra a la interfaz local y reenvía TCP/QUIC de forma transparente. Mantén privados los puertos internos. Se necesita reenvío compatible con estos transportes, no una configuración HTTP convencional.
 
-Guarda esta unidad en `/etc/systemd/system/umbra-server.service`. El ejemplo supone que ya existe el usuario Linux dedicado `umbra`, que el binario está instalado en `/usr/local/bin/umbra` y que ese usuario puede leer `/etc/umbra/server.toml`. Crea la identidad e instala los archivos con las herramientas de administración de tu equipo antes de activar la unidad; adapta rutas y usuario si tu despliegue es diferente.
+## Crear el servicio
+
+Guarda en `/etc/systemd/system/umbra-server.service`:
 
 ```ini
 [Unit]
@@ -41,8 +43,9 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 ```
 
+`CAP_NET_BIND_SERVICE` permite usar puertos bajos como 443. Comprueba usuario, rutas y permisos antes de activarlo.
 
-### Administrar el servicio
+## Iniciar y consultar registros
 
 ```sh
 sudo systemctl daemon-reload
@@ -50,13 +53,14 @@ sudo systemctl enable --now umbra-server
 sudo journalctl -u umbra-server -f
 ```
 
+Prueba después una solicitud desde el cliente.
 
-## Verificación y límites
+## Recursos y mantenimiento
 
-Reserva memoria para el sistema operativo. El despliegue orientado a rendimiento supone al menos 1 GiB de RAM física; performance.memory_mib limita compromisos lógicos, no el RSS del proceso. Los diagnósticos están desactivados inicialmente. Actívalos durante una investigación concreta y no confundas escrituras aceptadas con entrega remota. Reinicia de forma deliberada tras cambiar la configuración y conserva un binario anterior verificado para poder revertir.
+La optimización actual presupone al menos 1 GiB de RAM en el servidor. Reserva memoria para el sistema, los búferes del núcleo y otros servicios. Los diagnósticos vienen desactivados; actívalos al investigar un problema. Reinicia tras modificar la configuración y conserva la versión anterior para poder volver atrás.
 
 ## Siguientes pasos
 
-- [Rendimiento y políticas](/es/docs/reference/configuration/)
-- [Resolución de problemas](/es/docs/troubleshooting/)
+- [Parámetros de rendimiento y transporte](/es/docs/reference/configuration/)
+- [Resolver problemas](/es/docs/troubleshooting/)
 - [Actualizar Umbra](/es/docs/guides/upgrade/)

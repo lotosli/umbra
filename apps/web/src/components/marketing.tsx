@@ -55,6 +55,7 @@ export function CommandBlock({ locale }: { locale: Locale }) {
   return (
     <div className="command-block">
       <div className="command-toolbar">
+        <span className="window-controls" aria-hidden="true"><i /><i /><i /></span>
         <span>
           <Terminal size={15} aria-hidden="true" />
           {copy.start.terminal}
@@ -173,6 +174,7 @@ function HomePage({ locale }: { locale: Locale }) {
   const featureIcons = [Globe2, Fingerprint, KeyRound, Network];
   return (
     <>
+      <div className="hero-surface">
       <section className="hero container">
         <div className="hero-copy">
           <a className="release-badge" href={localePath(locale, 'changelog')}>
@@ -195,7 +197,7 @@ function HomePage({ locale }: { locale: Locale }) {
               <ArrowRight size={17} />
             </a>
             <a
-              className="button button-quiet"
+              className="button button-secondary"
               href={localePath(locale, 'protocol')}
             >
               {copy.hero.explore}
@@ -207,8 +209,13 @@ function HomePage({ locale }: { locale: Locale }) {
             {copy.hero.footnote}
           </p>
         </div>
-        <ProtocolDiagram copy={copy} />
+        <div className="hero-code">
+          <div className="hero-code-label"><span>umbra</span><span>v{releaseVersion}</span></div>
+          <CommandBlock locale={locale} />
+          <div className="hero-platforms"><Monitor size={15} aria-hidden="true" /> macOS · Linux · Windows <span>Rust / MIT</span></div>
+        </div>
       </section>
+      </div>
       <div className="facts-strip">
         <div className="container facts-inner">
           {['REALITY', 'TCP + QUIC', 'SOCKS5', 'MIT'].map((value, index) => (
@@ -266,7 +273,10 @@ function HomePage({ locale }: { locale: Locale }) {
               <ArrowRight size={16} />
             </a>
           </div>
-          <CommandBlock locale={locale} />
+          <div className="start-options">
+            <a href={localePath(locale, 'download')}><span className="start-option-icon"><ArrowDown size={24} /></span><span><strong>{copy.nav.download}</strong><small>macOS · Linux · Windows</small></span><ArrowUpRight size={20} /></a>
+            <a href={localePath(locale, 'docs/getting-started/installation')}><span className="start-option-icon"><Terminal size={24} /></span><span><strong>{copy.download.source}</strong><small>Rust · Cargo</small></span><ArrowUpRight size={20} /></a>
+          </div>
         </div>
       </section>
       <section className="container section docs-section">

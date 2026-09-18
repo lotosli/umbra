@@ -226,7 +226,7 @@ const en: MarketingCopy = {
     eyebrow: 'From installation to your first connection',
     title: 'Install. Configure.\nConnect your apps.',
     description:
-      'Download and install a matching release asset, or optionally build from source below. Generate keys, configure the server and CLI client, then point your apps to the local SOCKS5 listener on loopback.',
+      'Download and install a matching release asset, or optionally build from source. Generate keys, configure the server and CLI client, then point your apps to the local SOCKS5 listener on loopback.',
     link: 'Read the quick start',
     terminal: 'Build from source',
   },
@@ -541,7 +541,7 @@ const zhHans: MarketingCopy = {
     eyebrow: '从安装，到第一次连接',
     title: '安装、配置，\n再接入你的应用。',
     description:
-      '下载安装适合平台的发布附件，也可选用下方命令从源码构建。生成密钥，配置服务端与命令行客户端，再将应用指向绑定回环地址的本地 SOCKS5 入口。',
+      '下载安装适合平台的发布附件，也可选择从源码构建。生成密钥，配置服务端与命令行客户端，再将应用指向绑定回环地址的本地 SOCKS5 入口。',
     link: '阅读快速开始',
     terminal: '从源码构建',
   },
@@ -851,7 +851,7 @@ const zhHant: MarketingCopy = {
     eyebrow: '從安裝，到第一次連線',
     title: '安裝、設定，\n再接入你的應用程式。',
     description:
-      '下載並安裝適合平台的發布附件，也可選用下方指令從原始碼建置。產生金鑰，設定伺服器與命令列用戶端，再將應用程式指向綁定回送位址的本機 SOCKS5 入口。',
+      '下載並安裝適合平台的發布附件，也可選擇從原始碼建置。產生金鑰，設定伺服器與命令列用戶端，再將應用程式指向綁定回送位址的本機 SOCKS5 入口。',
     link: '閱讀快速入門',
     terminal: '從原始碼建置',
   },
@@ -1168,7 +1168,7 @@ const fr: MarketingCopy = {
     eyebrow: 'De l’installation à la première connexion',
     title: 'Installez. Configurez.\nConnectez vos applications.',
     description:
-      'Téléchargez et installez un fichier adapté, ou compilez depuis les sources avec les commandes ci-dessous si vous le préférez. Générez les clés, configurez le serveur et le client en ligne de commande, puis raccordez vos applications à SOCKS5 sur l’interface de bouclage.',
+      'Téléchargez et installez un fichier adapté, ou compilez depuis les sources si vous le préférez. Générez les clés, configurez le serveur et le client en ligne de commande, puis raccordez vos applications à SOCKS5 sur l’interface de bouclage.',
     link: 'Lire le guide de démarrage',
     terminal: 'Compiler depuis les sources',
   },
@@ -1494,7 +1494,7 @@ const es: MarketingCopy = {
     eyebrow: 'De la instalación a tu primera conexión',
     title: 'Instala. Configura.\nConecta tus aplicaciones.',
     description:
-      'Descarga e instala un archivo publicado para tu plataforma, o compila opcionalmente con los comandos de abajo. Genera las claves, configura el servidor y el cliente de línea de comandos, y dirige tus aplicaciones al SOCKS5 local vinculado a la interfaz de bucle local.',
+      'Descarga e instala un archivo publicado para tu plataforma, o compila opcionalmente desde el código fuente. Genera las claves, configura el servidor y el cliente de línea de comandos, y dirige tus aplicaciones al SOCKS5 local vinculado a la interfaz de bucle local.',
     link: 'Leer la guía rápida',
     terminal: 'Compilar desde el código fuente',
   },
@@ -1819,7 +1819,7 @@ const ja: MarketingCopy = {
     eyebrow: 'インストールから、最初の接続へ',
     title: 'インストール、設定、\nアプリの接続。',
     description:
-      '対応するリリースファイルをダウンロードしてインストールします。下のコマンドでソースからビルドする方法も選べます。鍵を生成してサーバーと CLI クライアントを設定し、ループバックにバインドしたローカル SOCKS5 をアプリの接続先に指定してください。',
+      '対応するリリースファイルをダウンロードしてインストールします。ソースからビルドする方法も選べます。鍵を生成してサーバーと CLI クライアントを設定し、ループバックにバインドしたローカル SOCKS5 をアプリの接続先に指定してください。',
     link: 'クイックスタートを読む',
     terminal: 'ソースからビルド',
   },
@@ -2142,7 +2142,7 @@ const ca: MarketingCopy = {
     eyebrow: 'De la instal·lació a la primera connexió',
     title: 'Instal·la. Configura.\nConnecta les aplicacions.',
     description:
-      'Baixa i instal·la un fitxer publicat per a la teva plataforma, o compila opcionalment amb les ordres de sota. Genera les claus, configura el servidor i el client de línia d’ordres, i dirigeix les aplicacions al SOCKS5 local vinculat a la interfície de bucle local.',
+      'Baixa i instal·la un fitxer publicat per a la teva plataforma, o compila opcionalment des del codi font. Genera les claus, configura el servidor i el client de línia d’ordres, i dirigeix les aplicacions al SOCKS5 local vinculat a la interfície de bucle local.',
     link: 'Llegeix la guia ràpida',
     terminal: 'Compila des del codi font',
   },

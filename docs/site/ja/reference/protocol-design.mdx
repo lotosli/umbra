@@ -1,0 +1,595 @@
+---
+id: "reference/protocol-design"
+title: "プロトコル設計"
+description: "TLS 1.3、REALITY 認証、Vision、QUIC、暗号技術、接続状態機械を含むプロトコル設計の全文。"
+section: "reference"
+order: 17
+version: "1.0.0-alpha"
+source: ["docs/protocol-design.md", "docs/architecture.md"]
+translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
+sourceRevision: "ea5cdb0ec4b6db5bee4ce2954aeee81844541d907cb5c7ffd1a95713cd65438d"
+---
+
+この技術資料では、Rust 製のクライアントとサーバーから成る Umbra のプロトコル設計を、コンポーネント、インターフェース、ワイヤーフォーマット、設計判断とともに全文掲載しています。設計目標とその後の改訂を含みます。現在の導入手順は利用ガイドを参照してください。§17 の単一 crate 構成と §18 の依存関係一覧は初期の構想です。
+
+[利用ガイド](/ja/docs/getting-started/quick-start/) · [現在のアーキテクチャ](/ja/docs/concepts/architecture/)
+
+## 0. 目標とアーキテクチャ上の決定
+
+設計全体は、次の三つの決定に基づきます。
+
+1. **REALITY と同様に、実在するサイトの識別情報を利用するトランスポート。** 認証情報を ClientHello に含め、サーバーが**応答する前に**検証します。未認証の接続やプローブは TCP/UDP 層で変更せず、カバー先の実サイト `dest` に転送します。相手は実サイトとハンドシェイクし、その証明書を受け取ります。ノード独自のドメインや公開 CA 証明書は不要です。
+2. **クライアントは、Rust 版 uTLS に相当する独自の最小 TLS 1.3 スタックを使用。** 主ハンドシェイクは BoringSSL/rustls に依存しません。ClientHello を手動で構築し、フィンガープリント、`legacy_session_id`、X25519 keyshare の秘密鍵を制御するとともに、TLS 1.3 鍵スケジュールを実装します。これにより Chrome プロファイルのバイト列を制御し、認証に keyshare を再利用できます。サーバー側にも、ローカルでのハンドシェイクと証明書の再現に使う独自スタックを設けます。
+3. **認証は canonical REALITY の構成に従い、keyshare の ECDH を再利用。** `shared=X25519(C_priv,S_pub)` とし、ClientHello 全体を AAD にして AES-GCM でトークンを暗号化し、`session_id` に格納します。接続ごとに新しい keyshare を使い、トークンをハンドシェイクに結び付け、そのバイト列をランダムに見せます。
+
+Vision の直接転送、事前プロファイル取得、mux、QUIC、Geneva、耐量子プリミティブ、ブラウザープロファイルの追従は、いずれも目標設計の一部です。コンポーネント F–K を参照してください。
+
+## 1. 脅威モデル：検閲の手法
+
+付録 C の研究と観測された挙動を基にしています。
+
+- **完全暗号化通信のエントロピー分類（USENIX Security 2023）：** フローの最初のパケットを分類し、印字可能文字や低エントロピーなどを除外条件とします。追加の外側プロトコルを持たない SS/obfs4 は先頭が高エントロピーになり得ます。Umbra は TLS/QUIC のフレーム構造を使い、この分類器が扱う暗号文だけのパターンを避けることを目指します。
+- **能動的プローブ（NDSS 2019/2020、GFW Report）：** 疑わしい接続先へアクセスし、再送や改変でプロキシを識別します。未認証接続は実サイトへ転送します。
+- **TLS-in-TLS の特徴（USENIX Security 2024）：** 内側のハンドシェイクが、レコード長や方向の並びに現れる場合があります。F で Vision と適応パディングを組み合わせます。
+- **ClientHello/JA3/JA4：** ブラウザーとの差異が識別材料になります。A/J は Chrome プロファイルに基づいてバイト列を構築します。
+- **SNI 検査と ESNI/ECH の遮断：** SNI は観測可能です。到達可能な実在のカバーサイト名を使います。
+- **状態を追跡する TCP RST 注入（Geneva、CCS 2019）：** H は TCP 分割送信・TCB 非同期化を扱い、G は独立した QUIC/UDP 経路を提供します。
+- **リプレイ：** B で新しい ECDH keyshare、タイムスタンプの許容範囲、nonce キャッシュを使います。
+- **残留遮断：** 検出された IP:ポートが一定期間遮断されることがあります。複数ポート、交換可能な接続先、利用の少ない宛先 IP、QUIC の代替経路を運用上の選択肢とします。
+- **タイミングサイドチャネル：** プローブは最初のバイトまでの時間を測れます。K は認証経路と転送経路の準備時間を調整します。
+
+検閲側が大規模に TLS を MITM 終端しないことを仮定します。そのような処理は通信を大きく妨げ、検出も可能になるためです。接続単位の介入に対する証明書認証は E で扱います。これらは前提と検証目標であり、あらゆる状況で識別不能という保証ではありません。
+
+## 2. 設計原則と参考にした方式
+
+| 原則 | 参考 | 対処する問題 |
+| --- | --- | --- |
+| 実サイトの TLS/QUIC と未認証通信の転送 | REALITY | Trojan 用ドメイン・証明書の管理、自己署名証明書の露出 |
+| 応答前に ClientHello 内で認証 | REALITY | 証明書を見せた後での認証 |
+| Chrome に合わせて ClientHello をバイト単位で制御 | uTLS | 汎用 TLS スタックとの挙動差 |
+| ECDH を再利用して接続固有の認証鍵を生成 | REALITY | 固定パスワードを接続鍵として直接使い回すこと |
+| 条件を満たす通信では Vision で追加の TLS 層を除去 | XTLS-Vision | 通常のトンネルに残る TLS-in-TLS パターン |
+| 適応パディングと多重化 | anytls | 宛先ごとの外側接続数による相関 |
+| 新しい keyshare、時刻、nonce キャッシュ | SS-2022 / VMess | 古い SS 方式でのリプレイ |
+| 耐量子 KEM と署名 | Chrome PQC / REALITY mldsa | 古典暗号だけに依存する長期的リスク |
+| 追加ネゴシエーションを行わない一つの強い内部 AEAD 方針 | SS-2022 | ダウングレードや交渉時の特徴 |
+
+## 3. 全体アーキテクチャ
+
+<ProtocolDiagram locale="ja" name="architecture" />
+
+四つの層が役割を分担します。
+
+1. **外側トランスポート（G/H）：** 設定した送信方式による TCP 上の TLS 1.3、または QUIC/HTTP-3。SNI はカバー先を示します。
+2. **ハンドシェイク認証（A/B）：** Chrome プロファイルの ClientHello を構築し、TCP では `session_id` と keyshare を認証に使います。
+3. **振り分けとローカルハンドシェイク（C/D/E）：** 応答前に判定し、認証済みなら一時的な信頼済み証明書を提示、それ以外は `dest` に転送します。
+4. **内側トランスポート（F）：** 適応パディング付き mux または専用 Vision 接続で、宛先情報とデータを運びます。
+
+## コンポーネント A：最小 TLS 1.3 スタック
+
+**目的：** ClientHello のバイト列と X25519 秘密鍵を制御し、Chrome プロファイルと B/E を支えます。
+
+**範囲：** TLS 1.3（RFC 8446）のみ。対象プロファイルが必要とする暗号スイート・拡張をクライアントとサーバーに実装します。TLS 1.2 は対象外です。
+
+### A.1 ClientHello のバイト単位の構築
+
+- レコードの `legacy_version=0x0303`、CSPRNG 由来の 32 バイト `random`、B が設定する 32 バイト `legacy_session_id`、暗号スイート、null 圧縮、拡張を並べます。Chrome の互換モードもランダムな 32 バイト session ID を使用し、その内容は JA3/JA4 に含まれません。
+- スイート順：`GREASE, TLS_AES_128_GCM_SHA256(0x1301), TLS_AES_256_GCM_SHA384(0x1302), TLS_CHACHA20_POLY1305_SHA256(0x1303)`。
+- 拡張の集合と順序はプロファイルの例であり、**実キャプチャで確認して更新**します（J）：`GREASE → server_name → extended_master_secret → renegotiation_info → supported_groups (X25519MLKEM768,X25519,secp256r1,secp384r1) → ec_point_formats → session_ticket → ALPN(h2,http/1.1) → status_request → signature_algorithms → signed_certificate_timestamp → key_share(GREASE,X25519MLKEM768,X25519) → psk_key_exchange_modes → supported_versions(GREASE,0x0304) → compress_certificate(brotli) → application_settings(ALPS) → GREASE → padding`。
+- **GREASE：** RFC 8701 の値をスイート、拡張、グループ、keyshare、バージョン、署名アルゴリズムに挿入します。位置と個数は対象 Chrome に合わせます。
+- **key_share：** ハイブリッド `X25519MLKEM768`（I）と古典 X25519 を含めます。古典側の秘密鍵 `C_priv` を生成・保持し、B の認証で再利用します。
+- `0x11ec` のクライアント値は厳密に `ML-KEM-768 public key(1184) || X25519 public key(32)`、サーバー値は `ML-KEM-768 ciphertext(1088) || X25519 public key(32)` です（RFC 10024 §4）。0.0.8 は以前の逆順を修正しており、旧形式とは非互換です。
+- **パディング：** 対象 Chrome の長さ分布に従います。多くの場合、512 バイトの倍数付近が基準になります。
+
+### A.2 鍵スケジュールとクライアント状態機械
+
+RFC 8446 に従います。
+
+- `Transcript-Hash` を保持し、`HKDF-Expand-Label` と `Derive-Secret` を実装します。
+- `Early=HKDF-Extract(0,PSK|0)` → `Handshake=HKDF-Extract(Derive-Secret(Early,"derived",""),ECDHE)` → `c/s hs traffic`、`Master`、`c/s ap traffic`、`exporter`、`resumption`。
+- TCP/QUIC の `c/s ap traffic` と `exp master` は **Server Finished** まで、`res master` は **Client Finished** までのトランスクリプトを使います。API は両者の境界を区別します。
+- RFC 8879 の `compress_certificate` はアルゴリズム一覧の長さを uint8 で表します。Brotli のアルゴリズム 2 は `02 00 02`。圧縮前後のサイズを制限し、トランスクリプトには元の CompressedCertificate を残します。
+- ハンドシェイクをレコード間で上限付きで再構成し、正当な互換 CCS を受け入れます。サーバーが必ず二つのレコードを送ると仮定してはいけません。ServerHello のバージョン、null 圧縮、session ID のエコー、拡張の重複、提示済みパラメーターかどうかを検証します。未対応 HRR は明示的に拒否します。提示した TLS 1.3 署名方式は成熟した実装で検証し、TLS 1.2 専用方式を TLS 1.3 CertificateVerify に使いません。
+- ECDHE は認証でも使う X25519 と、必要に応じて X25519MLKEM768 ハイブリッド秘密（I）を使用します。
+- レコード保護は `TLS_AES_128_GCM_SHA256`、`TLS_AES_256_GCM_SHA384`、`TLS_CHACHA20_POLY1305_SHA256`。RustCrypto `aes-gcm`/`chacha20poly1305` を使い、方向ごとに鍵・IV・シーケンス番号由来の nonce を持ちます。
+- ClientHello → (ServerHello, EncryptedExtensions, Certificate, CertificateVerify, Finished) → Client Finished。互換モードではプロファイルに従いダミー ChangeCipherSpec を一度送ります。
+- 証明書の判定は E に委ね、一時的な信頼済み証明書、実サイト、無効を区別します。
+
+### A.3 サーバー側 TLS 1.3 スタック
+
+- C が読み込んだ ClientHello を PrefixedStream で再生して続行します。D のパラメーターによる ServerHello、EncryptedExtensions、E の生成・再現 Certificate、リーフ秘密鍵で署名した CertificateVerify、Finished を出力します。
+- TCP 互換モードの **`legacy_session_id_echo` はクライアントの 32 バイトをそのまま返します**。スイート、keyshare グループ、ALPN は DestProfile に従います。QUIC で空にする規則は G を参照してください。
+
+### A.4 モジュールとシグネチャ
+
+```rust
+// tls13/clienthello.rs
+pub struct ClientHelloParams { pub sni:String, pub session_id:[u8;32], pub x25519_priv:[u8;32],
+    pub x25519_pub:[u8;32], pub mlkem: MlkemShare, pub profile: FingerprintProfile }
+pub fn build_client_hello(p:&ClientHelloParams) -> Vec<u8>;         // バイト単位で直列化（GREASE と順序は profile に従う）
+
+// tls13/handshake.rs（クライアント）
+pub struct Tls13Client { /* transcript, secrets, aead ... */ }
+impl Tls13Client {
+    pub fn start(params:ClientHelloParams) -> (Self, Vec<u8> /*ClientHello レコード*/);
+    pub fn drive(&mut self, inbound:&[u8], verify:&dyn CertVerify) -> DriveOut; // ハンドシェイク進行 / 送信バイト生成 / 完了
+    pub fn app_seal(&mut self,pt:&[u8])->Vec<u8>; pub fn app_open(&mut self,ct:&[u8])->io::Result<Vec<u8>>;
+}
+pub trait CertVerify { fn verify(&self, leaf_der:&[u8], chain:&[Vec<u8>]) -> PeerKind; }
+pub enum PeerKind { UmbraTrusted, RealSite, Invalid }
+
+// tls13/server.rs（サーバー側の模倣ハンドシェイク）
+pub struct Tls13Server { /* ... */ }
+impl Tls13Server {
+    pub fn accept(chello_raw:&[u8], leaf:ForgedCert, profile:&DestProfile) -> (Self, Vec<u8>);
+    pub fn drive(&mut self, inbound:&[u8]) -> DriveOut;
+    pub fn app_seal(&mut self,pt:&[u8])->Vec<u8>; pub fn app_open(&mut self,ct:&[u8])->io::Result<Vec<u8>>;
+}
+```
+
+> ClientHello、鍵スケジュール、レコード層の正しさを優先し、`tls.peet.ws` や JA4 で確認します。証明書の Brotli 圧縮を提示するクライアントは、相手の圧縮証明書を展開できる必要があります。
+
+## コンポーネント B：keyshare ECDH による REALITY 認証
+
+### B.1 鍵とパラメーター
+
+- サーバーの静的 X25519 鍵は `(S_priv,S_pub)`。クライアントへ渡す `S_pub` はアクセス資格情報として使うため、数学的には公開鍵でも、**未許可の第三者には公開しません**。
+- `short_id` は 0–8 バイト。サーバーが許可集合を設定し、クライアントが一つ選びます。
+- `max_time_diff` の既定値は 120 秒。`server_names` は SNI 許可リスト、`dest` はカバーサイトの `host:443` です。
+
+### B.2 legacy_session_id の認証ペイロード
+
+A の古典 X25519 keyshare `(C_priv,C_pub)` を再利用します。
+
+1. `shared = X25519(C_priv, S_pub)`（32 バイト）。
+2. AES-128 鍵は `auth_key = HKDF-SHA256(shared, salt="umbra-reality-v1", info="key")[..16]`、nonce は `HKDF-SHA256(shared, salt="umbra-reality-v1", info="nonce")[..12]`。
+3. 16 バイト平文：`P = ver(1)=0x01 || flags(1) || ts(u32 BE,4) || short_id(8) || reserved(2)=0`。
+4. `ct||tag = AES-128-GCM-Seal(auth_key, nonce, P, aad=HELLO0)`。**HELLO0 は session ID の 32 バイトだけをゼロにした ClientHello ハンドシェイクメッセージ全体**であり、TLS レコードヘッダーは含めません。レコードへの分割方法が変わっても AAD は変えません。
+5. 最終シリアライズとトランスクリプト計算の前に `session_id(32B) = ct(16) || tag(16)` を書き戻します。
+
+### B.3 応答前のサーバー検証
+
+どの検証に失敗しても、C の `dest` 転送へ進みます。
+
+1. 生の ClientHello から SNI、古典 X25519 `C_pub`、32 バイト session ID を取得し、session ID をゼロにして HELLO0 を作ります。
+2. `SNI ∈ server_names` を要求します。
+3. `shared = X25519(S_priv, C_pub)` を計算し、`auth_key,nonce` を導出します。
+4. `P = AES-128-GCM-Open(auth_key, nonce, ct=session_id[..16], tag=session_id[16..], aad=HELLO0)` を検証します。GCM 失敗時は転送します。
+5. バージョン、`reserved==0`、`|now-ts|≤max_time_diff`、許可 short ID、リプレイを確認します。キャッシュの照会と挿入は原子的に行います。受信後一窓分だけではなく、`ts+max_time_diff` の境界を含めて保持し、期限計算のオーバーフローを確認します。満杯なら有効エントリーを追い出さず、新規ローカル認証を拒否して転送します。掃除後もトークン時刻を検証します。
+6. 成功したら `shared` を E に渡します。
+
+HELLO0 と TLS アプリケーション秘密の境界修正後は両端を同時更新します。失敗時に旧来の非標準 AAD や鍵導出へ再試行しません。
+
+### B.4 安全性と資格情報の扱い
+
+- `S_pub` と新しいクライアント秘密鍵があれば `shared` を導出できます。AAD は別 ClientHello へのトークン移植を防ぎます。新しい keyshare、時刻窓、キャッシュで接続鍵の再利用とリプレイに対処します。
+- 原設計の「接続ごとの認証の前方秘匿性」は、静的サーバー秘密鍵が漏えいした後まで保証するものではありません。鍵侵害モデルを分けて評価する必要があります。
+- `S_pub`/`short_id` が漏れると、このモデルのアクセス制御が破られます。信頼できる別経路で配布してください。
+
+## コンポーネント C：サーバーの振り分けとプローブ転送
+
+**ローカルの TLS 応答前に**、認証済みハンドシェイクを終端するか、転送するかを決めます。
+
+1. `read_client_hello_raw(conn)` は全体期限とバイト数・レコード数上限を設け、複数レコードの ClientHello を読みます。途中のヘッダーや本文、タイムアウト、上限超過、EOF でも既読プレフィックスを保持し、早期切断せず転送へ渡します。禁止するのは分類前のローカル TLS 応答であり、転送後の実サイトの応答ではありません。QUIC は G を参照します。
+2. 独自パーサーまたは `tls-parser` で `SNI, C_pub, session_id` を解析します。
+3. B を検証します。**成功時：** `leaf = forge_cert(shared, SNI, dest_profile)` を作り、`Tls13Server::accept(chello_raw, leaf, profile)` と `PrefixedStream(chello_raw, conn)` で続行して F へ進みます。**失敗・SNI 不一致・リプレイ時：** `dest` に接続し、保持した全プレフィックスを書き、`copy_bidirectional(conn, d)` で転送します。相手は実サイトのハンドシェイクと証明書を受け取ります。
+4. 転送に Umbra 固有の速度制限や早期切断を追加しません（K）。`maxUselessRecords` は分類を制限するものであり、転送規則に反する拒否を追加してはいけません。
+
+```rust
+pub async fn dispatch(conn: Conn, cfg:&ServerCfg, prof:&DestProfile, replay:&ReplayCache) -> anyhow::Result<()>;
+pub struct PrefixedStream<S>{/* prefix を再送した後 inner を転送 */}
+```
+
+## コンポーネント D：宛先プロファイルの取得と事前準備
+
+**目的：** ローカルハンドシェイクを、実サイトの ServerHello、証明書、タイミング、OCSP に近づけます。
+
+- 起動時に検証済み DestProfile を一度取得します。`prebuild=true` は定期更新も有効にし、`false` は定期更新だけを無効にします。架空の既定プロファイルで起動してはいけません。初回失敗は起動失敗、更新失敗は前回の有効値を維持し、置換は原子的に行います。
+- TLS バージョン、スイート、keyshare グループ、ALPN、EncryptedExtensions、実リーフの subject/issuer/validity/SAN/SCT、OCSP stapling、署名方式を収集します。接続開始から最初の TLS 応答までの間隔も収集し、後続 HTTP 待ち時間を除いて K に使います。
+- DNS・接続・TLS・HTTP メタデータには共通の有限期限を設けます。同期 I/O で async executor を止めません。期限後も動くブロッキング処理も同時実行枠を消費します。
+- E は ServerHello と証明書フィールドにこの値を使います。証明書本体は TLS 1.3 で暗号化されますが、再現は高度な相関分析も対象にします。
+
+```rust
+pub struct DestProfile { pub tls_ver:u16, pub cipher:u16, pub group:u16, pub alpn:Vec<Vec<u8>>,
+    pub ee_exts:Vec<u16>, pub leaf_template:CertTemplate, pub ocsp:Option<Vec<u8>>, pub rtt:Duration }
+pub async fn probe_dest(dest:&str) -> anyhow::Result<DestProfile>;
+```
+
+## コンポーネント E：ローカルハンドシェイクと一時的な信頼済み証明書
+
+認証後、サーバーは `dest` にハンドシェイクを転送せず、**TLS をローカルで終端**します。クライアントは `shared` で証明書を検証します。
+
+### E.1 リーフ証明書の生成
+
+- 一時鍵を生成し、その秘密鍵で CertificateVerify を署名します。CN/SAN=`server_name` や有効期間などを `DestProfile.leaf_template` から再現します。
+- 私有拡張 OID `1.3.6.1.4.1.62397.1` は、`cert_key = HKDF-SHA256(shared, salt="umbra-cert-v1", info=session_id)` から求めた `cert_mac = HMAC-SHA256(cert_key, leaf_SPKI_DER)`（32 バイト）です。
+- 耐量子追加署名（I）、OID `...62397.2` は `ML-DSA-65_Sign(mldsa_sk, leaf_SPKI_DER)` です。
+
+### E.2 クライアントの証明書検証
+
+クライアントは保持した `C_priv` からの `shared` と、自分の session ID を知っています。
+
+1. `cert_key` を導出し、MAC を定数時間で検証し、**さらに** `mldsa_pk` で ML-DSA-65 を検証します。両方と CertificateVerify による秘密鍵保有証明が成功した場合だけ **UmbraTrusted** とし、プロキシ通信を許可します。この結び付けられた証明書に公開 CA の署名は不要です。
+2. Umbra の結び付けが有効でなければ、証明書チェーン、設定済み信頼ルート、期待するホスト名、有効期間、CertificateVerify を独立に検証します。すべて成功した場合のみ **RealSite**。TCP は対応する交渉済み HTTP プロトコルで spider パスへアクセスできますが、プロキシ宛先・業務データを送りません。非対応 ALPN に不正な形式の HTTP を送りません。QUIC RealSite はローカルでプロキシ確立を拒否し、業務鍵・接続準備完了・SOCKS 成功・宛先プレフィックスを公開しません。TCP への自動降格や HTTP/3 spider の実行も行いません。
+3. 必須検証の失敗は **Invalid** とし、通常の TLS エラー・切断処理へ進みます。
+4. 証明書秘密鍵、結び付け鍵、トラフィック秘密、プローブの key log はゼロ化される所有権と秘匿 Debug 表示を使います。設定エラーや入れ子の原因にも秘密値・TOML 抜粋を残しません。
+
+> 介入への耐性は共有秘密への結び付けと証明書の証明に依存します。必要な結び付けを作れない中間者は、独立した証明書検証に従い RealSite または Invalid になります。
+
+## コンポーネント F：適応パディング付き多重化と Vision
+
+認証後、内側は宛先指定、多重化、TLS-in-TLS の整形を担当します。接続ごとにモードを選びます。
+
+- **既定の適応 mux：** 一つの TLS 接続に複数論理ストリームを載せ、ハンドシェイクの繰り返しや接続数の相関を減らします。
+- **専用 Vision：** 一つのストリームが外側接続を専有。ハンドシェイク中はパディングし、その後は条件を満たす内側 TLS レコードを追加の包みなしで直接転送します。
+
+### F.1 mux フレーム形式
+
+```
+MuxFrame = ver(1) || cmd(1) || stream_id(4,BE) || len(2,BE) || payload(len)
+cmd: 0x01 SYN(payload=接続先アドレス) | 0x02 SYN_ACK | 0x03 DATA | 0x04 WINDOW_UPDATE(payload=u32 増分)
+     | 0x05 FIN | 0x06 RST | 0x07 PADDING(payload=ランダム値、フレーム全体を破棄) | 0x08 PING
+接続先アドレス(SYN.payload) = atyp(1) || addr(4|1+n|16) || port(2)   // 0x01 v4 / 0x03 ドメイン名 / 0x04 v6
+```
+
+- ストリームごとに独立ウィンドウを持ち、初期値の例は 256 KiB、WINDOW_UPDATE で増加します。DATA は最大 16,384 バイト。
+- SOCKS5 接続ごとに SYN を開きます。互換設定なら健全な外側接続を共有し、サーバーは各宛先に並行接続して成功後にだけ SYN_ACK を返します。
+- 部分フレームの読取状態と直列化された書込状態をキャンセル後も保持します。ストリーム開始や送信信用待ちで他イベントを失いません。部分書込はそのフレームを完了するか接続を閉じ、別フレームのバイトを混ぜません。
+- 受信信用には上限付きバッファを予約し、キュー投入ではなくアプリが実際に消費した後で返します。オーバーフロー、ゼロ増分、未知ストリーム制御を確認し、ストリーム数と総メモリを制限します。
+- FIN は既存 DATA の後で一方向だけ閉じます。RST は当該ストリームの待機者をすべて起こします。解放で他ストリームを終了しません。
+- 外側障害で業務データを自動再送しません。後続の新規要求は代替接続を作れます。stream-zero UDP 関連付けは外側接続を専有し、共有 CONNECT と混用しません。
+
+### F.1a 適応フロー制御：0.0.9 以降
+
+新しい TCP CONNECT mux クライアントは `SETTINGS(0x0a, stream=0)` から始めます。`UAF1` と、ストリーム初期窓・接続初期窓・ストリーム最大窓・接続最大窓の四つの big-endian u32 を載せます。初期値は 256 KiB と 1 MiB、ストリーム最大は 32 MiB、接続最大は設定に従い 64 MiB 以下です。最初の設定フレームと設定済みランダムパディングを一度の書込にまとめ、通常業務のパディング回数は変えません。SYN/UDP から始める旧クライアントは従来の制御を使います。
+
+`CREDIT(0x0b)` は、累積送信許可上限とアプリ累積消費位置の二つの big-endian u64 を持ちます。stream=0 は接続合計です。DATA はストリーム・接続両方の信用を満たし、授信拡大を消費確認の代わりにしません。`PROBE(0x0c)` / `PROBE_ACK(0x0d)` は stream=0 に 8 バイト nonce を載せ、外側接続の RTT を測ります。
+
+受信側は実消費と RTT に応じて窓を増やし、授信前にプロセス・資格情報グループの予算を確保します。約束済み信用は撤回できません。FIN/RST は累積位置を精算し、キャンセル安全性を維持します。未認証転送と ClientHello は変更しません。設定・メモリ計上・測定上の制約は[スループットと設定](https://github.com/lotosli/umbra/blob/main/docs/performance.md)を参照してください。
+
+### F.2 適応パディング方式
+
+- anytls に似た設定可能な方式で、第 k 回の書込の目標長分布や追加 PADDING 長を決めます。設計上の既定動作では、各方向の最初のおよそ 16 レコードに長さ `[100,1400]` のランダム PADDING を入れ、最初の業務フレームの前後にも置き、内部ハンドシェイクの固定的な長さ・方向パターンを崩します。
+- その後は低い確率で PADDING を入れ、長期統計の特徴に対処します。
+
+### F.3 Vision の直接転送：0.0.7 以降
+
+TCP の `mux=false` は専用 Vision、`mux=true` は暗号化 mux です。両端が 0.0.7 の実装に対応する必要があります。旧来の単純 solo 中継と未接続 helper は削除され、独立した Vision スイッチは追加しません。
+
+1. 認証済みモードで solo と mux を区別します。未認証・旧版のフォールバック先に宛先や業務制御を送りません。
+2. 宛先を送ってから認証済み能力を交換し、サーバーの宛先接続成功後にだけ SOCKS 成功や DATA を許可します。
+3. 双方向を上限付きで再構成し、正当な TLS 1.3 ClientHello/ServerHello と完全な保護レコードを観測します。条件外の通信は外側暗号化を維持します。
+4. クライアントが要求・確認・コミット・最終確認を調整し、両方向のバイト境界を照合します。外側書込を排出し、既読プレフィックスを保ったまま生の TCP へ引き渡します。
+5. 以後は内側の保護 TLS レコードを、外側 TLS・envelope・padding なしで転送します。レコード構造確認と半閉鎖は維持します。
+
+`0x17` は暗号化ハンドシェイクや alert も含みます。受動観測では内部 Finished を検証できず、TLS を模倣する悪意あるアプリのバイトが暗号化済みかも証明できません。宛先認証と機密性はアプリ自身のエンドツーエンド TLS が担います。直接転送はユーザー空間 I/O であり、カーネルのゼロコピーや一定の速度改善は意味しません。
+
+正確なバイト形式、上限、拒否・コミット状態、EOF、キャンセル、ベクトルは[承認済み wire 仕様](https://github.com/lotosli/umbra/blob/main/docs/vision-runtime-wire-v2.md)を参照してください。独立した rustls エンドポイントを使うテストで、双方向 256 KiB の完全性、ネットワーク末尾と内側暗号文のバイト一致、切替後の外側 seal/open 停止を確認しています。原文には実 Mac・サーバー 0.0.7 の要求結果もあり、[検証記録](https://github.com/lotosli/umbra/blob/main/openspec/changes/integrate-vision-runtime/verification.md)から確認できます。
+
+> mux と生の直接転送は排他的です。QUIC はこの TCP 引き渡し経路に入りません。通信内容に応じて別 solo 接続を自動作成するヒューリスティックもありません。
+
+### F.4 モジュールとシグネチャ
+
+```rust
+// inner/mux.rs
+pub struct MuxSession<IO>{/* streams, windows */}
+impl<IO:AsyncRead+AsyncWrite> MuxSession<IO>{
+  pub fn client(io:IO, pad:&PadScheme)->Self; pub fn server(io:IO, pad:&PadScheme)->Self;
+  pub async fn open(&self, dst:&Addr)->Stream;   // クライアントがストリームを開始（SYN）
+  pub async fn accept(&self)->(Stream, Addr);      // サーバーがストリームを受け入れ
+}
+// inner/vision.rs
+pub async fn vision_relay(tls:TlsIo, target:TcpStream) -> io::Result<()>; // 検出 → パディング調整 → splice
+// inner/padding.rs
+pub struct PadScheme{/* 設定文字列から解析 */} pub fn parse_pad_scheme(s:&str)->PadScheme;
+// inner/spider.rs
+pub async fn spider(tls:TlsIo, spider_path:&str) -> io::Result<()>; // RealSite：ブラウザーのようにアクセスして切断
+```
+
+## コンポーネント G：QUIC / HTTP-3 トランスポート
+
+**設計目標：** UDP で TCP RST 注入を避け、独立した QUIC ストリームと 0-RTT を検討します。Chrome 風 QUIC/HTTP-3 を再現し、認証後は QUIC ストリームで宛先通信を運びます。**0-RTT や提案中のストリーム直接転送は目標設計であり、現在の対応機能一覧ではありません。**
+
+- A の TLS 1.3 を再利用します。ClientHello は Initial の CRYPTO フレーム内にあり、Initial 鍵は DCID と固定 salt から導出されるため、観測者が復元できます。QUIC の `supported_versions` は TLS 1.3 と有効 GREASE のみで、TCP の TLS 1.2 をコピーしません。HELLO0/AAD と認証トークンの前に適用し、QUIC TLS API が結び付け済みパラメーターを書き換えないようにします。
+- 対象プロファイルは QUIC バージョン、transport parameters と順序、ALPN=`h3`、`quic_transport_parameters` を含む拡張、SCID 長、GREASE を扱います（J）。
+- **TCP と異なる認証格納先：** QUIC の `legacy_session_id` は空です。設計案では B の 32 バイト `ct||tag` を Chrome 風 GREASE transport parameter に入れ、ClientHello 全体の AAD と古典 X25519 ECDH を使います。番号と長さは Chrome キャプチャで照合します。32 バイトが長すぎる場合に 8 バイト SCID と残りの GREASE 領域を使う案も原文にあります。これは実装済み格納方式と突き合わせる設計案であり、独立に変更してよいという意味ではありません。
+- Initial から ClientHello を復元して認証し、失敗なら Initial と後続 UDP データグラムをそのまま実サイトの QUIC へ転送します。成功なら E の QUIC-TLS をローカルで完了します。
+- 目標となる内部層は QUIC のネイティブ多重化を使い、追加 mux を省いてストリーム直接転送を検討します。TCP Vision の引き渡し実装とは別です。
+
+```rust
+// transport/quic.rs
+pub struct QuicFingerprint{/* versions, tparams 順序 / 値, alpn=h3, grease param */}
+pub async fn quic_connect(server:&str, sni:&str, auth:&[u8;32], fp:&QuicFingerprint)->anyhow::Result<QuicConn>;
+pub async fn quic_dispatch(dgram_sock:UdpSocket, cfg:&ServerCfg, prof:&DestProfile)->anyhow::Result<()>;
+```
+
+> 独自 QUIC の実装は大規模になります。原文は、調整可能な BoringSSL を使う `quiche`、または A を組み込む crypto provider を用意した `quinn` を候補にしています。QUIC の特徴と認証格納先は実 Chrome キャプチャで確認します。
+
+## コンポーネント H：Geneva 型 TCP 分割送信
+
+**現在の範囲：** `off` は通常送信、`segment` は順序を保つ分割書込です。高度な Geneva 戦略が実装・実測済みとはしません。
+
+- 連結結果は ClientHello の元バイト列と一致させます。各 write が別 TCP パケットになる保証も、それだけで妨害を回避できる保証もありません。
+- 未対応 Geneva DSL は設定検証で拒否し、黙って `off` にしません。この変更で特権 raw socket は追加しません。
+- 一バイトも送る前の回復可能な準備エラーだけが通常送信へ戻れます。部分書込後はエラーを返し、先頭から再送してプレフィックスを重複させません。
+- QUIC は独立 UDP 経路であり、TCP と検証結果を混同しません。
+
+```rust
+// transport/geneva.rs
+pub struct TcpEvasion{/* strategy */}
+pub fn parse_strategy(s:&str)->TcpEvasion;
+pub async fn write_client_hello_evasive(sock:&TcpStream, chello:&[u8], ev:&TcpEvasion)->io::Result<()>;
+```
+
+## コンポーネント I：X25519MLKEM768 と ML-DSA-65
+
+- **耐量子鍵交換：** ハイブリッド秘密の順序は厳密に `ML-KEM-768 shared secret(32) || X25519 shared secret(32)`。RFC 10024 §4.3 に従って TLS 1.3 へ入力します。RustCrypto `ml-kem` が ML-KEM-768 を提供します。REALITY 認証は別の古典 X25519 keyshare を引き続き使います（B）。
+- **耐量子証明書署名：** E の私有拡張に RustCrypto `ml-dsa` の ML-DSA-65 を追加します。サーバーは `mldsa_seed` から `mldsa_sk` を導出し、クライアントに `mldsa_pk` を設定します。UmbraTrusted は共有秘密による HMAC と ML-DSA 検証の両方を要求します。
+
+```rust
+pub struct MlkemShare{/* encaps key(client) / ciphertext(server) */}
+pub fn mlkem_keygen()->(/*ek*/Vec<u8>,/*dk*/Vec<u8>);
+pub fn mldsa_keygen_from_seed(seed:&[u8;32])->(/*pk*/Vec<u8>,/*sk*/Vec<u8>);
+pub fn mldsa_sign(sk:&[u8], msg:&[u8])->Vec<u8>; pub fn mldsa_verify(pk:&[u8],msg:&[u8],sig:&[u8])->bool;
+```
+
+## コンポーネント J：Chrome プロファイルの保守
+
+**目的：** 独自スタックは BoringSSL の Chrome 挙動を自動継承しません。プロファイルを明示的な更新可能データとして扱います。
+
+- 対象バージョンの ClientHello の可視特性を保存します。スイート、拡張集合と順序、GREASE 位置、グループ、署名方式、ALPN、ALPS、証明書圧縮、keyshare、パディングです。QUIC 側には transport parameters と順序、h3、GREASE も含めます。
+- 実 Chrome をキャプチャするか `tls.peet.ws/api/all` と JA4 を使い、プロファイルへ変換します。Chrome バージョンを明記した安定プロファイルを一つか二つ同梱し、コードと分離して更新します。
+- CI・起動時に生成 ClientHello の JA3/JA4 を対象プロファイルと比較し、不一致を通知します。この確認は対象フィールドの検証であり、通信全体にはキャプチャ照合が必要です。
+
+```rust
+pub struct FingerprintProfile{/* ciphers, ext_order, grease_slots, groups, sigalgs, alpn, alps, ... */}
+pub fn load_profile(name:&str)->FingerprintProfile;    // 例："chrome-latest"
+pub fn ja3_ja4(chello:&[u8])->(String,String);          // 自己検証用
+```
+
+## コンポーネント K：プローブ対策の補強
+
+- **時間調整：** D の接続から最初の TLS 応答までの時間から、分類後のローカル準備時間を引き、ServerHello 前に非負の残り時間だけ待ちます。すでに遅い場合は追加待機しません。識別困難性は実測が必要です。
+- **不要レコード上限：** 分類上限を超えたら `dest` へ転送します。未認証の早期切断を要求する設定は拒否します。
+- **転送動作：** Umbra 固有の速度制限や不要データによる早期切断を行いません。要求側の半閉鎖後も応答を返せます。
+- **Spider：** 完全な証明書検証後、TCP だけが対応 ALPN で `spider_path` を訪れます。QUIC RealSite はプロキシをローカル拒否します。
+- **ポート・IP：** 代替リスナーや IP は残留遮断の影響を抑える選択肢です。TCP と QUIC は別々に設定できます。
+
+## 15. 暗号方式一覧
+
+- ECDH：X25519（`x25519-dalek`）、ハイブリッド KEM：ML-KEM-768（`ml-kem`）。
+- KDF：HKDF-SHA256（`hkdf` + `sha2`）、B/E のラベルは `umbra-reality-v1` と `umbra-cert-v1`。
+- 認証トークン：AES-128-GCM（`aes-gcm`）、TCP session ID に格納し、その欄をゼロにした全 ClientHello を AAD にします。
+- 証明書：HMAC-SHA256（`hmac`）と ML-DSA-65（`ml-dsa`）。秘密・タグ比較には定数時間プリミティブ（`subtle`）を使います。
+- TLS レコード：AES-128/256-GCM と ChaCha20-Poly1305（`aes-gcm`/`chacha20poly1305`）。
+- 乱数：OS CSPRNG（`rand::rngs::OsRng`）。
+- 業務データに二重の AEAD を追加しません。機密性・完全性は TLS/QUIC が提供し、追加の特徴と負荷を避けます。
+
+## 16. 設定仕様
+
+**server.toml**
+
+```toml
+listen        = "0.0.0.0:443"          # TCP。QUIC では udp_listen を別途設定
+udp_listen    = "0.0.0.0:443"          # コンポーネント G：QUIC/HTTP-3
+private_key   = "BASE64(X25519 32B 秘密鍵)"   # umbra keygen
+short_ids     = ["", "0123456789abcdef"]
+dest          = "www.microsoft.com:443"     # カバーサイト（選定基準は §20）
+server_names  = ["www.microsoft.com"]
+max_time_diff = "120s"
+mldsa_seed    = "BASE64(32B)"           # コンポーネント I：耐量子証明書署名シード
+prebuild      = true                    # コンポーネント D：定期更新。false でも起動時プローブは必要
+padding_scheme= "default"               # コンポーネント F 適応型パディング方針
+tcp_evasion   = "segment"               # コンポーネント H：off | segment；Geneva DSL は未対応
+```
+
+**client.toml**
+
+```toml
+server        = "SERVER_IP:443"
+transport     = "tcp"                   # tcp | quic
+public_key    = "BASE64(X25519 32B 公開鍵)"   # = サーバー公開鍵。認証情報として秘密に保管
+short_id      = "0123456789abcdef"
+server_name   = "www.microsoft.com"     # SNI。server_names に含まれること
+fingerprint   = "chrome-latest"         # コンポーネント J プロファイル
+mldsa_verify  = "BASE64(ML-DSA-65 公開鍵)" # コンポーネント I 署名検証
+spider_path   = "/"                     # RealSite 用。クライアントごとに異なるパスを推奨
+socks_listen  = "127.0.0.1:1080"
+mux           = true                    # コンポーネント F：既定は mux。false=solo/Vision
+padding_scheme= "default"
+tcp_evasion   = "segment"
+```
+
+## 17. Rust の構成とモジュール対応
+
+以下は**旧設計の単一 crate 構成**で、一つのバイナリに `umbra server|client|keygen` を設ける案です。現在のリポジトリは Cargo workspace であり、実際の crate 配置はアーキテクチャ資料を参照してください。ここでは設計上のコンポーネント対応を保存しています。
+
+```
+umbra/
+├── Cargo.toml
+├── DESIGN.md
+├── fingerprints/            # コンポーネント J：Chrome フィンガープリントプロファイル（データファイル）
+│   ├── chrome-latest.toml
+│   └── chrome-latest-quic.toml
+├── examples/{server.toml,client.toml}
+└── src/
+    ├── main.rs              # clap サブコマンドの振り分け
+    ├── config.rs            # 設定
+    ├── tls13/               # コンポーネント A：独自 TLS 1.3
+    │   ├── clienthello.rs   #   ClientHello のバイト単位構築（GREASE / 順序）
+    │   ├── handshake.rs     #   クライアント状態機械 + 鍵スケジュール
+    │   ├── server.rs        #   サーバー側の模倣 TLS スタック
+    │   ├── records.rs       #   レコード層 AEAD
+    │   ├── keyschedule.rs   #   HKDF-Expand-Label/Derive-Secret
+    │   └── parse.rs         #   ClientHello 解析（サーバー用）
+    ├── fingerprint/         # コンポーネント J：プロファイル読み込み + JA3/JA4 自己検証
+    ├── reality/             # コンポーネント B/E
+    │   ├── auth.rs          #   session_id 認証ペイロード（seal/open）+ ReplayCache
+    │   ├── cert.rs          #   模倣リーフ証明書 + cert_mac + ML-DSA 拡張
+    │   └── prebuild.rs      #   コンポーネント D：probe_dest / DestProfile
+    ├── dispatch.rs          # コンポーネント C：振り分け + PrefixedStream + dest 転送
+    ├── inner/               # コンポーネント F
+    │   ├── mux.rs           #   多重化（既定）
+    │   ├── padding.rs       #   適応型パディング方式
+    │   ├── vision.rs        #   Vision スプライシング（solo）
+    │   ├── address.rs       #   接続先アドレスの符号化 / 復号
+    │   └── spider.rs        #   RealSite クローラーモード
+    ├── transport/           # コンポーネント G/H
+    │   ├── tcp.rs           #   外側 TCP トランスポート
+    │   ├── quic.rs          #   外側 QUIC/HTTP-3 トランスポート
+    │   └── geneva.rs        #   RST 注入に対する TCP 分割送信
+    ├── pq/                  # コンポーネント I：mlkem / mldsa ラッパー
+    ├── socks.rs             # SOCKS5 入力
+    ├── relay.rs             # リレー / ハーフクローズ
+    ├── server.rs / client.rs# オーケストレーション
+    └── replay.rs            # リプレイ防止キャッシュ
+```
+
+各コンポーネント以外の主要シグネチャ：
+
+```rust
+// reality/auth.rs
+pub fn seal_session_id(shared:&[u8;32], short_id:&[u8], hello0:&[u8], now:u64) -> [u8;32];
+pub fn open_session_id(shared:&[u8;32], session_id:&[u8;32], hello0:&[u8],
+    allowed:&[Vec<u8>], now:u64, max_diff:u64, replay:&ReplayCache) -> anyhow::Result<AuthOk>;
+pub fn cert_mac(shared:&[u8;32], session_id:&[u8;32], spki_der:&[u8]) -> [u8;32];
+
+// オーケストレーション
+pub async fn run_server(cfg:ServerCfg)->anyhow::Result<()>;
+pub async fn run_client(cfg:ClientCfg)->anyhow::Result<()>;
+pub fn run_keygen();   // X25519 priv/pub + ML-DSA-65 seed/pub を出力（base64）
+```
+
+## 18. 依存関係とビルド
+
+以下は設計例であり、**現在の lockfile や、そのまま貼り付ける Cargo manifest ではありません**。実際のビルドにはリポジトリの workspace 依存カタログと Cargo.lock を使います。
+
+```toml
+[dependencies]
+tokio        = { version = "1", features = ["full"] }
+x25519-dalek = "2"                      # コンポーネント B ECDH
+ml-kem       = "0.2"                     # コンポーネント I ML-KEM-768
+ml-dsa       = "0.0"                     # コンポーネント I ML-DSA-65（RustCrypto。バージョンと提供状況を確認）
+aes-gcm      = "0.10"                     # session_id + TLS レコード
+chacha20poly1305 = "0.10"                 # TLS レコード
+hkdf         = "0.12"
+sha2         = "0.10"
+hmac         = "0.12"
+subtle       = "2"                        # 定数時間
+rand         = "0.8"
+tls-parser   = "0.11"                     # サーバーで ClientHello を解析（または独自 parse.rs）
+rcgen        = "0.13"                     # コンポーネント E リーフ証明書生成 + 独自拡張
+socket2      = "0.5"                      # コンポーネント H 基本分割（IP_TTL/NODELAY/手動分割）
+# コンポーネント G（いずれか一つ）：quiche = "..."（BoringSSL 系、フィンガープリントを調整しやすい）または quinn = "..."（crypto provider の置換が必要）
+base64="0.22"
+serde={version="1",features=["derive"]}
+toml="0.8"
+humantime-serde="1"
+clap={version="4",features=["derive"]}
+anyhow="1"
+thiserror="1"
+tracing="0.1"
+tracing-subscriber={version="0.3",features=["env-filter"]}
+lru="0.12"
+```
+
+実装上の注意：
+
+- 主 TLS ハンドシェイクを BoringSSL/rustls に任せない設計です。`rcgen` はリーフ証明書 DER の生成用です。
+- A/G の特徴は実 Chrome キャプチャ、`tls.peet.ws/api/all`、JA4 で確認し、Chrome 更新に追従します。
+- 高度な H 戦略には `CAP_NET_RAW` や raw socket が必要になる可能性があります。現在の範囲は H のとおりで、通常送信への復帰は送信開始前だけです。
+- ML-KEM/ML-DSA crate と codepoint は、現行仕様と対象ブラウザーのキャプチャに合わせます。
+
+## 19. テストと検証
+
+- 単体：session ID seal/open の改変・期限・リプレイ・AAD 変更、MAC/ML-DSA の成功失敗、RFC 8448 の HKDF・レコードベクトル。
+- 特徴：生成 ClientHello の JA3/JA4 と Chrome プロファイルの比較。QUIC は独立に確認。
+- 相互運用：独自 client/server の全ハンドシェイクと、転送/spider 経由の実 TLS 1.3 サイト接続。
+- 能動プローブ：`openssl s_client` やランダム入力が実サイトの挙動に従い、該当する場合は実証明書を返し、固有の早期切断や帯域制限を加えないこと。
+- リプレイ：取得済み ClientHello を再送し、`dest` への転送を確認。
+- TLS-in-TLS：各方向の先頭 8–16 レコードの長さ・方向を調べ、mux/padding の変動と Vision 切替後の内部 TLS との一致を確認。
+- 時間：認証経路と転送経路の最初のバイトまでの分布を比較。
+- TCP 妨害・QUIC：劣化・妨害ネットワークで接続性と安定性を別々に測定。
+- 許可された実環境：長時間接続、大容量、弱いネットワーク、残留遮断を観測。
+
+## 20. 配備とカバー先の選択
+
+**設計上の宛先基準：**
+
+- 到達可能な外部サイトで TLS 1.3 と H2/H3 に対応し、単なるリダイレクト専用ではなくサービス自身のドメインであること。
+- サーバーとネットワーク上で近いこと、適したハンドシェイク挙動 — 原文は `dl.google.com` の ServerHello 後の暗号化メッセージを例示 — や OCSP stapling があることを優先条件とします。
+- 検閲対象ネットワークへの戻り通信制限、必要に応じた TCP/80・UDP/443 転送、利用の少ない・安定した IP も原文の選択肢です。自動的な既定設定ではありません。
+- `server_names` に許可名を設定し、クライアントの `server_name` を一致させます。
+
+**運用：** TCP/UDP 443 が一般的です。不適切な IP 範囲を避け、`private_key`/`mldsa_seed` を保護し、`public_key`、`mldsa_verify`、`short_id` を信頼できる経路で配布します。BBR、適切な `ulimit -n`、systemd、journald を検討し、既定では利用者の宛先や通信内容を記録しません。必要に応じて代替ポート・IP と、独立検証済み QUIC 経路を用意します。
+
+## 21. 安全性と責任ある運用
+
+- 目的はプライバシー保護、検閲への対抗、開かれたインターネットへのアクセスです。適用法に従って運用します。
+- `S_priv`/`mldsa_seed` を保護し、`S_pub`、short ID、ML-DSA 検証鍵を信頼できる経路で配布します。
+- MAC・タグ比較と署名検証には確立された定数時間暗号プリミティブを使います。
+- ReplayCache の容量を制限し、期限切れを整理してメモリ枯渇に対処します。
+- フォールバック SSRF を避けるため、`dest` は信頼できる設定で固定し、利用者入力にしません。
+- Cargo.lock を固定し、依存を監査し、耐量子関連とブラウザープロファイルを上流に合わせて保守します。
+
+## 付録 A：バイト配置早見表
+
+**TCP の legacy_session_id に格納する REALITY 型トークン：32 バイト**
+
+| 手順 | 計算 |
+| --- | --- |
+| shared | `X25519(C_priv,S_pub)`、サーバーは `X25519(S_priv,C_pub)` |
+| auth_key | `HKDF-SHA256(shared,"umbra-reality-v1","key")[..16]`（AES-128） |
+| nonce | `HKDF-SHA256(shared,"umbra-reality-v1","nonce")[..12]` |
+| P (16B) | `ver(1) \|\| flags(1) \|\| ts(u32 BE,4) \|\| short_id(8) \|\| reserved(2)=0` |
+| AAD | session ID の 32 バイトをゼロにした全 ClientHello：HELLO0 |
+| session_id (32B) | `ct(16) \|\| tag(16) = AES-128-GCM-Seal(auth_key,nonce,P,HELLO0)` |
+
+**一時証明書の結び付け**
+
+| 項目 | 計算 |
+| --- | --- |
+| cert_key | `HKDF-SHA256(shared,"umbra-cert-v1", session_id)`（32B） |
+| cert_mac | `HMAC-SHA256(cert_key, leaf_SPKI_DER)`（32B）、OID `…62397.1` |
+| pq_sig | `ML-DSA-65_Sign(mldsa_sk, leaf_SPKI_DER)`、OID `…62397.2` |
+
+**MuxFrame**
+
+| オフセット | フィールド | 長さ | 意味 |
+| --- | --- | --- | --- |
+| 0 | ver | 1 | 0x01 |
+| 1 | cmd | 1 | SYN/SYN_ACK/DATA/WINDOW_UPDATE/FIN/RST/PADDING/PING |
+| 2 | stream_id | 4 | ビッグエンディアン |
+| 6 | len | 2 | ビッグエンディアン |
+| 8 | payload | len | SYN=宛先、DATA=データ、PADDING=乱数 |
+
+**宛先アドレス：** `atyp(1) \|\| addr(4 / 1+n / 16) \|\| port(2, BE)`。
+
+## 付録 B：状態機械とデータフロー
+
+**サーバーの振り分けとハンドシェイク**
+
+<ProtocolDiagram locale="ja" name="server" />
+
+**クライアント**
+
+<ProtocolDiagram locale="ja" name="client" />
+
+## 付録 C：参考文献
+
+1. Wu et al. *How the Great Firewall of China Detects and Blocks Fully Encrypted Traffic.* USENIX Security 2023.
+2. Frolov, Wustrow. *The use of TLS in Censorship Circumvention.* NDSS 2019.
+3. Frolov et al. [*Detecting Probe-Resistant Proxies.*](https://www.ndss-symposium.org/ndss-paper/detecting-probe-resistant-proxies/) NDSS 2020.
+4. [*Fingerprinting Obfuscated Proxy Traffic with Encapsulated TLS Handshakes.*](https://www.usenix.org/conference/usenixsecurity24/presentation/xue-fingerprinting) USENIX Security 2024.
+5. Bock et al. *Geneva: Evolving Censorship Evasion Strategies.* ACM CCS 2019.
+6. GFW Report / net4people. *How China Detects and Blocks Shadowsocks.* 2020.
+7. XTLS/REALITY、Xray-core `transport/internet/reality`、XTLS-Vision（`xtls-rprx-vision`）、VLESS。
+8. anytls / anytls-go：パディングと多重化。
+9. uTLS（`refraction-networking/utls`）、QUIC の特徴と Chrome の挙動。
+10. RFC 8446（TLS 1.3）、RFC 8448（テストベクトル）、RFC 8701（GREASE）、RFC 9000/9001（QUIC/QUIC-TLS）。
+11. RFC 10024（X25519MLKEM768）、FIPS 203（ML-KEM）、FIPS 204（ML-DSA）。
+12. Rust ライブラリ：`x25519-dalek`、`ml-kem`、`ml-dsa`、`aes-gcm`、`chacha20poly1305`、`hkdf`、`rcgen`、`quiche`/`quinn`、`socket2`、`tls-parser`。
+
+> 数値、しきい値、拡張順序、codepoint は文書の改訂とプロファイルに依存します。検閲挙動、Chrome、耐量子標準は変化します。実装前に最新仕様と実キャプチャを確認し、J のプロファイルを更新してください。

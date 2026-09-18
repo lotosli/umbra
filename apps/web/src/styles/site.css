@@ -1498,3 +1498,12 @@ body {
   html { scroll-behavior: auto; }
   .umbra-site *, .umbra-site *::before, .umbra-site *::after { animation: none !important; transition: none !important; }
 }
+
+/* Diagrams remain sharp and independently scrollable on narrow screens. */
+.reference-diagram { margin: 2rem 0; max-width: 100%; min-width: 0; }
+.reference-diagram-viewport { overflow-x: auto; border: 1px solid var(--color-fd-border); border-radius: .5rem; background: #fff; }
+.reference-diagram-viewport:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.reference-diagram-viewport img { display: block; width: 100%; height: auto; max-width: none; margin: 0; padding: 1rem; }
+.reference-diagram figcaption { display: flex; flex-wrap: wrap; gap: .5rem 1rem; justify-content: space-between; margin-top: .75rem; font-size: .875rem; }
+.reference-diagram summary { cursor: pointer; margin-top: .75rem; font-size: .875rem; }
+.reference-diagram details pre { overflow-x: auto; max-height: 28rem; padding: 1rem; font-size: .75rem; }

@@ -22,6 +22,7 @@ jobs:
     environment: production
     env:
       WRANGLER_SEND_METRICS: 'false'
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

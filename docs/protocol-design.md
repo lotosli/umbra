@@ -7,15 +7,17 @@
 范围：一个 client + 一个 server（不做机场/多用户面板）。语言：**Rust**。目标：**稳定翻墙、尽可能不可检测**。
 本文给到**结构体/函数签名、逐字节格式、算法步骤**级别的规范（不含完整代码实现），开发照此可直接落地。
 
+> 阅读说明：本文保留完整目标设计与历次修订，不等于当前版本的功能清单。实际部署请先阅读[使用指南](usage.md)。组件 G 的 0-RTT 等目标、§17 的历史单 crate 布局和 §18 的示意依赖清单须与当前实现区分。
+
 ---
 
 ## 目录
-- [0. 总体目标与设计定局](#0-总体目标与设计定局)
+- [0. 总体目标与架构决策](#0-总体目标与架构决策)
 - [1. 威胁模型（GFW 检测手段）](#1-威胁模型gfw-检测手段)
-- [2. 集大成与设计原则](#2-集大成与设计原则)
+- [2. 设计原则与参考](#2-设计原则与参考)
 - [3. 总体架构（组件全景）](#3-总体架构组件全景)
 - [组件 A：自研极简 TLS 1.3 栈（Rust 版 uTLS）](#组件-a自研极简-tls-13-栈rust-版-utls)
-- [组件 B：REALITY 认证（复用 keyshare 的 ECDH，藏于 session_id）](#组件-brealitiy-认证复用-keyshare-的-ecdh藏于-session_id)
+- [组件 B：REALITY 认证（复用 keyshare 的 ECDH，藏于 session_id）](#组件-breality-认证复用-keyshare-的-ecdh藏于-session_id)
 - [组件 C：服务端分派与探测转发](#组件-c服务端分派与探测转发)
 - [组件 D：预先构建模式（dest 特征采集与镜像）](#组件-d预先构建模式dest-特征采集与镜像)
 - [组件 E：冒充握手与临时可信证书（含抗量子签名）](#组件-e冒充握手与临时可信证书含抗量子签名)
@@ -38,9 +40,9 @@
 
 ---
 
-## 0. 总体目标与设计定局
+## 0. 总体目标与架构决策
 
-三条已定死的架构决策，全篇据此展开：
+全篇围绕三项架构决策展开：
 
 1. **传输 = REALITY 式“借用真实身份”**：认证藏在握手（ClientHello）里，服务器在**响应前**判定；未认证/被探测
    的连接在 TCP/UDP 层**原样转发到真实借用站点 dest**，探测者只看到真站真证书。无需自有域名/证书。
@@ -49,7 +51,7 @@
    这既给出**逐字节的 Chrome 指纹**，又天然解决了“把认证写进 ClientHello 且能复用 keyshare 私钥”的最高风险点。
    服务端亦为自研极简 TLS 1.3 服务栈（用于冒充握手、伪造/镜像证书）。
 3. **认证 = canonical REALITY（复用 keyshare 的 ECDH）**：`shared=X25519(C_priv,S_pub)`，认证令牌以
-   AES-GCM 加密进 `session_id`，并以整条 ClientHello 为 AAD。逐连接前向保密、绑定全握手、外观随机。
+   AES-GCM 加密进 `session_id`，并以整条 ClientHello 为 AAD。逐连接使用新鲜密钥、绑定全握手、认证载荷外观随机。
 
 内层与外层的所有增强（Vision 真拼接、预构建、mux、QUIC、Geneva、抗量子、指纹跟随）都是最终形态的组成部分，
 见组件 F–K。
@@ -61,7 +63,7 @@
 由实测行为驱动（论文见附录 C）：
 
 - **全加密流量熵检测（USENIX Sec 2023）**：对每条流首个数据包做实时分类，命中任一“可打印/低熵”豁免则放行。
-  裸 SS/obfs4 首包高熵 → 被封。**活在真实 TLS/QUIC 里，首包是协议记录头 → 分类器不适用。**
+  裸 SS/obfs4 首包高熵 → 被封。**使用 TLS/QUIC 协议封装，目标是避免该分类器针对的裸密文首包模式。**
 - **主动探测（NDSS 2019/2020；GFW Report）**：主动连接可疑 IP:端口并重放/变异，看是否“像代理”。
   → **未认证连接必须表现为真网站（转发 dest）。**
 - **TLS-in-TLS 指纹（USENIX Sec 2024）**：代理隧道内层 TLS 握手的记录长度/方向序列可被识别。
@@ -73,19 +75,19 @@
 - **残余审查**：被判定后 IP:端口临时封禁。→ 多端口/可轮换、dest 冷门 IP、QUIC 备路。
 - **时序侧信道**：探测者测“到首字节 RTT”。→ 认证路径与转发路径**时序对齐**（组件 K）。
 
-假定 GFW **不做大规模 TLS MITM 终止**（会破网且可被检测）；但设计对**逐连接 MITM**仍安全（组件 E 证书认证）。
+假定 GFW **不做大规模 TLS MITM 终止**（会破网且可被检测）；组件 E 通过证书绑定处理逐连接 MITM。这里说明威胁模型与验证目标，不代表所有网络环境下的安全保证。
 
 ---
 
-## 2. 集大成与设计原则
+## 2. 设计原则与参考
 
 | 原则 | 借鉴 | 摒弃的失败模式 |
 |---|---|---|
 | 通往真实大站的真 TLS/QUIC；未认证转发真站 | REALITY | Trojan 需自有域名+CA 证书；自签证书会被探测识破 |
 | 认证藏于 ClientHello，响应前判定 | REALITY | Trojan/VMess 认证在握手后，证书已暴露 |
 | 逐字节 Chrome 指纹（自研 uTLS 全控） | uTLS | rustls/通用栈指纹与浏览器不符 |
-| 复用 keyshare 的 ECDH 认证，逐连接前向保密 | REALITY | 静态口令认证无前向保密 |
-| Vision 真拼接消灭 TLS-in-TLS | XTLS-Vision | 裸 Trojan/VLESS 的 TLS-in-TLS 特征 |
+| 复用 keyshare 的 ECDH 认证，逐连接派生认证密钥 | REALITY | 直接重复使用静态口令作为连接密钥 |
+| Vision 在符合条件时移除外层 TLS 记录封装 | XTLS-Vision | 裸 Trojan/VLESS 的 TLS-in-TLS 特征 |
 | 自适应填充 + 多路复用降连接数关联 | anytls | 每目标一条连接的连接数特征 |
 | 反重放 = 新鲜 keyshare + 时间戳 + nonce 缓存 | SS-2022 / VMess | SS(pre-2022) 可重放 |
 | 抗量子（KEM + 签名） | Chrome PQC / REALITY mldsa | 纯经典密码的长期风险 |
@@ -96,25 +98,25 @@
 ## 3. 总体架构（组件全景）
 
 ```mermaid
-flowchart LR
-  APP[浏览器/应用] -- SOCKS5 --> C[umbra client]
-  subgraph C[umbra client]
-    Cs[SOCKS5 入站] --> Cmux[内层: mux+padding / Vision solo]
-    Cmux --> Ctls[组件A: 自研TLS1.3客户端\\n组件B: REALITY认证\\n组件J: Chrome指纹]
-    Ctls --> Cout{组件G/H: 外层\\nTCP+Geneva 或 QUIC}
+flowchart TB
+  APP["浏览器 / 应用"] -->|SOCKS5| Cs
+  subgraph Client["umbra client"]
+    Cs["SOCKS5 入站"] --> Cmux["内层：mux + padding / Vision solo"]
+    Cmux --> Ctls["组件 A：自研 TLS 1.3 客户端<br/>组件 B：REALITY 认证<br/>组件 J：Chrome 指纹"]
+    Ctls --> Cout{"组件 G/H：外层<br/>TCP 分段或 QUIC"}
   end
-  Cout == 真 TLS1.3 / QUIC，SNI=dest ==> S
-  subgraph S[umbra server]
-    Sdisp[组件C: 分派\\n读ClientHello→认证] -->|认证失败/探测| FWD[TCP/UDP转发]
-    Sdisp -->|认证成功| Sh[组件E: 冒充握手+临时可信证书\\n组件D: 预构建镜像dest]
-    Sh --> Smux[内层: mux+padding / Vision]
-    Smux --> TGT[目标站]
+  Cout ==>|"TLS 1.3 / QUIC，SNI = dest"| Sdisp
+  subgraph Server["umbra server"]
+    Sdisp["组件 C：分派<br/>读取 ClientHello 并认证"] -->|"认证失败 / 探测"| FWD["TCP / UDP 转发"]
+    Sdisp -->|认证成功| Sh["组件 E：握手与临时可信证书<br/>组件 D：预构建 dest 档案"]
+    Sh --> Smux["内层：mux + padding / Vision"]
+    Smux --> TGT["目标站"]
   end
-  FWD ==> DEST[dest 真实站\\n真CA证书]
+  FWD ==> DEST["dest 真实站<br/>真实 CA 证书"]
 ```
 
 四层职责：
-1. **外层**（组件 G/H）：真 TLS 1.3 over TCP（默认，配 Geneva 抗 RST）或 QUIC/HTTP-3；SNI=借用站点 dest。
+1. **外层**（组件 G/H）：真 TLS 1.3 over TCP（可配置 TCP 发送策略）或 QUIC/HTTP-3；SNI=借用站点 dest。
 2. **握手认证层**（组件 A/B）：自研 uTLS 逐字节 Chrome 指纹，认证藏于 ClientHello 的 `session_id`+keyshare。
 3. **冒充/分派层**（组件 C/D/E）：服务端响应前判定；成功则冒充 dest 完成握手并给临时可信证书，失败则转发真 dest。
 4. **内层传输层**（组件 F）：mux+自适应填充（默认）或 Vision 真拼接 solo 模式；承载目标地址与数据。
@@ -167,7 +169,7 @@ flowchart LR
 ### A.3 TLS 1.3 服务端栈（用于组件 E 冒充握手）
 - 接受 PrefixedStream（组件 C 已读的 ClientHello 回放）继续握手；产出 ServerHello（镜像 dest 参数，组件 D）、
   EncryptedExtensions、Certificate（组件 E 伪造/镜像）、CertificateVerify（用伪造叶子私钥）、Finished。
-- **ServerHello 的 `legacy_session_id_echo` 必须回显客户端 32B**（TLS 1.3 兼容模式要求）；密码套件、
+- **ServerHello 的 `legacy_session_id_echo` 在 TCP 兼容模式下必须回显客户端 32B**（TLS 1.3 兼容模式要求）；密码套件、
   key_share group、ALPN 均取自组件 D 的 `DestProfile`。
 
 ### A.4 模块与签名
@@ -233,8 +235,9 @@ impl Tls13Server {
 修正 HELLO0 与 TLS 应用密钥边界后，两端须同步升级；认证失败不得重试旧的非标准 AAD 或密钥派生。
 
 ### B.4 安全性
-- 只有知道 `S_pub` 者能算 `shared` → 未授权者无法伪造；`C_pub` 逐连接新鲜 → 逐连接前向保密的认证密钥；
+- 只有知道 `S_pub` 者能算 `shared` → 未授权者无法伪造；`C_pub` 逐连接新鲜 → 逐连接派生新的认证密钥；
   AAD=整条 hello → 令牌不能挪到别的 hello；时间窗+nonce 缓存 → 抗重放。
+- 这里的静态服务端 X25519 认证构造，不提供服务端私钥日后泄露时的一般前向保密保证；须与 TLS 会话的临时密钥交换区分。
 - `S_pub`/`short_id` 泄露即失守（与 REALITY 同）→ 带外安全分发、勿泄露。
 
 ---
@@ -252,7 +255,7 @@ impl Tls13Server {
      经 `PrefixedStream(chello_raw, conn)` 续握手 → 进入组件 F 内层。
    - **失败/SNI 不符/重放** → **转发 dest**：`d=connect(dest)`；`d.write_all(chello_raw)`；
      `copy_bidirectional(conn, d)`。探测者与真 dest 完成真握手、见真证书。
-4. **不得**对转发连接限速或早断（组件 K）。可选加固：`maxUselessRecords`（拒绝 ChangeCipherSpec 洪泛）。
+4. **不得**对转发连接限速或早断（组件 K）。可选加固：`maxUselessRecords`（超过分类限额后转发 dest，不在本地提前断开）。
 
 ```rust
 pub async fn dispatch(conn: Conn, cfg:&ServerCfg, prof:&DestProfile, replay:&ReplayCache) -> anyhow::Result<()>;
@@ -383,7 +386,7 @@ pub async fn spider(tls:TlsIo, spider_path:&str) -> io::Result<()>; // RealSite 
 
 ## 组件 G：QUIC / HTTP-3 外层传输
 
-**目的**：UDP 传输更抗 RST 注入、无队头阻塞、支持 0-RTT；对外呈现 Chrome 风格 QUIC/HTTP-3，认证成功后用 QUIC stream 承载目标流。
+**设计目标**：UDP 传输不受 TCP RST 注入影响，独立 QUIC 流减少跨流队头阻塞；0-RTT 是目标设计，当前版本未提供。对外呈现 Chrome 风格 QUIC/HTTP-3，认证成功后用 QUIC stream 承载目标流。
 
 - **握手复用组件 A 的 TLS 1.3 逻辑**：QUIC 用 TLS 1.3 作为握手（ClientHello 在 Initial 包的 CRYPTO 帧中，
   Initial 密钥由 DCID + 固定 salt 派生 → ClientHello 对 GFW 可见，与 TCP 路径同）。
@@ -395,11 +398,10 @@ pub async fn spider(tls:TlsIo, spider_path:&str) -> io::Result<()>; // RealSite 
   故认证令牌改由 **一个 Chrome 风格的 GREASE `quic_transport_parameter`** 承载（Chrome 本就发送带随机值的
   GREASE transport parameter）：把组件 B 的 `ct||tag`(32B) 放入该 GREASE 参数值，AAD 仍为整条 ClientHello。
   ECDH 仍复用 ClientHello 的经典 X25519 keyshare。**该参数的编号/长度须与真实 Chrome 的 GREASE 参数一致，
-  以抓包为准**；若 32B 过长，则拆分为 SCID(8B, 客户端可控且随机) + GREASE 参数余量。
+  以抓包为准**；早期备选设计是将载荷拆分为 SCID(8B) + GREASE 参数余量；该备选项不是当前实现说明，不能自行改变线格式。
 - **服务端分派**：读 Initial 包→解出 ClientHello→组件 B 校验；失败 → 以 UDP 层把该连接**转发到真 dest 的
   QUIC** 服务（原样转发 Initial 及后续 UDP 数据报）；成功 → 本地以组件 E 完成 QUIC-TLS 冒充握手。
-- 内层同组件 F（QUIC 流天然多路复用，可直接用 QUIC stream 承载各目标流，省去自研 mux；Vision 拼接在 QUIC 上
-  以“stream 直传”实现）。
+- 早期内层设计利用 QUIC 原生多路复用，以独立 stream 承载各目标流，并把“stream 直传”作为优化方向。它不等同于组件 F.3 的 TCP Vision 原始字节移交；当前 QUIC 不进入该 TCP 拼接路径。
 
 ```rust
 // transport/quic.rs
@@ -457,7 +459,7 @@ pub fn mldsa_sign(sk:&[u8], msg:&[u8])->Vec<u8>; pub fn mldsa_verify(pk:&[u8],ms
   QUIC 侧另编码 transport parameters 与顺序、h3、GREASE param。
 - **采集/更新机制**：用真实 Chrome 抓一份 ClientHello（或用 `tls.peet.ws/api/all`、JA4 工具），解析成档案表；
   项目内置 1–2 个稳定档案并注明对应 Chrome 版本；档案与代码解耦，便于随 Chrome 升级替换。
-- **一致性自检**：CI/启动时用 JA3/JA4 对比“我方 ClientHello”与“目标档案”，不一致则告警。
+- **一致性自检**：CI/启动时用 JA3/JA4 对比“我方 ClientHello”与“目标档案”，不一致则告警；哈希一致只能覆盖其编码的特征，完整指纹仍需逐字节抓包复核。
 
 ```rust
 pub struct FingerprintProfile{/* ciphers, ext_order, grease_slots, groups, sigalgs, alpn, alps, ... */}
@@ -525,7 +527,7 @@ tcp_evasion   = "segment"
 
 ## 17. Rust 工程结构与模块映射（+ 函数签名）
 
-单 crate、单二进制 + 子命令（`umbra server|client|keygen`）。组件→模块：
+以下为早期单 crate 布局草案；当前多 crate workspace 见[架构说明](architecture.md)。草案采用单二进制 + 子命令（`umbra server|client|keygen`）。组件→模块：
 
 ```
 umbra/
@@ -585,6 +587,8 @@ pub fn run_keygen();   // 打印 X25519 priv/pub + ML-DSA-65 seed/pub（base64�
 ---
 
 ## 18. 依赖清单与构建
+
+以下是设计阶段的示意清单，并非当前依赖锁定版本。实际构建使用仓库根目录的 `Cargo.toml`、`Cargo.lock` 与固定工具链。
 ```toml
 [dependencies]
 tokio        = { version = "1", features = ["full"] }
@@ -602,14 +606,21 @@ tls-parser   = "0.11"                     # 服务端解析 ClientHello（或用
 rcgen        = "0.13"                     # 组件E 生成叶子证书 + 自定义扩展
 socket2      = "0.5"                      # 组件H 基础分段（IP_TTL/NODELAY/手动切分）
 # 组件G（择一）：quiche = "..."（BoringSSL 系，便于指纹定制） 或 quinn = "..."（需替换 crypto provider）
-base64="0.22"  serde={version="1",features=["derive"]}  toml="0.8"  humantime-serde="1"
-clap={version="4",features=["derive"]}  anyhow="1"  thiserror="1"
-tracing="0.1"  tracing-subscriber={version="0.3",features=["env-filter"]}  lru="0.12"
+base64="0.22"
+serde={version="1",features=["derive"]}
+toml="0.8"
+humantime-serde="1"
+clap={version="4",features=["derive"]}
+anyhow="1"
+thiserror="1"
+tracing="0.1"
+tracing-subscriber={version="0.3",features=["env-filter"]}
+lru="0.12"
 ```
 **构建/实现要点**：
 - **不引入 BoringSSL/rustls 做主握手**（自研 TLS1.3 是本方案的立身之本）；`rcgen` 仅用于生成叶子证书 DER。
 - 组件 A/G 的指纹必须以**真实 Chrome 抓包**核对（`tls.peet.ws/api/all`、JA4 工具），并随 Chrome 更新档案。
-- 组件 H 高级策略需 `CAP_NET_RAW`/原始套接字；默认仅启用低风险“分段”，且失败回退普通发送。
+- 组件 H 的高级策略可能需要 `CAP_NET_RAW`/原始套接字，属于未来设计。当前 `segment` 只有在尚未写入任何字节的准备阶段失败时，才可回退普通发送。
 - ML-KEM/ML-DSA 的 crate 版本与草案 codepoint 需与目标 Chrome 一致，以抓包为准。
 
 ---
@@ -687,32 +698,51 @@ tracing="0.1"  tracing-subscriber={version="0.3",features=["env-filter"]}  lru="
 **服务器分派/握手**
 ```mermaid
 stateDiagram-v2
-    [*] --> 读ClientHello
-    读ClientHello --> 解析SNI_keyshare_sessionid
-    解析SNI_keyshare_sessionid --> 转发dest: SNI不符/无keyshare
-    解析SNI_keyshare_sessionid --> 校验认证令牌: 正常
-    校验认证令牌 --> 转发dest: GCM/时间/shortId/重放 失败
-    校验认证令牌 --> 冒充握手: 通过(得 shared)
-    冒充握手 --> 时序对齐: 依 dest.rtt 延迟
-    时序对齐 --> 发临时可信证书: cert_mac + ML-DSA-65
-    发临时可信证书 --> 内层Fmux或Vision
-    内层Fmux或Vision --> [*]: 流结束
-    转发dest --> [*]: 双向拷贝真站(探测见真证书)
+    state "读取 ClientHello" as Read
+    state "解析 SNI、keyshare 和认证载体" as Parse
+    state "校验认证令牌" as Verify
+    state "转发 dest" as Forward
+    state "本地完成握手" as Handshake
+    state "时序对齐" as Timing
+    state "发送临时可信证书" as Certificate
+    state "内层 mux / Vision" as Inner
+    [*] --> Read
+    Read --> Parse
+    Parse --> Forward: SNI 不符 / 无 keyshare
+    Parse --> Verify: 参数有效
+    Verify --> Forward: GCM / 时间 / short_id / 重放校验失败
+    Verify --> Handshake: 通过，获得 shared
+    Handshake --> Timing: 扣除本地耗时后的 dest.rtt
+    Timing --> Certificate: cert_mac + ML-DSA-65
+    Certificate --> Inner
+    Inner --> [*]: 流结束
+    Forward --> [*]: 与真实站双向转发
 ```
 
 **客户端**
 ```mermaid
 stateDiagram-v2
+    state "选择 TCP / QUIC" as Transport
+    state "构造 ClientHello" as Hello
+    state "驱动握手" as Handshake
+    state "验证并分类证书" as Certificate
+    state "内层代理" as Inner
+    state "RealSite：检查传输方式" as RealSite
+    state "TCP：按协商协议访问网站" as Spider
+    state "QUIC：拒绝建立代理" as Reject
     [*] --> SOCKS5
-    SOCKS5 --> 选外层: tcp(Geneva)/quic
-    选外层 --> 构造ClientHello: 组件A指纹+组件B认证藏入session_id
-    构造ClientHello --> 握手驱动
-    握手驱动 --> 判定证书
-    判定证书 --> 内层: UmbraTrusted(cert_mac+ML-DSA 双过)
-    判定证书 --> 爬虫模式: RealSite(被转发/MITM)
-    判定证书 --> [*]: Invalid→alert
-    内层 --> [*]: 流结束
-    爬虫模式 --> [*]: 像浏览器访问后关闭
+    SOCKS5 --> Transport
+    Transport --> Hello: 组件 A 指纹与 B/G 认证载体
+    Hello --> Handshake
+    Handshake --> Certificate
+    Certificate --> Inner: UmbraTrusted，绑定与 ML-DSA 校验通过
+    Certificate --> RealSite: RealSite，常规证书验证通过
+    Certificate --> [*]: Invalid，TLS 错误
+    RealSite --> Spider: TCP 与受支持的 ALPN
+    RealSite --> Reject: QUIC
+    Inner --> [*]: 流结束
+    Spider --> [*]: 访问后关闭
+    Reject --> [*]: 不发送代理数据
 ```
 
 ---
@@ -720,8 +750,8 @@ stateDiagram-v2
 ## 附录 C：参考文献
 1. Wu et al. *How the Great Firewall of China Detects and Blocks Fully Encrypted Traffic.* USENIX Security 2023.
 2. Frolov, Wustrow. *The use of TLS in Censorship Circumvention.* NDSS 2019.
-3. Frolov et al. *Detecting Probe-Resistant Proxies.* NDSS 2020.
-4. *Fingerprinting Obfuscated Proxy Traffic with Encapsulated TLS Handshakes.* USENIX Security 2024.
+3. Frolov et al. [*Detecting Probe-Resistant Proxies.*](https://www.ndss-symposium.org/ndss-paper/detecting-probe-resistant-proxies/) NDSS 2020.
+4. [*Fingerprinting Obfuscated Proxy Traffic with Encapsulated TLS Handshakes.*](https://www.usenix.org/conference/usenixsecurity24/presentation/xue-fingerprinting) USENIX Security 2024.
 5. Bock et al. *Geneva: Evolving Censorship Evasion Strategies.* ACM CCS 2019.
 6. GFW Report / net4people. *How China Detects and Blocks Shadowsocks.* 2020.
 7. XTLS/REALITY 与 Xray-core `transport/internet/reality`；XTLS-Vision（`xtls-rprx-vision`）；VLESS。

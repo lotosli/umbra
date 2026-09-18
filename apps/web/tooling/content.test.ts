@@ -57,7 +57,7 @@ afterEach(async () => {
 describe('reviewed public content', () => {
   it('requires every chapter in all seven locales', () => {
     const articles = collection();
-    expect(articles).toHaveLength(126);
+    expect(articles).toHaveLength(133);
     expect(() => validateArticles(articles, version)).not.toThrow();
     expect(() => validateArticles(articles.slice(1), version)).toThrow('Missing translation: zh-hans/');
     expect(() => validateArticles([...articles, articles[0]!], version)).toThrow('duplicate document ID');
@@ -172,11 +172,11 @@ describe('release and local search artifacts', () => {
     const root = await fixture();
     await mkdir(join(root, 'openspec/private'), { recursive: true });
     await writeFile(join(root, 'openspec/private/secret.mdx'), 'DO_NOT_PUBLISH');
-    expect(await generateContent(root)).toEqual({ articles: 126, version });
+    expect(await generateContent(root)).toEqual({ articles: 133, version });
     for (const locale of locales) {
       const output = await readFile(join(root, `apps/web/public/search/${locale}.json`), 'utf8');
       const parsed = JSON.parse(output) as { url: string }[];
-      expect(parsed).toHaveLength(18);
+      expect(parsed).toHaveLength(19);
       expect(parsed.every((item) => item.url.startsWith(`/${locale}/docs/`))).toBe(true);
       expect(output).not.toContain('DO_NOT_PUBLISH');
     }

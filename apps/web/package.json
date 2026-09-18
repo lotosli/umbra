@@ -62,6 +62,7 @@
     "vitest": "catalog:",
     "wrangler": "catalog:",
     "yaml": "catalog:",
-    "@types/jsdom": "catalog:"
+    "@types/jsdom": "catalog:",
+    "@mermaid-js/mermaid-cli": "catalog:"
   }
 }

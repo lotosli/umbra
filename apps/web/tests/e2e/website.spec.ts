@@ -33,7 +33,7 @@ for (const locale of localeDefinitions) {
     const index = await request.get(`/search/${locale.id}.json`);
     expect(index.ok()).toBe(true);
     const entries = await index.json() as { url: string; content: string }[];
-    expect(entries).toHaveLength(18);
+    expect(entries).toHaveLength(19);
     expect(entries.every((entry) => entry.url.startsWith(`/${locale.id}/docs/`) && entry.content.length > 150)).toBe(true);
   });
 

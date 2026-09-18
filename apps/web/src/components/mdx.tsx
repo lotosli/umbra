@@ -1,3 +1,4 @@
+import { ProtocolDiagram } from './protocol-diagram';
 import defaultMdxComponents from 'fumadocs-ui/mdx';
 import { useHydrated } from '@tanstack/react-router';
 import type { ComponentProps, ReactNode } from 'react';
@@ -12,4 +13,4 @@ function ReadyPre(props: ComponentProps<typeof defaultMdxComponents.pre>) {
   return <CodeBlock {...props} Actions={CodeActions}><Pre>{props.children}</Pre></CodeBlock>;
 }
 
-export const mdxComponents = { ...defaultMdxComponents, pre: ReadyPre };
+export const mdxComponents = { ...defaultMdxComponents, pre: ReadyPre, ProtocolDiagram };

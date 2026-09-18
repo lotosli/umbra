@@ -1,0 +1,22 @@
+stateDiagram-v2
+    state "TCP / QUIC を選択" as Transport
+    state "ClientHello を構築" as Hello
+    state "ハンドシェイクを進める" as Handshake
+    state "証明書を検証・分類" as Certificate
+    state "内側プロキシ" as Inner
+    state "RealSite：トランスポートを確認" as RealSite
+    state "TCP：合意したプロトコルでサイトへアクセス" as Spider
+    state "QUIC：プロキシ接続を拒否" as Reject
+    [*] --> SOCKS5
+    SOCKS5 --> Transport
+    Transport --> Hello: A のフィンガープリントと B/G の認証格納先
+    Hello --> Handshake
+    Handshake --> Certificate
+    Certificate --> Inner: UmbraTrusted：バインディングと ML-DSA 検証成功
+    Certificate --> RealSite: RealSite：通常の証明書検証に成功
+    Certificate --> [*]: Invalid：TLS エラー
+    RealSite --> Spider: TCP と対応 ALPN
+    RealSite --> Reject: QUIC
+    Inner --> [*]: ストリーム終了
+    Spider --> [*]: アクセス後に切断
+    Reject --> [*]: プロキシデータを送信しない

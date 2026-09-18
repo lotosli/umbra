@@ -1,0 +1,20 @@
+stateDiagram-v2
+    state "Llegir ClientHello" as Read
+    state "Analitzar SNI, keyshare i el camp d’autenticació" as Parse
+    state "Verificar el testimoni d’autenticació" as Verify
+    state "Reenviar a dest" as Forward
+    state "Completar la negociació localment" as Handshake
+    state "Ajustar els temps" as Timing
+    state "Enviar el certificat temporal de confiança" as Certificate
+    state "Capa interna mux / Vision" as Inner
+    [*] --> Read
+    Read --> Parse
+    Parse --> Forward: SNI incorrecte / falta keyshare
+    Parse --> Verify: Paràmetres vàlids
+    Verify --> Forward: Error de GCM / temps / short_id / antirepetició
+    Verify --> Handshake: Acceptat; shared disponible
+    Handshake --> Timing: dest.rtt menys el temps de processament local
+    Timing --> Certificate: cert_mac + ML-DSA-65
+    Certificate --> Inner
+    Inner --> [*]: Fi del flux
+    Forward --> [*]: Reenviament bidireccional al lloc real

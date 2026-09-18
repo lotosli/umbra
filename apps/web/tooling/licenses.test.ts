@@ -32,6 +32,16 @@ describe('dependency license gate', () => {
     expect(() => validateLicenseReport({ [license]: [entry(name, license, [version])] })).toThrow(`${name}@${version}: unreviewed license`);
   });
 
+  it.each([
+    ['@fortawesome/fontawesome-free', '(CC-BY-4.0 AND OFL-1.1 AND MIT)', '7.3.1'],
+    ['dompurify', '(MPL-2.0 OR Apache-2.0)', '3.4.15'],
+    ['elkjs', 'EPL-2.0', '0.9.3'], ['khroma', 'Unknown', '2.1.0'],
+  ])('restricts Mermaid toolchain exception %s to its reviewed version and declaration', (name, license, version) => {
+    expect(validateLicenseReport({ [license]: [entry(name, license, [version])] }).packages).toBe(1);
+    expect(() => validateLicenseReport({ [license]: [entry(name, license, ['99.0.0'])] })).toThrow('unreviewed');
+    expect(() => validateLicenseReport({ 'GPL-3.0-only': [entry(name, 'GPL-3.0-only', [version])] })).toThrow('unreviewed');
+  });
+
   it('rejects missing, inconsistent and empty reports', () => {
     expect(() => validateLicenseReport({})).toThrow('License report is empty');
     expect(() => validateLicenseReport({ MIT: [{ name: 'missing-version', license: 'MIT' }] })).toThrow();

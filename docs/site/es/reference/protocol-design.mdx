@@ -1,0 +1,595 @@
+---
+id: "reference/protocol-design"
+title: "Diseño del protocolo"
+description: "Diseño completo del protocolo: TLS 1.3, autenticación REALITY, Vision, QUIC, criptografía y máquinas de estados."
+section: "reference"
+order: 17
+version: "1.0.0-alpha"
+source: ["docs/protocol-design.md", "docs/architecture.md"]
+translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
+sourceRevision: "ea5cdb0ec4b6db5bee4ce2954aeee81844541d907cb5c7ffd1a95713cd65438d"
+---
+
+Esta referencia técnica presenta el diseño completo del protocolo Umbra: un cliente y un servidor en Rust, sus componentes, interfaces, formatos de transmisión y decisiones de diseño. Conserva los objetivos y las revisiones posteriores. Para desplegar la versión actual, consulta las guías de uso; la estructura de un único crate de §17 y las dependencias de §18 son bocetos históricos.
+
+[Guía de uso](/es/docs/getting-started/quick-start/) · [Arquitectura actual](/es/docs/concepts/architecture/)
+
+## 0. Objetivos y decisiones de arquitectura
+
+Tres decisiones rigen el diseño:
+
+1. **El transporte toma la identidad de un sitio real, al estilo de REALITY.** La autenticación viaja en ClientHello y se comprueba **antes de responder**. Las conexiones sin autenticar y las sondas se reenvían sin cambios en TCP/UDP al sitio de cobertura `dest`. El interlocutor negocia con ese sitio y recibe su certificado real; el nodo no necesita dominio ni certificado de una CA pública propios.
+2. **El cliente utiliza una pila TLS 1.3 mínima propia, equivalente a uTLS en Rust.** La negociación principal no depende de BoringSSL/rustls. Se construye ClientHello manualmente, controlando la huella, `legacy_session_id` y la clave privada X25519 del keyshare, y se implementa la derivación de claves TLS 1.3. Así se controlan los bytes del perfil Chrome y se reutiliza el keyshare para autenticar. El servidor también usa una pila propia para terminar la negociación localmente y presentar el certificado que reproduce el destino.
+3. **La autenticación sigue la construcción REALITY canónica y reutiliza ECDH del keyshare.** `shared=X25519(C_priv,S_pub)`. AES-GCM cifra el token en `session_id`, con todo ClientHello como AAD. Se usa un keyshare nuevo por conexión, se vincula el token a la negociación y sus bytes tienen apariencia aleatoria.
+
+El empalme Vision, la preparación del perfil, mux, QUIC, Geneva, las primitivas poscuánticas y el seguimiento del navegador forman parte del diseño objetivo; véanse F–K.
+
+## 1. Modelo de amenazas: técnicas de censura
+
+El diseño parte de comportamientos observados y de las investigaciones del apéndice C:
+
+- **Clasificación por entropía del tráfico cifrado (USENIX Security 2023):** se clasifica el primer paquete con excepciones para contenido imprimible o de baja entropía. SS/obfs4 sin envoltura puede empezar con alta entropía. Umbra coloca los datos dentro de TLS/QUIC para evitar el patrón de cifrado bruto considerado por ese clasificador.
+- **Sondeo activo (NDSS 2019/2020; GFW Report):** conexión a un extremo sospechoso, repetición o modificación de datos para reconocer proxies. Las conexiones sin autenticar deben reenviarse al sitio real.
+- **Huellas TLS dentro de TLS (USENIX Security 2024):** longitudes y direcciones de registros pueden revelar la negociación interna. F combina empalme Vision y relleno adaptativo.
+- **ClientHello/JA3/JA4:** las diferencias respecto al navegador pueden ser señales; A/J construyen los bytes mediante perfiles Chrome.
+- **Inspección SNI y bloqueo ESNI/ECH:** SNI es visible; se usa el nombre de un sitio de cobertura real y accesible.
+- **Inyección TCP RST con estado (Geneva, CCS 2019):** H trata la segmentación TCP/desincronización TCB; G proporciona una ruta QUIC/UDP independiente.
+- **Repetición:** nuevos keyshares ECDH, ventana temporal y caché de nonces en B.
+- **Bloqueo residual:** una IP:puerto detectada puede seguir bloqueada temporalmente. Puertos múltiples, extremos sustituibles, destinos menos comunes y una ruta QUIC son opciones operativas.
+- **Canales laterales temporales:** una sonda mide el tiempo al primer byte; K aproxima los tiempos de preparación de las rutas autenticada y reenviada.
+
+El modelo supone que el censor no termina TLS mediante MITM a gran escala, algo disruptivo y detectable. E aborda por separado la autenticación del certificado ante una interceptación por conexión. Son hipótesis y objetivos de verificación, no una garantía universal de indetectabilidad.
+
+## 2. Principios e influencias
+
+| Principio | Referencia | Problema que aborda |
+| --- | --- | --- |
+| TLS/QUIC real y reenvío de tráfico sin autenticar | REALITY | Mantener dominio/certificado Trojan; exponer certificados autofirmados a sondas |
+| Autenticar dentro de ClientHello antes de responder | REALITY | Autenticar después de exponer el certificado |
+| Controlar los bytes del ClientHello según Chrome | uTLS | Diferencias de una pila TLS genérica |
+| Reutilizar ECDH para una clave específica por conexión | REALITY | Reutilizar directamente una contraseña estática como clave |
+| Eliminar la capa TLS adicional mediante Vision cuando proceda | XTLS-Vision | Patrones TLS dentro de TLS de un túnel normal |
+| Relleno adaptativo y multiplexación | anytls | Una conexión externa por destino y correlación de su cantidad |
+| Keyshare nuevo, marca temporal y caché de nonces | SS-2022 / VMess | Repetición en variantes antiguas de SS |
+| KEM y firmas poscuánticas | Chrome PQC / REALITY mldsa | Riesgos a largo plazo de la criptografía solo clásica |
+| Política AEAD interna única sin negociación adicional | SS-2022 | Huellas de negociación o degradación criptográfica |
+
+## 3. Arquitectura general
+
+<ProtocolDiagram locale="es" name="architecture" />
+
+Cuatro capas reparten las responsabilidades:
+
+1. **Transporte externo (G/H):** TLS 1.3 sobre TCP con la estrategia de envío configurada, o QUIC/HTTP-3; SNI identifica el destino de cobertura.
+2. **Autenticación (A/B):** ClientHello construido según el perfil Chrome; en TCP se usan `session_id` y keyshare.
+3. **Distribución y negociación local (C/D/E):** decidir antes de responder; clientes autenticados reciben un certificado temporal vinculado al secreto y las demás conexiones se reenvían a `dest`.
+4. **Transporte interno (F):** mux con relleno adaptativo o conexión Vision dedicada; direcciones y datos.
+
+## Componente A: pila TLS 1.3 mínima, equivalente a uTLS en Rust
+
+**Objetivo:** controlar ClientHello y la clave privada X25519, aplicar el perfil Chrome y respaldar B/E.
+
+**Alcance:** solo TLS 1.3 (RFC 8446), con suites y extensiones del perfil, tanto cliente como servidor. No incluye TLS 1.2.
+
+### A.1 Construcción de ClientHello byte a byte
+
+- `legacy_version=0x0303` en el registro; `random` de 32 bytes mediante CSPRNG; `legacy_session_id` de 32 bytes suministrado por B; suites, compresión nula y extensiones. Chrome también usa un identificador aleatorio de 32 bytes en modo compatible; su contenido no entra en JA3/JA4.
+- Orden de suites: `GREASE, TLS_AES_128_GCM_SHA256(0x1301), TLS_AES_256_GCM_SHA384(0x1302), TLS_CHACHA20_POLY1305_SHA256(0x1303)`.
+- Conjunto y orden de extensiones del perfil, **sujetos a capturas y actualizaciones** (J): `GREASE → server_name → extended_master_secret → renegotiation_info → supported_groups (X25519MLKEM768,X25519,secp256r1,secp384r1) → ec_point_formats → session_ticket → ALPN(h2,http/1.1) → status_request → signature_algorithms → signed_certificate_timestamp → key_share(GREASE,X25519MLKEM768,X25519) → psk_key_exchange_modes → supported_versions(GREASE,0x0304) → compress_certificate(brotli) → application_settings(ALPS) → GREASE → padding`.
+- **GREASE:** insertar valores RFC 8701 en suites, extensiones, grupos, keyshares, versiones y algoritmos de firma en posiciones y cantidades del perfil objetivo.
+- **key_share:** incluir `X25519MLKEM768` híbrido (I) y X25519 clásico. Generar y conservar la clave privada clásica `C_priv` para B.
+- Para `0x11ec`, el cliente envía exactamente `ML-KEM-768 public key(1184) || X25519 public key(32)` y el servidor `ML-KEM-768 ciphertext(1088) || X25519 public key(32)`, según RFC 10024 §4. La versión 0.0.8 corrigió el orden inverso anterior, que es incompatible.
+- **Relleno:** ajustar las longitudes a la distribución del perfil Chrome, habitualmente cerca de múltiplos de 512 bytes.
+
+### A.2 Derivación de claves y estados del cliente
+
+Aplicar RFC 8446:
+
+- Mantener `Transcript-Hash`; implementar `HKDF-Expand-Label` y `Derive-Secret`.
+- `Early=HKDF-Extract(0,PSK|0)` → `Handshake=HKDF-Extract(Derive-Secret(Early,"derived",""),ECDHE)` → `c/s hs traffic`, `Master`, `c/s ap traffic`, `exporter`, `resumption`.
+- TCP y QUIC derivan `c/s ap traffic` y `exp master` con la transcripción hasta **Server Finished**. `res master` usa la transcripción hasta **Client Finished**; la API debe distinguir ambos límites.
+- RFC 8879 codifica la longitud de la lista `compress_certificate` como uint8. Brotli, algoritmo 2, es `02 00 02`. Limitar tamaños comprimido y descomprimido; conservar CompressedCertificate original en la transcripción.
+- Reensamblar mensajes entre registros con límites y aceptar CCS compatibles válidos. No suponer que el servidor manda dos registros. Verificar versión, compresión nula, eco de session ID, extensiones únicas y parámetros realmente ofrecidos. Rechazar HRR no compatible. Verificar todos los algoritmos TLS 1.3 anunciados mediante implementaciones maduras; los exclusivos de TLS 1.2 no sirven para CertificateVerify TLS 1.3.
+- ECDHE usa X25519, reutilizado para autenticación, y opcionalmente el secreto híbrido X25519MLKEM768 (I).
+- Proteger registros con `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`, mediante RustCrypto `aes-gcm`/`chacha20poly1305`. Cada dirección tiene clave, IV y nonce basado en número de secuencia propios.
+- ClientHello → (ServerHello, EncryptedExtensions, Certificate, CertificateVerify, Finished) → Client Finished. El modo compatible envía un ChangeCipherSpec ficticio según el perfil.
+- Delegar certificados a E: temporal de confianza, sitio real o inválido.
+
+### A.3 Pila TLS 1.3 del servidor
+
+- Continuar desde PrefixedStream, que reproduce el ClientHello leído por C. Emitir ServerHello con parámetros de D, EncryptedExtensions, Certificate generado/reproducido por E, CertificateVerify firmado por la clave de hoja y Finished.
+- En TCP compatible, **`legacy_session_id_echo` repite los 32 bytes del cliente**. Suite, grupo y ALPN proceden de DestProfile. G describe el identificador vacío de QUIC.
+
+### A.4 Módulos y firmas
+
+```rust
+// tls13/clienthello.rs
+pub struct ClientHelloParams { pub sni:String, pub session_id:[u8;32], pub x25519_priv:[u8;32],
+    pub x25519_pub:[u8;32], pub mlkem: MlkemShare, pub profile: FingerprintProfile }
+pub fn build_client_hello(p:&ClientHelloParams) -> Vec<u8>;         // Serialización byte a byte; GREASE/orden según el perfil
+
+// tls13/handshake.rs (cliente)
+pub struct Tls13Client { /* transcript, secrets, aead ... */ }
+impl Tls13Client {
+    pub fn start(params:ClientHelloParams) -> (Self, Vec<u8> /*Registro ClientHello*/);
+    pub fn drive(&mut self, inbound:&[u8], verify:&dyn CertVerify) -> DriveOut; // Avanzar / producir bytes de salida / completar
+    pub fn app_seal(&mut self,pt:&[u8])->Vec<u8>; pub fn app_open(&mut self,ct:&[u8])->io::Result<Vec<u8>>;
+}
+pub trait CertVerify { fn verify(&self, leaf_der:&[u8], chain:&[Vec<u8>]) -> PeerKind; }
+pub enum PeerKind { UmbraTrusted, RealSite, Invalid }
+
+// tls13/server.rs (negociación replicada del servidor)
+pub struct Tls13Server { /* ... */ }
+impl Tls13Server {
+    pub fn accept(chello_raw:&[u8], leaf:ForgedCert, profile:&DestProfile) -> (Self, Vec<u8>);
+    pub fn drive(&mut self, inbound:&[u8]) -> DriveOut;
+    pub fn app_seal(&mut self,pt:&[u8])->Vec<u8>; pub fn app_open(&mut self,ct:&[u8])->io::Result<Vec<u8>>;
+}
+```
+
+> Priorizar ClientHello, derivación de claves y registros, comprobados con `tls.peet.ws` y JA4. Al anunciar compresión de certificados Brotli, el cliente debe poder descomprimir el certificado remoto.
+
+## Componente B: autenticación REALITY con ECDH del keyshare
+
+### B.1 Claves y parámetros
+
+- Claves estáticas del servidor X25519 `(S_priv,S_pub)`. `S_pub` funciona como credencial de acceso: **debe mantenerse confidencial frente a terceros no autorizados**, aunque matemáticamente sea una clave pública.
+- `short_id` tiene 0–8 bytes; el servidor define un conjunto permitido y el cliente elige una entrada.
+- `max_time_diff` es 120 segundos por defecto. `server_names` contiene los SNI permitidos y `dest` el `host:443` de cobertura.
+
+### B.2 Token cliente en legacy_session_id
+
+Reutilizar el keyshare clásico `(C_priv,C_pub)` de A:
+
+1. `shared = X25519(C_priv, S_pub)` (32 bytes).
+2. `auth_key = HKDF-SHA256(shared, salt="umbra-reality-v1", info="key")[..16]` para AES-128; `nonce = HKDF-SHA256(shared, salt="umbra-reality-v1", info="nonce")[..12]`.
+3. Texto claro de 16 bytes: `P = ver(1)=0x01 || flags(1) || ts(u32 BE,4) || short_id(8) || reserved(2)=0`.
+4. `ct||tag = AES-128-GCM-Seal(auth_key, nonce, P, aad=HELLO0)`. **HELLO0 es todo el mensaje ClientHello con los 32 bytes de session ID a cero**, sin cabeceras de registro TLS. Cambiar la fragmentación de registros no debe alterar AAD.
+5. Escribir `session_id(32B) = ct(16) || tag(16)` antes de serializar y calcular la transcripción definitiva.
+
+### B.3 Verificación del servidor antes de responder
+
+Cualquier fallo lleva al reenvío mediante C:
+
+1. Extraer SNI, `C_pub` clásico y session ID de 32 bytes; construir HELLO0 poniendo este último a cero.
+2. Exigir `SNI ∈ server_names`.
+3. Calcular `shared = X25519(S_priv, C_pub)` y derivar `auth_key,nonce`.
+4. Abrir `P = AES-128-GCM-Open(auth_key, nonce, ct=session_id[..16], tag=session_id[16..], aad=HELLO0)`; un fallo GCM provoca reenvío.
+5. Comprobar versión, `reserved==0`, `|now-ts|≤max_time_diff`, short ID permitido y caché de repetición. Consulta e inserción deben ser atómicas. Retener hasta `ts+max_time_diff`, incluido el límite, no solo una ventana desde recepción; comprobar desbordamientos de caducidad. Si está llena, rechazar nueva autenticación local y reenviar sin expulsar entradas válidas. Verificar la marca temporal incluso tras limpiar la caché.
+6. Si todo pasa, entregar `shared` a E.
+
+Tras corregir HELLO0 y los límites de secretos de aplicación TLS, actualizar ambos extremos. No reintentar el AAD ni la derivación no estándar antiguos ante fallos.
+
+### B.4 Seguridad y distribución de credenciales
+
+- `S_pub` y una clave privada cliente nueva permiten calcular `shared`; AAD impide trasladar el token a otro ClientHello. Keyshares nuevos, ventana y caché evitan reutilización de claves y repetición.
+- El diseño original describe secreto hacia adelante de autenticación por conexión. No equivale a garantizarlo tras comprometer la clave estática del servidor; ese modelo de compromiso debe analizarse por separado.
+- Filtrar `S_pub`/`short_id` compromete el control de acceso de este modelo. Distribuirlos mediante un canal externo fiable.
+
+## Componente C: distribución del servidor y reenvío de sondas
+
+Decidir **antes de responder localmente por TLS** si terminar la negociación autenticada o reenviar.
+
+1. `read_client_hello_raw(conn)` lee ClientHello entre registros con plazo global y límites de bytes/registros. Ante cabecera/cuerpo parcial, timeout, límite o EOF, conservar todo el prefijo leído y pasarlo al destino, sin cerrar antes de tiempo. Se prohíbe responder localmente antes de clasificar, no la posterior respuesta del destino real. QUIC se trata en G.
+2. Analizar `SNI, C_pub, session_id` mediante parser propio o `tls-parser`.
+3. Ejecutar B. **Éxito:** generar `leaf = forge_cert(shared, SNI, dest_profile)`, continuar con `Tls13Server::accept(chello_raw, leaf, profile)` y `PrefixedStream(chello_raw, conn)`, y entrar en F. **Fallo, SNI distinto o repetición:** conectar con `dest`, escribir todo el prefijo y ejecutar `copy_bidirectional(conn, d)`. El interlocutor negocia con el sitio real y recibe su certificado.
+4. No introducir limitación de caudal ni cierre temprano propios del proxy (K). `maxUselessRecords` limita la clasificación, pero debe respetar el reenvío en vez de añadir rechazos silenciosos.
+
+```rust
+pub async fn dispatch(conn: Conn, cfg:&ServerCfg, prof:&DestProfile, replay:&ReplayCache) -> anyhow::Result<()>;
+pub struct PrefixedStream<S>{/* Reproducir prefix y reenviar inner */}
+```
+
+## Componente D: preparación y perfil del destino
+
+**Objetivo:** aproximar la negociación local a ServerHello, certificado, tiempos y OCSP del destino.
+
+- Arrancar requiere un DestProfile validado. `prebuild=true` añade actualización periódica; `false` solo la desactiva y nunca permite un perfil inventado. Si falla la sonda inicial, falla el arranque. Sustituir perfiles atómicamente; si una actualización falla, conservar el último válido.
+- Recoger versión TLS, suite, grupo keyshare, ALPN, EncryptedExtensions; subject/issuer/validity/SAN/SCT de la hoja real, OCSP stapling y firma; intervalo desde conexión hasta primera respuesta TLS, excluyendo espera HTTP posterior, para K.
+- DNS, conexión, TLS y metadatos HTTP comparten un plazo limitado. I/O síncrono no debe bloquear el ejecutor async; tareas bloqueantes que sobreviven a un timeout siguen consumiendo cuota de concurrencia.
+- E utiliza el perfil en ServerHello y campos del certificado. TLS 1.3 cifra el certificado; reproducirlo también aborda correlaciones más avanzadas.
+
+```rust
+pub struct DestProfile { pub tls_ver:u16, pub cipher:u16, pub group:u16, pub alpn:Vec<Vec<u8>>,
+    pub ee_exts:Vec<u16>, pub leaf_template:CertTemplate, pub ocsp:Option<Vec<u8>>, pub rtt:Duration }
+pub async fn probe_dest(dest:&str) -> anyhow::Result<DestProfile>;
+```
+
+## Componente E: negociación local y certificado temporal de confianza
+
+Tras autenticar, el servidor **termina TLS localmente**, sin reenviar esa negociación a `dest`. El cliente verifica el certificado mediante `shared`.
+
+### E.1 Generación del certificado hoja
+
+- Generar una clave efímera cuya parte privada firma CertificateVerify; copiar campos de `DestProfile.leaf_template`, incluidos CN/SAN=`server_name` y validez.
+- Extensión privada `1.3.6.1.4.1.62397.1`: `cert_mac = HMAC-SHA256(cert_key, leaf_SPKI_DER)` (32 bytes), con `cert_key = HKDF-SHA256(shared, salt="umbra-cert-v1", info=session_id)`.
+- Firma poscuántica adicional (I), OID `...62397.2`: `ML-DSA-65_Sign(mldsa_sk, leaf_SPKI_DER)`.
+
+### E.2 Verificación del certificado por el cliente
+
+El cliente conoce `shared` gracias a `C_priv`, y su session ID:
+
+1. Derivar `cert_key`; verificar el MAC en tiempo constante **y** ML-DSA-65 con `mldsa_pk`. Ambos controles y CertificateVerify como prueba de posesión son necesarios para **UmbraTrusted**, la única clasificación que permite tráfico proxy. Este certificado vinculado no requiere firma de una CA pública.
+2. Sin vínculo Umbra válido, comprobar independientemente cadena, raíces configuradas, nombre esperado, validez y CertificateVerify. Solo todos correctos dan **RealSite**. TCP puede visitar la ruta spider con HTTP negociado compatible, sin enviar destino proxy ni datos de negocio; no enviar solicitudes mal formadas con ALPN no compatible. QUIC RealSite rechaza el proxy localmente: sin claves de negocio, conexión lista, éxito SOCKS ni prefijo de destino; sin degradación automática a TCP ni supuesto spider HTTP/3.
+3. Cualquier comprobación requerida fallida produce **Invalid** y la ruta normal de error TLS/cierre.
+4. Claves privadas de certificado, claves de vinculación, secretos de tráfico y registros de claves de sondas necesitan borrado al liberar memoria y Debug redactado. Errores de configuración y causas anidadas no deben conservar secretos ni extractos TOML.
+
+> La protección frente a interceptación depende de comprobar la vinculación al secreto y la prueba del certificado. Un intermediario que no las aporta se clasifica como RealSite o Invalid según la validación independiente.
+
+## Componente F: multiplexación con relleno y empalme Vision
+
+Tras autenticar, la capa interna gestiona destinos, multiplexación y patrones TLS dentro de TLS. Elegir por conexión:
+
+- **Mux adaptativo por defecto:** varios flujos lógicos en una conexión TLS, menos negociaciones repetidas y correlación de conexiones.
+- **Vision dedicado:** un flujo posee la conexión externa; relleno durante negociación y después reenvío directo de registros internos válidos, sin segunda envoltura.
+
+### F.1 Formato de trama mux
+
+```
+MuxFrame = ver(1) || cmd(1) || stream_id(4,BE) || len(2,BE) || payload(len)
+cmd: 0x01 SYN(payload=Dirección de destino) | 0x02 SYN_ACK | 0x03 DATA | 0x04 WINDOW_UPDATE(payload=incremento u32)
+     | 0x05 FIN | 0x06 RST | 0x07 PADDING(payload=aleatorio; descartar toda la trama) | 0x08 PING
+Dirección de destino(SYN.payload) = atyp(1) || addr(4|1+n|16) || port(2)   // 0x01 v4 / 0x03 nombre de dominio / 0x04 v6
+```
+
+- Ventana independiente por flujo, por ejemplo 256 KiB iniciales, ampliada con WINDOW_UPDATE. DATA de hasta 16 384 bytes.
+- Cada conexión SOCKS5 abre SYN. Reutilizar una conexión externa sana para solicitudes compatibles. Conectar destinos concurrentemente y enviar SYN_ACK solo tras éxito.
+- Conservar lectura parcial y escritura serializada frente a cancelación. Abrir flujos o esperar crédito no debe consumir eventos ajenos. Terminar una trama parcialmente escrita o cerrar; nunca entrelazar sus bytes.
+- El crédito de recepción reserva buffers limitados y se devuelve solo tras consumo real, no al encolar. Comprobar desbordamientos, incrementos cero y controles sobre flujos desconocidos; limitar flujos y memoria total.
+- FIN cierra una dirección después de DATA pendiente. RST despierta a todos los que esperan ese flujo. Liberarlo no termina los demás.
+- Un fallo externo no repite automáticamente datos de negocio. Solicitudes nuevas pueden crear otra conexión. Una asociación UDP stream-zero tiene conexión exclusiva y no comparte sesión CONNECT.
+
+### F.1a Control adaptativo desde 0.0.9
+
+Los clientes TCP CONNECT mux nuevos empiezan por `SETTINGS(0x0a, stream=0)`: `UAF1` y cuatro u32 big-endian, ventanas iniciales de flujo/conexión y sus máximos. Iniciales 256 KiB y 1 MiB; máximo de flujo 32 MiB y máximo de conexión configurable hasta 64 MiB. Combinar ajustes iniciales y relleno aleatorio configurado en una escritura, sin cambiar el contador de relleno ordinario. Clientes antiguos que empiezan con SYN/UDP conservan el control anterior.
+
+`CREDIT(0x0b)` contiene dos u64 big-endian: límite acumulado de envío permitido y posición acumulada consumida por la aplicación. Stream cero representa la conexión. DATA respeta ambos créditos; ampliar crédito no simula consumo. `PROBE(0x0c)` / `PROBE_ACK(0x0d)` llevan un nonce de 8 bytes en stream cero para medir RTT externo.
+
+El receptor amplía ventanas según consumo y RTT, reservando antes presupuesto del proceso/grupo de credenciales. No retirar crédito comprometido. FIN/RST liquidan posiciones acumuladas con seguridad ante cancelación. Reenvío no autenticado y ClientHello no cambian. Véase [rendimiento y configuración](https://github.com/lotosli/umbra/blob/main/docs/performance.md) para memoria, ajustes y límites de las mediciones.
+
+### F.2 Esquema de relleno adaptativo
+
+- Un esquema configurable similar a anytls define la distribución de longitud objetivo o el PADDING adicional de la escritura k. El valor de diseño añade PADDING aleatorio a unos 16 registros iniciales por dirección, de longitud `[100,1400]`, rodeando las primeras tramas para alterar patrones deterministas de longitud/dirección de la negociación interna.
+- Después insertar relleno con menor probabilidad frente a patrones estadísticos de larga duración.
+
+### F.3 Empalme Vision desde 0.0.7
+
+En TCP, `mux=false` selecciona Vision dedicado; `mux=true` mantiene multiplexación cifrada. Ambos extremos necesitan la implementación 0.0.7. Se eliminaron el antiguo relay solo y el helper sin integrar; no existe otro interruptor Vision.
+
+1. Un indicador autenticado distingue solo de mux. Extremos antiguos o sin autenticar no reciben destino ni control de negocio.
+2. Enviar dirección y luego capacidades autenticadas. Esperar conexión al destino antes de éxito SOCKS o DATA.
+3. Reensamblar con límites en ambos sentidos para observar ClientHello/ServerHello TLS 1.3 válidos y registros protegidos completos. El tráfico no apto mantiene cifrado externo.
+4. El cliente coordina solicitud, confirmación, compromiso y confirmación final, verificando límites de bytes en ambos sentidos. Vaciar escrituras externas, conservar prefijos leídos y entregar el TCP bruto.
+5. Reenviar registros TLS internos protegidos sin TLS externo, envoltura ni relleno; mantener controles de estructura y medio cierre.
+
+`0x17` puede incluir negociación cifrada o alertas. La observación pasiva no valida Finished interno ni demuestra que una aplicación maliciosa que imita TLS haya cifrado realmente sus bytes. El TLS de extremo a extremo sigue autenticando el destino y protegiendo la confidencialidad. Se usa I/O de espacio de usuario, sin prometer cero copia del kernel ni una mejora fija.
+
+La [especificación wire aprobada](https://github.com/lotosli/umbra/blob/main/docs/vision-runtime-wire-v2.md) detalla bytes, límites, estados de rechazo/compromiso, EOF, cancelación y vectores. Las pruebas con extremos rustls independientes comprueban 256 KiB íntegros por sentido, igualdad byte a byte del sufijo de red y el cifrado interno, y fin de llamadas seal/open externas tras el cambio. El origen también documenta solicitudes reales Mac/servidor 0.0.7 en el [registro de aceptación](https://github.com/lotosli/umbra/blob/main/openspec/changes/integrate-vision-runtime/verification.md).
+
+> Mux y empalme bruto se excluyen. QUIC no usa este cambio de TCP. No hay heurística que cree automáticamente otra conexión solo según el tráfico.
+
+### F.4 Módulos y firmas
+
+```rust
+// inner/mux.rs
+pub struct MuxSession<IO>{/* streams, windows */}
+impl<IO:AsyncRead+AsyncWrite> MuxSession<IO>{
+  pub fn client(io:IO, pad:&PadScheme)->Self; pub fn server(io:IO, pad:&PadScheme)->Self;
+  pub async fn open(&self, dst:&Addr)->Stream;   // El cliente abre un flujo (SYN)
+  pub async fn accept(&self)->(Stream, Addr);      // El servidor acepta el flujo
+}
+// inner/vision.rs
+pub async fn vision_relay(tls:TlsIo, target:TcpStream) -> io::Result<()>; // Inspeccionar → ajustar → splice
+// inner/padding.rs
+pub struct PadScheme{/* Analizado desde la cadena de configuración */} pub fn parse_pad_scheme(s:&str)->PadScheme;
+// inner/spider.rs
+pub async fn spider(tls:TlsIo, spider_path:&str) -> io::Result<()>; // RealSite: visitar como un navegador y cerrar
+```
+
+## Componente G: transporte QUIC / HTTP-3
+
+**Objetivo de diseño:** usar UDP para evitar RST TCP, disponer de flujos QUIC independientes y explorar 0-RTT; presentar comportamiento Chrome QUIC/HTTP-3 y transportar destinos autenticados en flujos QUIC. **0-RTT y el empalme de flujos propuesto aquí son objetivos, no funciones actuales confirmadas.**
+
+- QUIC reutiliza TLS 1.3 de A. ClientHello está en CRYPTO de Initial; las claves Initial derivan de DCID y sal fija, por lo que un observador puede recuperarlo. `supported_versions` contiene solo TLS 1.3 y GREASE válido, nunca TLS 1.2 copiado de TCP. Adaptar antes de HELLO0/AAD y del token; la API QUIC TLS no debe reescribir parámetros ya vinculados.
+- Perfil objetivo: versiones QUIC, parámetros y orden, ALPN=`h3`, extensiones incluido `quic_transport_parameters`, longitud SCID y GREASE (J).
+- **Portador distinto de TCP:** QUIC requiere `legacy_session_id` vacío. La propuesta coloca `ct||tag` de 32 bytes en un parámetro GREASE estilo Chrome, con AAD sobre ClientHello completo y ECDH clásico. Número y longitud deben contrastarse con capturas. El origen contempla SCID de 8 bytes más capacidad GREASE si no caben 32; debe reconciliarse con el portador implementado, no cambiarse aisladamente.
+- Leer Initial, recuperar ClientHello y autenticar. Fallo: reenviar Initial y datagramas siguientes sin cambios al QUIC real del destino. Éxito: completar localmente QUIC-TLS de E.
+- La capa interna objetivo aprovecha multiplexación nativa sin mux adicional y contempla reenvío directo de flujos. Eso no implica que Vision TCP esté disponible en QUIC.
+
+```rust
+// transport/quic.rs
+pub struct QuicFingerprint{/* versions, tparams orden/valores, alpn=h3, grease param */}
+pub async fn quic_connect(server:&str, sni:&str, auth:&[u8;32], fp:&QuicFingerprint)->anyhow::Result<QuicConn>;
+pub async fn quic_dispatch(dgram_sock:UdpSocket, cfg:&ServerCfg, prof:&DestProfile)->anyhow::Result<()>;
+```
+
+> Una pila QUIC propia supone mucho trabajo. El origen considera `quiche` con BoringSSL personalizable o `quinn` con otro proveedor criptográfico para A. Comprobar huellas y portador de autenticación con capturas Chrome reales.
+
+## Componente H: segmentación TCP de estilo Geneva
+
+**Soporte actual:** `off` envía normalmente y `segment` realiza escrituras divididas ordenadas. No se presentan estrategias avanzadas Geneva como implementadas o medidas.
+
+- La concatenación reproduce ClientHello exactamente. Una escritura no garantiza un paquete TCP independiente ni demuestra resistencia a interferencias.
+- Rechazar DSL Geneva no compatible al validar configuración; no convertirlo silenciosamente a `off`. No se añaden sockets brutos privilegiados.
+- Solo un error recuperable de preparación antes de enviar bytes permite envío normal alternativo. Tras escritura parcial, devolver error; reiniciar duplicaría el prefijo.
+- QUIC es una ruta UDP independiente. Separar verificaciones de transporte y huella.
+
+```rust
+// transport/geneva.rs
+pub struct TcpEvasion{/* strategy */}
+pub fn parse_strategy(s:&str)->TcpEvasion;
+pub async fn write_client_hello_evasive(sock:&TcpStream, chello:&[u8], ev:&TcpEvasion)->io::Result<()>;
+```
+
+## Componente I: X25519MLKEM768 y ML-DSA-65
+
+- **Intercambio poscuántico:** secreto híbrido en orden exacto `ML-KEM-768 shared secret(32) || X25519 shared secret(32)`, entrada a TLS 1.3 según RFC 10024 §4.3. RustCrypto `ml-kem` aporta ML-KEM-768. Autenticación REALITY sigue usando el keyshare X25519 clásico separado (B).
+- **Firma del certificado:** E añade ML-DSA-65 en una extensión privada, con RustCrypto `ml-dsa`. El servidor deriva `mldsa_sk` de `mldsa_seed`; clientes reciben `mldsa_pk`. UmbraTrusted exige tanto vínculo HMAC al secreto compartido como firma ML-DSA válida.
+
+```rust
+pub struct MlkemShare{/* encaps key(client) / ciphertext(server) */}
+pub fn mlkem_keygen()->(/*ek*/Vec<u8>,/*dk*/Vec<u8>);
+pub fn mldsa_keygen_from_seed(seed:&[u8;32])->(/*pk*/Vec<u8>,/*sk*/Vec<u8>);
+pub fn mldsa_sign(sk:&[u8], msg:&[u8])->Vec<u8>; pub fn mldsa_verify(pk:&[u8],msg:&[u8],sig:&[u8])->bool;
+```
+
+## Componente J: mantenimiento de perfiles Chrome
+
+**Objetivo:** una pila propia no hereda automáticamente Chrome de BoringSSL. Los perfiles deben ser datos explícitos y sustituibles.
+
+- Registrar propiedades visibles del ClientHello objetivo: suites, extensiones y orden, posiciones GREASE, grupos, firmas, ALPN, ALPS, compresión, keyshares y relleno. QUIC añade parámetros/orden, h3 y GREASE.
+- Capturar Chrome real o usar `tls.peet.ws/api/all` y JA4 para producir el perfil. Incluir uno o dos perfiles estables con versión Chrome; separar datos y código para actualizarlos.
+- Comparar JA3/JA4 generado con el perfil en CI/arranque y avisar de diferencias. Esas comprobaciones cubren sus campos; el comportamiento completo exige capturas.
+
+```rust
+pub struct FingerprintProfile{/* ciphers, ext_order, grease_slots, groups, sigalgs, alpn, alps, ... */}
+pub fn load_profile(name:&str)->FingerprintProfile;    // p. ej. "chrome-latest"
+pub fn ja3_ja4(chello:&[u8])->(String,String);          // Para autocomprobación
+```
+
+## Componente K: resistencia al sondeo
+
+- **Tiempos:** usar el intervalo de D hasta la primera respuesta TLS, restar preparación local tras clasificar y esperar solo el resto no negativo antes de ServerHello. Si ya es más lento, no añadir espera. La indistinguibilidad requiere medición.
+- **Registros inútiles:** superar límites de clasificación lleva a `dest`. Rechazar opciones de cierre temprano sin autenticar.
+- **Reenvío:** sin limitación propia de Umbra ni cierre por datos basura; medio cierre de solicitud conserva la respuesta.
+- **Spider:** tras validar completamente el certificado, TCP visita `spider_path` mediante ALPN compatible. QUIC RealSite rechaza el proxy localmente.
+- **Puertos/IP:** escuchas y direcciones alternativas pueden reducir bloqueos residuales; TCP/QUIC se configuran separadamente.
+
+## 15. Resumen criptográfico
+
+- ECDH X25519 (`x25519-dalek`); KEM híbrido ML-KEM-768 (`ml-kem`).
+- HKDF-SHA256 (`hkdf` + `sha2`), etiquetas B/E `umbra-reality-v1` y `umbra-cert-v1`.
+- Token AES-128-GCM (`aes-gcm`) en session ID TCP; AAD de ClientHello completo con ese campo a cero.
+- Certificado: HMAC-SHA256 (`hmac`) y ML-DSA-65 (`ml-dsa`); comparaciones de secretos/tags en tiempo constante (`subtle`).
+- Registros TLS: AES-128/256-GCM y ChaCha20-Poly1305 (`aes-gcm`/`chacha20poly1305`).
+- Aleatoriedad del CSPRNG del sistema (`rand::rngs::OsRng`).
+- Sin segunda capa AEAD de negocio: TLS/QUIC ya aporta confidencialidad e integridad y evita envoltura adicional.
+
+## 16. Especificación de configuración
+
+**server.toml**
+
+```toml
+listen        = "0.0.0.0:443"          # TCP; configurar udp_listen por separado para QUIC
+udp_listen    = "0.0.0.0:443"          # Componente G：QUIC/HTTP-3
+private_key   = "BASE64(X25519 32B clave privada)"   # umbra keygen
+short_ids     = ["", "0123456789abcdef"]
+dest          = "www.microsoft.com:443"     # Sitio de cobertura (criterios: §20)
+server_names  = ["www.microsoft.com"]
+max_time_diff = "120s"
+mldsa_seed    = "BASE64(32B)"           # Componente I：Semilla de firma poscuántica del certificado
+prebuild      = true                    # Componente D：Actualización periódica; false sigue requiriendo sondeo inicial
+padding_scheme= "default"               # Componente F Política de relleno adaptativo
+tcp_evasion   = "segment"               # Componente H：off | segment；Geneva DSL aún no está disponible
+```
+
+**client.toml**
+
+```toml
+server        = "SERVER_IP:443"
+transport     = "tcp"                   # tcp | quic
+public_key    = "BASE64(X25519 32B clave pública)"   # = clave pública del servidor; credencial que debe mantenerse secreta
+short_id      = "0123456789abcdef"
+server_name   = "www.microsoft.com"     # SNI; debe pertenecer a server_names
+fingerprint   = "chrome-latest"         # Componente J Perfil
+mldsa_verify  = "BASE64(ML-DSA-65 clave pública)" # Componente I Verificación de firma
+spider_path   = "/"                     # Usado para RealSite; preferir una ruta distinta por cliente
+socks_listen  = "127.0.0.1:1080"
+mux           = true                    # Componente F：mux por defecto; false=solo/Vision
+padding_scheme= "default"
+tcp_evasion   = "segment"
+```
+
+## 17. Estructura Rust y módulos
+
+El **diseño histórico de un solo crate** propone un binario con `umbra server|client|keygen`. El repositorio actual es un workspace Cargo; consultar arquitectura para su estructura real. El árbol conserva la correspondencia de componentes del diseño.
+
+```
+umbra/
+├── Cargo.toml
+├── DESIGN.md
+├── fingerprints/            # Componente J：Perfiles de huella de Chrome (archivos de datos)
+│   ├── chrome-latest.toml
+│   └── chrome-latest-quic.toml
+├── examples/{server.toml,client.toml}
+└── src/
+    ├── main.rs              # Distribución de subcomandos clap
+    ├── config.rs            # Configuración
+    ├── tls13/               # Componente A：TLS 1.3 propio
+    │   ├── clienthello.rs   #   Construcción de ClientHello byte a byte (GREASE/orden)
+    │   ├── handshake.rs     #   Máquina de estados del cliente + derivación de claves
+    │   ├── server.rs        #   Pila TLS replicada del servidor
+    │   ├── records.rs       #   AEAD de la capa de registros
+    │   ├── keyschedule.rs   #   HKDF-Expand-Label/Derive-Secret
+    │   └── parse.rs         #   Analizador de ClientHello (servidor)
+    ├── fingerprint/         # Componente J：Carga de perfiles + autocomprobación JA3/JA4
+    ├── reality/             # Componente B/E
+    │   ├── auth.rs          #   Carga de autenticación session_id (seal/open) + ReplayCache
+    │   ├── cert.rs          #   Certificado final replicado + cert_mac + extensión ML-DSA
+    │   └── prebuild.rs      #   Componente D：probe_dest / DestProfile
+    ├── dispatch.rs          # Componente C：Distribución + PrefixedStream + reenvío a dest
+    ├── inner/               # Componente F
+    │   ├── mux.rs           #   Multiplexación (por defecto)
+    │   ├── padding.rs       #   Esquema de relleno adaptativo
+    │   ├── vision.rs        #   Empalme Vision (solo)
+    │   ├── address.rs       #   Codificación/decodificación de direcciones de destino
+    │   └── spider.rs        #   Modo de navegación RealSite
+    ├── transport/           # Componente G/H
+    │   ├── tcp.rs           #   Transporte externo TCP
+    │   ├── quic.rs          #   Transporte externo QUIC/HTTP-3
+    │   └── geneva.rs        #   Segmentación TCP contra la inyección de RST
+    ├── pq/                  # Componente I：Interfaces mlkem / mldsa
+    ├── socks.rs             # Entrada SOCKS5
+    ├── relay.rs             # Reenvío / cierre parcial
+    ├── server.rs / client.rs# Orquestación
+    └── replay.rs            # Caché antirrepetición
+```
+
+Firmas esenciales, además de las de cada componente:
+
+```rust
+// reality/auth.rs
+pub fn seal_session_id(shared:&[u8;32], short_id:&[u8], hello0:&[u8], now:u64) -> [u8;32];
+pub fn open_session_id(shared:&[u8;32], session_id:&[u8;32], hello0:&[u8],
+    allowed:&[Vec<u8>], now:u64, max_diff:u64, replay:&ReplayCache) -> anyhow::Result<AuthOk>;
+pub fn cert_mac(shared:&[u8;32], session_id:&[u8;32], spki_der:&[u8]) -> [u8;32];
+
+// Orquestación
+pub async fn run_server(cfg:ServerCfg)->anyhow::Result<()>;
+pub async fn run_client(cfg:ClientCfg)->anyhow::Result<()>;
+pub fn run_keygen();   // Mostrar X25519 priv/pub + ML-DSA-65 seed/pub (base64)
+```
+
+## 18. Dependencias y compilación
+
+Lista ilustrativa del diseño, **no el lockfile actual ni un manifiesto listo para copiar**. Para compilar, usar el catálogo del workspace y Cargo.lock.
+
+```toml
+[dependencies]
+tokio        = { version = "1", features = ["full"] }
+x25519-dalek = "2"                      # Componente B ECDH
+ml-kem       = "0.2"                     # Componente I ML-KEM-768
+ml-dsa       = "0.0"                     # Componente I ML-DSA-65（RustCrypto; comprobar versión/disponibilidad）
+aes-gcm      = "0.10"                     # session_id + Registros TLS
+chacha20poly1305 = "0.10"                 # Registros TLS
+hkdf         = "0.12"
+sha2         = "0.10"
+hmac         = "0.12"
+subtle       = "2"                        # Tiempo constante
+rand         = "0.8"
+tls-parser   = "0.11"                     # Análisis de ClientHello en el servidor (o parse.rs propio)
+rcgen        = "0.13"                     # Componente E Generar certificado final + extensiones personalizadas
+socket2      = "0.5"                      # Componente H Segmentación básica (IP_TTL/NODELAY/división manual)
+# Componente G (elegir uno)：quiche = "..." (basado en BoringSSL, facilita personalizar la huella) o quinn = "..." (requiere sustituir el proveedor criptográfico)
+base64="0.22"
+serde={version="1",features=["derive"]}
+toml="0.8"
+humantime-serde="1"
+clap={version="4",features=["derive"]}
+anyhow="1"
+thiserror="1"
+tracing="0.1"
+tracing-subscriber={version="0.3",features=["env-filter"]}
+lru="0.12"
+```
+
+Notas de implementación:
+
+- BoringSSL/rustls no realiza la negociación principal de este diseño; `rcgen` genera DER del certificado hoja.
+- Verificar A/G con capturas Chrome reales, `tls.peet.ws/api/all` y JA4, actualizando perfiles.
+- Estrategias H avanzadas requerirían `CAP_NET_RAW`/sockets brutos. El alcance actual está en H; fallback solo antes de enviar cualquier byte.
+- Alinear versiones ML-KEM/ML-DSA y codepoints con normas aplicables y navegador objetivo mediante especificaciones y capturas actuales.
+
+## 19. Pruebas y verificación
+
+- Unitarias: seal/open session ID con alteración, expiración, repetición y AAD distinto; MAC/ML-DSA correctos e incorrectos; vectores HKDF/registros RFC 8448.
+- Huellas: JA3/JA4 generado frente al perfil Chrome; QUIC por separado.
+- Interoperabilidad: negociación completa propia y cliente con sitios TLS 1.3 reales por reenvío/spider.
+- Sondas: `openssl s_client` y entradas aleatorias siguen el comportamiento del destino, con su certificado cuando corresponda y sin diferencias de cierre o caudal propias del proxy.
+- Repetición: reenviar ClientHello capturado y confirmar fallback a `dest`.
+- TLS dentro de TLS: longitudes/direcciones de 8–16 registros iniciales por sentido; variación con mux/relleno y coincidencia con TLS interno después de Vision.
+- Tiempos: comparar distribuciones al primer byte de rutas autenticada y reenviada.
+- Interferencia TCP/QUIC: medir conectividad y estabilidad separadamente en redes débiles o interferidas.
+- Entornos reales autorizados: conexiones largas, transferencias grandes, mala red y bloqueo residual.
+
+## 20. Despliegue y selección del destino
+
+**Criterios del sitio de cobertura:**
+
+- Sitio externo accesible con TLS 1.3 y H2/H3, dominio utilizado para el servicio y no solo para redirección.
+- Preferiblemente próximo al servidor en red, negociación adecuada —el origen cita mensajes cifrados tras ServerHello de `dl.google.com`— y OCSP stapling cuando exista.
+- El diseño también considera restringir tráfico de retorno a redes censuradas, reenviar TCP/80 y UDP/443 cuando haga falta y elegir IP menos común o estable. Son decisiones operativas, no valores automáticos.
+- Incluir nombres permitidos en `server_names` y un `server_name` cliente correspondiente.
+
+**Operación:** 443 TCP/UDP es habitual. Evitar rangos inadecuados; proteger `private_key`/`mldsa_seed` y distribuir `public_key`, `mldsa_verify`, `short_id` por canales fiables. Considerar BBR, `ulimit -n`, systemd y journald sin destinos ni tráfico de usuarios por defecto. Preparar puertos/IP alternativos y QUIC validado independientemente según necesidad.
+
+## 21. Seguridad y operación responsable
+
+- Finalidad: privacidad, resistencia a censura y acceso a internet abierto, conforme a la normativa aplicable.
+- Proteger `S_priv`/`mldsa_seed`; distribuir `S_pub`, short ID y clave ML-DSA de verificación de forma fiable.
+- Primitivas maduras y de tiempo constante para MAC/tags y verificación criptográfica.
+- Limitar ReplayCache y limpiar caducados frente a agotamiento de memoria.
+- Fijar `dest` mediante configuración fiable, no entrada del usuario, para evitar SSRF.
+- Bloquear Cargo.lock, auditar dependencias y mantener perfiles y datos poscuánticos con las actualizaciones de origen.
+
+## Apéndice A: formatos binarios
+
+**Token TCP estilo REALITY en legacy_session_id, 32 bytes**
+
+| Paso | Cálculo |
+| --- | --- |
+| shared | `X25519(C_priv,S_pub)`; servidor: `X25519(S_priv,C_pub)` |
+| auth_key | `HKDF-SHA256(shared,"umbra-reality-v1","key")[..16]` (AES-128) |
+| nonce | `HKDF-SHA256(shared,"umbra-reality-v1","nonce")[..12]` |
+| P (16B) | `ver(1) \|\| flags(1) \|\| ts(u32 BE,4) \|\| short_id(8) \|\| reserved(2)=0` |
+| AAD | ClientHello completo con 32 bytes de session ID a cero: HELLO0 |
+| session_id (32B) | `ct(16) \|\| tag(16) = AES-128-GCM-Seal(auth_key,nonce,P,HELLO0)` |
+
+**Vinculación del certificado temporal**
+
+| Elemento | Cálculo |
+| --- | --- |
+| cert_key | `HKDF-SHA256(shared,"umbra-cert-v1", session_id)` (32B) |
+| cert_mac | `HMAC-SHA256(cert_key, leaf_SPKI_DER)` (32B), OID `…62397.1` |
+| pq_sig | `ML-DSA-65_Sign(mldsa_sk, leaf_SPKI_DER)`, OID `…62397.2` |
+
+**MuxFrame**
+
+| Desplazamiento | Campo | Longitud | Significado |
+| --- | --- | --- | --- |
+| 0 | ver | 1 | 0x01 |
+| 1 | cmd | 1 | SYN/SYN_ACK/DATA/WINDOW_UPDATE/FIN/RST/PADDING/PING |
+| 2 | stream_id | 4 | Big-endian |
+| 6 | len | 2 | Big-endian |
+| 8 | payload | len | SYN=destino; DATA=datos; PADDING=bytes aleatorios |
+
+**Dirección:** `atyp(1) \|\| addr(4 / 1+n / 16) \|\| port(2, BE)`.
+
+## Apéndice B: estados y flujos de datos
+
+**Distribución y negociación del servidor**
+
+<ProtocolDiagram locale="es" name="server" />
+
+**Cliente**
+
+<ProtocolDiagram locale="es" name="client" />
+
+## Apéndice C: referencias
+
+1. Wu et al. *How the Great Firewall of China Detects and Blocks Fully Encrypted Traffic.* USENIX Security 2023.
+2. Frolov, Wustrow. *The use of TLS in Censorship Circumvention.* NDSS 2019.
+3. Frolov et al. [*Detecting Probe-Resistant Proxies.*](https://www.ndss-symposium.org/ndss-paper/detecting-probe-resistant-proxies/) NDSS 2020.
+4. [*Fingerprinting Obfuscated Proxy Traffic with Encapsulated TLS Handshakes.*](https://www.usenix.org/conference/usenixsecurity24/presentation/xue-fingerprinting) USENIX Security 2024.
+5. Bock et al. *Geneva: Evolving Censorship Evasion Strategies.* ACM CCS 2019.
+6. GFW Report / net4people. *How China Detects and Blocks Shadowsocks.* 2020.
+7. XTLS/REALITY y Xray-core `transport/internet/reality`; XTLS-Vision (`xtls-rprx-vision`); VLESS.
+8. anytls / anytls-go: relleno y multiplexación.
+9. uTLS (`refraction-networking/utls`); huellas QUIC y comportamiento Chrome.
+10. RFC 8446 (TLS 1.3), RFC 8448 (vectores), RFC 8701 (GREASE), RFC 9000/9001 (QUIC/QUIC-TLS).
+11. RFC 10024 (X25519MLKEM768); FIPS 203 (ML-KEM), FIPS 204 (ML-DSA).
+12. Bibliotecas Rust: `x25519-dalek`, `ml-kem`, `ml-dsa`, `aes-gcm`, `chacha20poly1305`, `hkdf`, `rcgen`, `quiche`/`quinn`, `socket2`, `tls-parser`.
+
+> Valores, umbrales, orden de extensiones y codepoints dependen de revisión y perfil. Censura, Chrome y normas poscuánticas cambian. Verificar especificaciones y capturas actuales antes de implementar y mantener actualizados los perfiles de J.

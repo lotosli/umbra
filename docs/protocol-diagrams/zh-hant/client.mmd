@@ -1,0 +1,22 @@
+stateDiagram-v2
+    state "選擇 TCP / QUIC" as Transport
+    state "構造 ClientHello" as Hello
+    state "驅動握手" as Handshake
+    state "驗證並分類證書" as Certificate
+    state "內層代理" as Inner
+    state "RealSite：檢查傳輸方式" as RealSite
+    state "TCP：按協商協議訪問網站" as Spider
+    state "QUIC：拒絕建立代理" as Reject
+    [*] --> SOCKS5
+    SOCKS5 --> Transport
+    Transport --> Hello: 元件 A 指紋與 B/G 認證載體
+    Hello --> Handshake
+    Handshake --> Certificate
+    Certificate --> Inner: UmbraTrusted，繫結與 ML-DSA 校驗透過
+    Certificate --> RealSite: RealSite，常規證書驗證透過
+    Certificate --> [*]: Invalid，TLS 錯誤
+    RealSite --> Spider: TCP 與受支援的 ALPN
+    RealSite --> Reject: QUIC
+    Inner --> [*]: 流結束
+    Spider --> [*]: 訪問後關閉
+    Reject --> [*]: 不傳送代理資料

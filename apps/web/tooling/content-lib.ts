@@ -19,7 +19,7 @@ export const requiredDocumentIds = [
   'guides/server', 'guides/client', 'guides/deployment', 'guides/upgrade',
   'configuration/server', 'configuration/client', 'configuration/examples',
   'concepts/architecture', 'concepts/transports', 'concepts/security-model',
-  'reference/cli', 'reference/configuration', 'reference/protocol',
+  'reference/cli', 'reference/configuration', 'reference/protocol', 'reference/protocol-design',
   'troubleshooting', 'contributing',
 ] as const;
 

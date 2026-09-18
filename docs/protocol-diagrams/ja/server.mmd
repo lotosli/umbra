@@ -1,0 +1,20 @@
+stateDiagram-v2
+    state "ClientHello を読み取る" as Read
+    state "SNI、keyshare、認証格納先を解析" as Parse
+    state "認証トークンを検証" as Verify
+    state "dest に転送" as Forward
+    state "ローカルでハンドシェイクを完了" as Handshake
+    state "応答時間を調整" as Timing
+    state "一時的な信頼済み証明書を送信" as Certificate
+    state "内側 mux / Vision" as Inner
+    [*] --> Read
+    Read --> Parse
+    Parse --> Forward: SNI 不一致 / keyshare なし
+    Parse --> Verify: 有効なパラメーター
+    Verify --> Forward: GCM / 時刻 / short_id / リプレイ検証に失敗
+    Verify --> Handshake: 検証成功、shared を取得
+    Handshake --> Timing: ローカル処理時間を差し引いた dest.rtt
+    Timing --> Certificate: cert_mac + ML-DSA-65
+    Certificate --> Inner
+    Inner --> [*]: ストリーム終了
+    Forward --> [*]: 実サイトと双方向転送

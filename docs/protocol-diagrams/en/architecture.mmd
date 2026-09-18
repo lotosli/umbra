@@ -1,0 +1,15 @@
+flowchart TB
+  APP["Browser / application"] -->|SOCKS5| Cs
+  subgraph Client["umbra client"]
+    Cs["SOCKS5 inbound"] --> Cmux["Inner: mux + padding / Vision solo"]
+    Cmux --> Ctls["A: custom TLS 1.3 client<br/>B: REALITY authentication<br/>J: Chrome fingerprint"]
+    Ctls --> Cout{"G/H: outer transport<br/>TCP segmentation or QUIC"}
+  end
+  Cout ==>|"TLS 1.3 / QUIC, SNI = dest"| Sdisp
+  subgraph Server["umbra server"]
+    Sdisp["C: dispatch<br/>Read ClientHello and authenticate"] -->|"Authentication failure / probe"| FWD["TCP / UDP forwarding"]
+    Sdisp -->|Authenticated| Sh["E: handshake and temporary trusted certificate<br/>D: prebuilt dest profile"]
+    Sh --> Smux["Inner: mux + padding / Vision"]
+    Smux --> TGT["Target site"]
+  end
+  FWD ==> DEST["Real cover site: dest<br/>Real CA certificate"]

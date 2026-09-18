@@ -48,3 +48,4 @@ catalog:
   jsdom: 30.0.1
   '@types/jsdom': 30.0.0
   '@playwright/test': 1.63.0
+  '@mermaid-js/mermaid-cli': 11.17.0

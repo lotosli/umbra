@@ -1,0 +1,98 @@
+{
+  "sourceRevision": "ea5cdb0ec4b6db5bee4ce2954aeee81844541d907cb5c7ffd1a95713cd65438d",
+  "editions": {
+    "zh-hans": "d459786eb3e66f8f908962c511e7b29ab342dbc4975fff0b14dad7044cf6ebd4",
+    "zh-hant": "0b44726d420bff92d3b3e337578f5ecdb6a8c3f925edb084070e43ec4569047b",
+    "en": "74112de85d8fa84d58630aeff76bc0fb1d77fd1f75a682356b9bd03dace06d02",
+    "fr": "d01f50363b7e9a990a3052d7fe44e02b08abf3669d7b82a3c322e60a6500d713",
+    "es": "c47fc24533d28505fb2a957a2053821338e62e29ca85a98402b280f21a839867",
+    "ja": "9cad6b33886f9f3e2fa01260ad557e9911f8907b2c5a4f33814a8a38492da648",
+    "ca": "b8d9d18e2b08254ed8edc138c580fed1e0fea9eafb0cfbe18bfbb57047df8866"
+  },
+  "assets": {
+    "zh-hans/architecture": {
+      "source": "b508f32542aeee90835b1dc180eeaa4dd424c6d1c96bada7b42c8370e94c78af",
+      "svg": "e5be9ffb438ea6ddc70ea2ba88408dc0d9fbb260a0542b0e90c059684e2be103"
+    },
+    "zh-hans/server": {
+      "source": "3aff4ec6fd1a26e37da8120bc3065927c8dd9ba11e0595b2305ebe05f7b445a5",
+      "svg": "238ec2634dc7886c9b7d2d63671ed08888d67a53747a716684c7d5789ce2f527"
+    },
+    "zh-hans/client": {
+      "source": "1da8fbbf00289127bec8c8ef4f18b69144cac20871fe52ee18df476fd93dd899",
+      "svg": "a02f69eb7403861112b2e3659c13fa11ad0540293970aaa2c5b64db4d5295a46"
+    },
+    "zh-hant/architecture": {
+      "source": "5a5b5b629cfd399b99da6334af151212810cf6a4a0848342a3d49b99432479e1",
+      "svg": "035b82bc79f1f0b0e0194d94542dcf8f09e59f42e59cf4d21dd7a3ea6920db60"
+    },
+    "zh-hant/server": {
+      "source": "f18bdb8f36c9fe926abd05c94ff8091ff07045cc6eb9e37427d5aec05281ffaa",
+      "svg": "dde786dfd760e0e674f7e5bfed764877ea1e1e8f5eac1379d1dfb7a54cd46fd4"
+    },
+    "zh-hant/client": {
+      "source": "518beb367578376cae3383addbe2052fff5c15fe524197a6ebcf4509eb132361",
+      "svg": "22e9e0d90d20599855af3ea035798d23f663d48d6f650fab490debe491f1eab7"
+    },
+    "en/architecture": {
+      "source": "c1bc8898a0a3273eb9784d6f3fff9cf057662106b652bc83c65edd08387a3ea8",
+      "svg": "be7c384eae95650f0c62b19d6c66ee6adc28fe24c20023a5dc9454588e0b0fa9"
+    },
+    "en/server": {
+      "source": "b9b204d676c79622ff72ac967aecdd8ebe9f4bc3b70218435e9553b847ae62e9",
+      "svg": "55a6d1e747ad39f783ff6e9e9e7081c8543cad6bd0dafee0e2f8d9813c2f00d3"
+    },
+    "en/client": {
+      "source": "b3b85b5e2fb489695faf1424eadbea7769360e9dbe7f97f9b70b70e599e02692",
+      "svg": "111b3a99709ddbf0367f22e6d0076491f8a2690774c742109939d52ec93bba1f"
+    },
+    "fr/architecture": {
+      "source": "edde4d32a1a7f700542235aa5999017cb6a2e3fc8b0bd8174054ff608b1356f4",
+      "svg": "6183a693082aed398a8b847f47c55a7fedd7d36d788e480f91fd0237ab4e8696"
+    },
+    "fr/server": {
+      "source": "bed4052fb8bd55df0c71aaa5c9fb421765e8a2f047bcbbc188b261c1df2ade30",
+      "svg": "0eaf15afe34117ce4d9e6d4cffabccb1b22cbb12103b6ee4db5711086e2eeb20"
+    },
+    "fr/client": {
+      "source": "193ec32dfe9178c35779375e44aa84433f35d7a67088a1e8162c69a2ab8da2b7",
+      "svg": "721284238af280522c3efb1734b110dde3d34a63227520a511fc42a94d99972f"
+    },
+    "es/architecture": {
+      "source": "2ed45390fd11c31bc26986b236255835597920d0b0b2210008cb5a4e08a21721",
+      "svg": "80c2a759ef6b0bb70a0174b7ee7b43e2a57e456d6cf52050c7df84e3ec105aee"
+    },
+    "es/server": {
+      "source": "fa17bba2a1f4342ea259e46c533962fc75485f1027d334438ff49c720c7ab973",
+      "svg": "6f392e183331ffd35d307c3a196a8c831f531f300cf880aafaccde6d925e25e1"
+    },
+    "es/client": {
+      "source": "38dc75a60ead5196e9f121834e5de6ce1c9ff59ce1638b51e566f7d5aad7e86e",
+      "svg": "c4b4eede8e0a7109d4927544abe1463ab5ec1f57cc53e2752c35817b787af379"
+    },
+    "ja/architecture": {
+      "source": "cbd92a701e8fdbc6d815e1c31af17326168791ff7a7fd8028d7e5a6d051105aa",
+      "svg": "c49140daa2a476dfae6e938e93067cea3d3c82bdeeb6c7c08be0cd00d8c12493"
+    },
+    "ja/server": {
+      "source": "45ab25da955d603ccc53aecc93d30e1277e366e67d48541af4aafcad9b3a54cb",
+      "svg": "d510a77fa76675210fec39ac61e1ac856ba7373fdf0d99e71fb808533e84db07"
+    },
+    "ja/client": {
+      "source": "f1be4623e5828813f191c695f8a917b11f5b73fb001542d3620b54a5891ead9f",
+      "svg": "96d538319a92e0321b6d5407e3099cb84d50e2024d92225938f585660fa791b7"
+    },
+    "ca/architecture": {
+      "source": "d7bdf25f75a7620d2fd42ba5186c6e310a6d518b3d8c9e6e1d1085b32959fa3b",
+      "svg": "6bbf4c89904f6b118bc1e258f3a6e97b41082fa226522c6b6afbb9a5e3c1f289"
+    },
+    "ca/server": {
+      "source": "9ee78f95fa2a54ca42b1e748954bc9b13dddd158a36c3cb4169a223c57ba9d22",
+      "svg": "740ce13b756a65f7b39c08f23775d4d343c94f985cf62eaaf0af461dc8a7992b"
+    },
+    "ca/client": {
+      "source": "8ea665db706386db5a7182a0e762856cb32dc53d9e5b3f704b74fe0231ae6eb9",
+      "svg": "a78795a4f827fe137173859460e4d859951d8b7e60c86ee07cd4e3054a406049"
+    }
+  }
+}

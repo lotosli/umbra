@@ -1,0 +1,22 @@
+stateDiagram-v2
+    state "Choose TCP / QUIC" as Transport
+    state "Build ClientHello" as Hello
+    state "Drive handshake" as Handshake
+    state "Verify and classify certificate" as Certificate
+    state "Inner proxy" as Inner
+    state "RealSite: check transport" as RealSite
+    state "TCP: visit site using negotiated protocol" as Spider
+    state "QUIC: reject proxy establishment" as Reject
+    [*] --> SOCKS5
+    SOCKS5 --> Transport
+    Transport --> Hello: A fingerprint and B/G authentication carrier
+    Hello --> Handshake
+    Handshake --> Certificate
+    Certificate --> Inner: UmbraTrusted: binding and ML-DSA verified
+    Certificate --> RealSite: RealSite: ordinary certificate validation passed
+    Certificate --> [*]: Invalid: TLS error
+    RealSite --> Spider: TCP and supported ALPN
+    RealSite --> Reject: QUIC
+    Inner --> [*]: Stream finished
+    Spider --> [*]: Close after visit
+    Reject --> [*]: Send no proxy data

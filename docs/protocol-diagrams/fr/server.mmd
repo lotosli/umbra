@@ -1,0 +1,20 @@
+stateDiagram-v2
+    state "Lire ClientHello" as Read
+    state "Analyser SNI, keyshare et le support d’authentification" as Parse
+    state "Vérifier le jeton d’authentification" as Verify
+    state "Relayer vers dest" as Forward
+    state "Terminer la négociation localement" as Handshake
+    state "Aligner les délais" as Timing
+    state "Envoyer le certificat temporaire approuvé" as Certificate
+    state "Couche interne mux / Vision" as Inner
+    [*] --> Read
+    Read --> Parse
+    Parse --> Forward: SNI incorrect / keyshare absent
+    Parse --> Verify: Paramètres valides
+    Verify --> Forward: Échec GCM / délai / short_id / anti-rejeu
+    Verify --> Handshake: Accepté ; shared disponible
+    Handshake --> Timing: dest.rtt moins le traitement local
+    Timing --> Certificate: cert_mac + ML-DSA-65
+    Certificate --> Inner
+    Inner --> [*]: Flux terminé
+    Forward --> [*]: Relais bidirectionnel avec le site réel

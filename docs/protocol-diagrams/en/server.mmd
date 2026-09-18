@@ -1,0 +1,20 @@
+stateDiagram-v2
+    state "Read ClientHello" as Read
+    state "Parse SNI, keyshare and authentication carrier" as Parse
+    state "Verify authentication token" as Verify
+    state "Forward to dest" as Forward
+    state "Complete handshake locally" as Handshake
+    state "Align timing" as Timing
+    state "Send temporary trusted certificate" as Certificate
+    state "Inner mux / Vision" as Inner
+    [*] --> Read
+    Read --> Parse
+    Parse --> Forward: SNI mismatch / missing keyshare
+    Parse --> Verify: Valid parameters
+    Verify --> Forward: GCM / time / short_id / replay check failed
+    Verify --> Handshake: Accepted; shared available
+    Handshake --> Timing: dest.rtt minus local processing time
+    Timing --> Certificate: cert_mac + ML-DSA-65
+    Certificate --> Inner
+    Inner --> [*]: Stream finished
+    Forward --> [*]: Bidirectional relay to the real site

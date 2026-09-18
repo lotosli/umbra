@@ -1,0 +1,681 @@
+---
+id: "reference/protocol-design"
+title: "協定設計"
+description: "完整協定設計：TLS 1.3、REALITY 認證、Vision、QUIC、密碼學與連線狀態機。"
+section: "reference"
+order: 17
+version: "1.0.0-alpha"
+source: ["docs/protocol-design.md", "docs/architecture.md"]
+translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
+sourceRevision: "ea5cdb0ec4b6db5bee4ce2954aeee81844541d907cb5c7ffd1a95713cd65438d"
+---
+
+這份技術參考完整保留 Umbra 的協定設計：一套 Rust 用戶端與伺服器，以及元件、介面、線路格式和設計取捨。內容涵蓋目標設計與歷次修訂；部署方式以使用文件為準，§17 的單 crate 結構與 §18 的相依套件清單屬於早期草案。
+
+[使用指南](/zh-hant/docs/getting-started/quick-start/) · [目前架構](/zh-hant/docs/concepts/architecture/)
+
+## 0. 總體目標與架構決策
+
+全篇圍繞三項架構決策展開：
+
+1. **傳輸 = REALITY 式“借用真實身份”**：認證藏在握手（ClientHello）裡，伺服器在**響應前**判定；未認證/被探測
+   的連線在 TCP/UDP 層**原樣轉發到真實借用站點 dest**，探測者只看到真站真憑證。無需自有域名/憑證。
+2. **用戶端 TLS 棧 = 自研極簡 TLS 1.3（Rust 版 uTLS）**：**不依賴 BoringSSL/rustls**，完全手工構造
+   ClientHello（指紋 / `legacy_session_id` / X25519 keyshare 私鑰全可控），自實現 TLS 1.3 金鑰排程。
+   這既給出**逐位元組的 Chrome 指紋**，又天然解決了“把認證寫進 ClientHello 且能複用 keyshare 私鑰”的最高風險點。
+   伺服器端亦為自研極簡 TLS 1.3 服務棧（用於冒充握手、偽造/映象憑證）。
+3. **認證 = canonical REALITY（複用 keyshare 的 ECDH）**：`shared=X25519(C_priv,S_pub)`，認證令牌以
+   AES-GCM 加密進 `session_id`，並以整條 ClientHello 為 AAD。逐連線使用新鮮金鑰、繫結全握手、認證載荷外觀隨機。
+
+內層與外層的所有增強（Vision 真拼接、預構建、mux、QUIC、Geneva、抗量子、指紋跟隨）都是最終形態的組成部分，
+見元件 F–K。
+
+---
+
+## 1. 威脅模型（GFW 檢測手段）
+
+由實測行為驅動（論文見附錄 C）：
+
+- **全加密流量熵檢測（USENIX Sec 2023）**：對每條流首個資料包做實時分類，命中任一“可列印/低熵”豁免則放行。
+  裸 SS/obfs4 首包高熵 → 被封。**使用 TLS/QUIC 協議封裝，目標是避免該分類器針對的裸密文首包模式。**
+- **主動探測（NDSS 2019/2020；GFW Report）**：主動連線可疑 IP:埠並重放/變異，看是否“像代理”。
+  → **未認證連線必須表現為真網站（轉發 dest）。**
+- **TLS-in-TLS 指紋（USENIX Sec 2024）**：代理隧道內層 TLS 握手的記錄長度/方向序列可被識別。
+  → **Vision 真拼接 + 自適應填充**（元件 F）。
+- **ClientHello(JA3/JA4) 指紋**：與瀏覽器不符即異常。→ **自研 uTLS 逐位元組復刻 Chrome**（元件 A/J）。
+- **SNI 檢查 / ESNI-ECH 封鎖**：SNI 明文可見。→ SNI=未被封的真實大站（借用 dest）。
+- **有狀態 TCP RST 注入（Geneva，CCS 2019）**：→ **TCP 分段/TCB 去同步**（元件 H）；或改走 **QUIC/UDP**（元件 G）。
+- **重放**：→ ECDH 新鮮 keyshare + 時間戳視窗 + nonce 快取（元件 B）。
+- **殘餘審查**：被判定後 IP:埠臨時封禁。→ 多埠/可輪換、dest 冷門 IP、QUIC 備路。
+- **時序側通道**：探測者測“到首位元組 RTT”。→ 認證路徑與轉發路徑**時序對齊**（元件 K）。
+
+假定 GFW **不做大規模 TLS MITM 終止**（會破網且可被檢測）；元件 E 透過憑證繫結處理逐連線 MITM。這裡說明威脅模型與驗證目標，不代表所有網路環境下的安全保證。
+
+---
+
+## 2. 設計原則與參考
+
+| 原則 | 借鑑 | 摒棄的失敗模式 |
+|---|---|---|
+| 通往真實大站的真 TLS/QUIC；未認證轉發真站 | REALITY | Trojan 需自有域名+CA 憑證；自簽憑證會被探測識破 |
+| 認證藏於 ClientHello，響應前判定 | REALITY | Trojan/VMess 認證在握手後，憑證已暴露 |
+| 逐位元組 Chrome 指紋（自研 uTLS 全控） | uTLS | rustls/通用棧指紋與瀏覽器不符 |
+| 複用 keyshare 的 ECDH 認證，逐連線派生認證金鑰 | REALITY | 直接重複使用靜態口令作為連線金鑰 |
+| Vision 在符合條件時移除外層 TLS 記錄封裝 | XTLS-Vision | 裸 Trojan/VLESS 的 TLS-in-TLS 特徵 |
+| 自適應填充 + 多路複用降連線數關聯 | anytls | 每目標一條連線的連線數特徵 |
+| 反重放 = 新鮮 keyshare + 時間戳 + nonce 快取 | SS-2022 / VMess | SS(pre-2022) 可重放 |
+| 抗量子（KEM + 簽名） | Chrome PQC / REALITY mldsa | 純經典密碼的長期風險 |
+| 單一強 AEAD、無套件協商 | SS-2022 | 降級/協商指紋 |
+
+---
+
+## 3. 總體架構（元件全景）
+
+<ProtocolDiagram locale="zh-hant" name="architecture" />
+
+四層職責：
+1. **外層**（元件 G/H）：真 TLS 1.3 over TCP（可配置 TCP 傳送策略）或 QUIC/HTTP-3；SNI=借用站點 dest。
+2. **握手認證層**（元件 A/B）：自研 uTLS 逐位元組 Chrome 指紋，認證藏於 ClientHello 的 `session_id`+keyshare。
+3. **冒充/分派層**（元件 C/D/E）：伺服器端響應前判定；成功則冒充 dest 完成握手並給臨時可信憑證，失敗則轉發真 dest。
+4. **內層傳輸層**（元件 F）：mux+自適應填充（預設）或 Vision 真拼接 solo 模式；承載目標地址與資料。
+
+---
+
+## 元件 A：自研極簡 TLS 1.3 棧（Rust 版 uTLS）
+
+**目的**：完全掌控 ClientHello 位元組與 X25519 keyshare 私鑰，得到逐位元組 Chrome 指紋，並支撐元件 B/E。
+**範圍**：僅 TLS 1.3（RFC 8446）；僅實現 Chrome 會用到的套件與擴充套件；用戶端棧 + 伺服器端棧各一。不做 TLS 1.2。
+
+### A.1 ClientHello 逐位元組構造（Chrome 模板）
+- 記錄層：`legacy_version=0x0303`；`random`(32B, CSPRNG)；`legacy_session_id`(32B，由元件 B 填入認證令牌，
+  Chrome 相容模式本就發 32B 隨機值 → **不進 JA3/JA4**)；`cipher_suites`、`compression=null`、`extensions`。
+- **套件順序**（Chrome）：`GREASE, TLS_AES_128_GCM_SHA256(0x1301), TLS_AES_256_GCM_SHA384(0x1302),
+  TLS_CHACHA20_POLY1305_SHA256(0x1303)`。
+- **擴充套件集合與順序**（Chrome 近版，**以抓包為準、隨版本更新，見元件 J**）：
+  `GREASE → server_name → extended_master_secret → renegotiation_info → supported_groups
+  (X25519MLKEM768,X25519,secp256r1,secp384r1) → ec_point_formats → session_ticket → ALPN(h2,http/1.1)
+  → status_request → signature_algorithms → signed_certificate_timestamp → key_share(GREASE,
+  X25519MLKEM768,X25519) → psk_key_exchange_modes → supported_versions(GREASE,0x0304) →
+  compress_certificate(brotli) → application_settings(ALPS) → GREASE → padding`。
+- **GREASE**：在套件、擴充套件、supported_groups、key_share、supported_versions、sig_algs 等位置按 RFC 8701
+  隨機注入 GREASE 值；位置/數量須與目標 Chrome 一致。
+- **key_share**：包含 `X25519MLKEM768`（混合，元件 I）與經典 `X25519`。**經典 X25519 的私鑰 `C_priv` 由我方
+  生成並保留**（元件 B 認證複用）。
+  `0x11ec` 的用戶端內容嚴格為 `ML-KEM-768 公鑰(1184) || X25519 公鑰(32)`；伺服器端內容嚴格為
+  `ML-KEM-768 密文(1088) || X25519 公鑰(32)`，見 RFC 10024 §4。0.0.8 修正早期的相反順序；不相容舊錯序格式。
+- **padding**：把 ClientHello 補到 Chrome 習慣的長度分佈（通常 512 的整數附近）。
+
+### A.2 TLS 1.3 金鑰排程與狀態機（用戶端）
+按 RFC 8446 實現：
+- 傳輸雜湊 `Transcript-Hash`；`HKDF-Expand-Label` / `Derive-Secret`。
+- `Early=HKDF-Extract(0,PSK|0)` → `Handshake=HKDF-Extract(Derive-Secret(Early,"derived",""),ECDHE)` →
+  `c/s hs traffic`、`Master`、`c/s ap traffic`、`exporter`、`resumption`。
+- TCP 與 QUIC 的 `c/s ap traffic`、`exp master` 使用截止 **Server Finished** 的 transcript；
+  `res master` 使用截止 **Client Finished** 的 transcript，API 必須區分這兩個邊界。
+- ClientHello 的 `compress_certificate` 使用 RFC 8879 的 uint8 演算法列表長度；Brotli 演算法 2 編碼為
+  `02 00 02`。解壓須同時限制壓縮和解壓長度，transcript 保留原始 CompressedCertificate 訊息。
+- 握手訊息須有界跨記錄重組，並接受合法相容 CCS；不能假定伺服器端固定傳送兩條記錄。
+  驗證 ServerHello 版本、零壓縮、session-id 回顯、擴充套件唯一性及引數確實被 offer；不支援的 HRR 明確拒絕。
+  所有廣告的 TLS 1.3 可用簽名演算法須由成熟實現驗證，TLS 1.2 專用演算法不能用於 TLS 1.3 CertificateVerify。
+- ECDHE：X25519（認證複用此份）+ 可選 X25519MLKEM768（元件 I 混合共享秘密）。
+- 記錄保護：`TLS_AES_128_GCM_SHA256` / `TLS_AES_256_GCM_SHA384` / `TLS_CHACHA20_POLY1305_SHA256`
+  （RustCrypto `aes-gcm`/`chacha20poly1305`）；每方向 `key/iv` + 序號 nonce。
+- 訊息：ClientHello→(ServerHello, EncryptedExtensions, Certificate, CertificateVerify, Finished)→
+  (Client Finished)。**相容模式**傳送一次 dummy `ChangeCipherSpec`（與 Chrome 一致）。
+- 憑證校驗交給元件 E 的回撥（區分臨時可信/真/無效）。
+
+### A.3 TLS 1.3 伺服器端棧（用於元件 E 冒充握手）
+- 接受 PrefixedStream（元件 C 已讀的 ClientHello 回放）繼續握手；產出 ServerHello（映象 dest 引數，元件 D）、
+  EncryptedExtensions、Certificate（元件 E 偽造/映象）、CertificateVerify（用偽造葉子私鑰）、Finished。
+- **ServerHello 的 `legacy_session_id_echo` 在 TCP 相容模式下必須回顯用戶端 32B**（TLS 1.3 相容模式要求）；密碼套件、
+  key_share group、ALPN 均取自元件 D 的 `DestProfile`。
+
+### A.4 模組與簽名
+```rust
+// tls13/clienthello.rs
+pub struct ClientHelloParams { pub sni:String, pub session_id:[u8;32], pub x25519_priv:[u8;32],
+    pub x25519_pub:[u8;32], pub mlkem: MlkemShare, pub profile: FingerprintProfile }
+pub fn build_client_hello(p:&ClientHelloParams) -> Vec<u8>;         // 逐位元組序列化（GREASE/順序按 profile）
+
+// tls13/handshake.rs（用戶端）
+pub struct Tls13Client { /* transcript, secrets, aead ... */ }
+impl Tls13Client {
+    pub fn start(params:ClientHelloParams) -> (Self, Vec<u8> /*ClientHello 記錄*/);
+    pub fn drive(&mut self, inbound:&[u8], verify:&dyn CertVerify) -> DriveOut; // 推進握手/產出待發位元組/完成
+    pub fn app_seal(&mut self,pt:&[u8])->Vec<u8>; pub fn app_open(&mut self,ct:&[u8])->io::Result<Vec<u8>>;
+}
+pub trait CertVerify { fn verify(&self, leaf_der:&[u8], chain:&[Vec<u8>]) -> PeerKind; }
+pub enum PeerKind { UmbraTrusted, RealSite, Invalid }
+
+// tls13/server.rs（伺服器端冒充）
+pub struct Tls13Server { /* ... */ }
+impl Tls13Server {
+    pub fn accept(chello_raw:&[u8], leaf:ForgedCert, profile:&DestProfile) -> (Self, Vec<u8>);
+    pub fn drive(&mut self, inbound:&[u8]) -> DriveOut;
+    pub fn app_seal(&mut self,pt:&[u8])->Vec<u8>; pub fn app_open(&mut self,ct:&[u8])->io::Result<Vec<u8>>;
+}
+```
+
+> 實現要點：優先把“ClientHello 構造 + 金鑰排程 + 記錄層”做紮實並用 `tls.peet.ws` / JA4 工具核對；
+> 複雜的憑證壓縮（brotli，`compress_certificate`）在用戶端只需**能解壓對端**即可（Chrome 會 offer）。
+
+---
+
+## 元件 B：REALITY 認證（複用 keyshare 的 ECDH，藏於 session_id）
+
+### B.1 金鑰與引數
+- 伺服器靜態 X25519 `(S_priv,S_pub)`；`S_pub` 作為用戶端“公鑰/口令”，**對 GFW 保密**（安全根基）。
+- `short_id`：0–8 位元組集合（伺服器端配置，用戶端選其一），區分用戶端。
+- `max_time_diff`：預設 120s。`server_names`：允許 SNI 集；`dest`：借用站點 `host:443`。
+
+### B.2 用戶端認證載荷（逐位元組，藏於 `legacy_session_id`）
+複用元件 A 的經典 X25519 keyshare `(C_priv,C_pub)`：
+1. `shared = X25519(C_priv, S_pub)`（32B）。
+2. `auth_key = HKDF-SHA256(shared, salt="umbra-reality-v1", info="key")[..16]`（AES-128 金鑰）；
+   `nonce = HKDF-SHA256(shared, salt="umbra-reality-v1", info="nonce")[..12]`。
+3. 明文 `P`（16B）= `ver(1)=0x01 || flags(1) || ts(u32 BE,4) || short_id(8) || reserved(2)=0`。
+4. `ct||tag = AES-128-GCM-Seal(auth_key, nonce, P, aad = HELLO0)`，其中 **`HELLO0` = 整條 ClientHello
+   握手訊息、但把 `legacy_session_id` 的 32B 全部置零**，不含任何 TLS record header。
+   同一握手訊息改變 TLS 記錄分片方式不得改變 AAD（繫結全握手，防跨 hello 挪用）。
+5. `session_id (32B) = ct(16) || tag(16)`；寫回 ClientHello 的 `legacy_session_id`（在序列化+算 transcript 前）。
+
+### B.3 伺服器端校驗（響應前，任一失敗 → 元件 C 轉發 dest）
+1. 從原始 ClientHello 解析 `SNI`、經典 X25519 `C_pub`、`session_id(32B)`；構造 `HELLO0`（把 session_id 置零）。
+2. `SNI ∈ server_names` 否則轉發。
+3. `shared = X25519(S_priv, C_pub)`；派生 `auth_key,nonce`。
+4. `P = AES-128-GCM-Open(auth_key, nonce, ct=session_id[..16], tag=session_id[16..], aad=HELLO0)`；
+   GCM 校驗失敗 → 轉發。
+5. 校驗 `ver`、`reserved==0`、`|now-ts|≤max_time_diff`、`short_id∈` 集合和重放快取；檢查與插入必須原子完成。
+   快取保留至 `ts+max_time_diff`（含邊界），不能從首次接收時只計一個時間窗；到期運算須檢查溢位。
+   容量滿時拒絕新本地認證並轉發 dest，不得驅逐仍有效的條目；清理快取後仍須驗證令牌時間戳。
+6. 透過 → 認證成功，`shared` 傳給元件 E。
+
+修正 HELLO0 與 TLS 應用金鑰邊界後，兩端須同步升級；認證失敗不得重試舊的非標準 AAD 或金鑰派生。
+
+### B.4 安全性
+- 只有知道 `S_pub` 者能算 `shared` → 未授權者無法偽造；`C_pub` 逐連線新鮮 → 逐連線派生新的認證金鑰；
+  AAD=整條 hello → 令牌不能挪到別的 hello；時間窗+nonce 快取 → 抗重放。
+- 這裡的靜態伺服器端 X25519 認證構造，不提供伺服器端私鑰日後洩露時的一般前向保密保證；須與 TLS 會話的臨時金鑰交換區分。
+- `S_pub`/`short_id` 洩露即失守（與 REALITY 同）→ 帶外安全分發、勿洩露。
+
+---
+
+## 元件 C：伺服器端分派與探測轉發
+
+**響應前**決定：冒充握手 or 原樣轉發。是探測抵抗的核心。
+
+1. `read_client_hello_raw(conn)`：有界讀取完整 ClientHello 的原始位元組 `chello_raw`，處理跨多 TLS 記錄的分片。
+   分類有總期限和位元組/記錄上限；半個 header/body、到期、超限或 EOF 必須保留已讀字首並交給 dest 轉發，不能本地早斷。
+   只禁止分類前的本地 TLS 響應，不禁止轉發後的真實 dest 響應；QUIC 路徑見元件 G。
+2. 解析 `SNI, C_pub, session_id`（自研 parser 或 `tls-parser`）。
+3. 元件 B 校驗：
+   - **成功** → `leaf = forge_cert(shared, SNI, dest_profile)`（元件 E）；`Tls13Server::accept(chello_raw, leaf, profile)`
+     經 `PrefixedStream(chello_raw, conn)` 續握手 → 進入元件 F 內層。
+   - **失敗/SNI 不符/重放** → **轉發 dest**：`d=connect(dest)`；`d.write_all(chello_raw)`；
+     `copy_bidirectional(conn, d)`。探測者與真 dest 完成真握手、見真憑證。
+4. **不得**對轉發連線限速或早斷（元件 K）。可選加固：`maxUselessRecords`（超過分類限額後轉發 dest，不在本地提前斷開）。
+
+```rust
+pub async fn dispatch(conn: Conn, cfg:&ServerCfg, prof:&DestProfile, replay:&ReplayCache) -> anyhow::Result<()>;
+pub struct PrefixedStream<S>{/* 先回放 prefix 再透傳 inner */}
+```
+
+---
+
+## 元件 D：預先構建模式（dest 特徵採集與映象）
+
+**目的**：讓“冒充握手”與真 dest 儘可能一致（ServerHello 引數、憑證欄位、時序、OCSP）。
+
+- 啟動時必須取得一次經驗證的 `DestProfile`；`prebuild=true` 另啟週期重新整理，`false` 僅禁止週期重新整理，不允許預設假檔案啟動。
+  首次探測失敗則啟動失敗；週期重新整理原子替換，失敗保留上一份有效檔案。採集內容：
+  - 協商的 TLS 版本、**密碼套件**、**key_share group**、**ALPN**、EncryptedExtensions 中出現的擴充套件；
+  - 真實**葉子憑證**（subject/issuer/validity/SAN/SCT）、是否 **OCSP stapling**、簽名方案；
+  - 從開始連線 dest 到首個 TLS 響應的間隔，不計後續 HTTP 等待（供元件 K 時序對齊）。
+- DNS、連線、TLS、HTTP 後設資料共用有限總期限；同步 I/O 不得阻塞 async executor，超時後仍執行的阻塞任務也佔用有界併發額度。
+- 元件 E 依 `DestProfile` 生成 ServerHello 與偽造葉子憑證的**可見欄位**（內容 TLS 1.3 已加密，主要防高階關聯）。
+
+```rust
+pub struct DestProfile { pub tls_ver:u16, pub cipher:u16, pub group:u16, pub alpn:Vec<Vec<u8>>,
+    pub ee_exts:Vec<u16>, pub leaf_template:CertTemplate, pub ocsp:Option<Vec<u8>>, pub rtt:Duration }
+pub async fn probe_dest(dest:&str) -> anyhow::Result<DestProfile>;
+```
+
+---
+
+## 元件 E：冒充握手與臨時可信憑證（含抗量子簽名）
+
+認證成功後，伺服器端**本地終結** TLS（不代理到 dest），呈現“臨時可信憑證”，用戶端憑 `shared` 校驗。
+
+### E.1 偽造葉子憑證
+- 現場生成葉子（ephemeral key，其私鑰用於 `CertificateVerify` 的合法簽名）；欄位映象 `DestProfile.leaf_template`
+  （CN/SAN=server_name、validity 等）。
+- 內嵌**私有擴充套件** OID `1.3.6.1.4.1.62397.1`：
+  `cert_key = HKDF-SHA256(shared, salt="umbra-cert-v1", info=session_id)`；
+  `cert_mac = HMAC-SHA256(cert_key, leaf_SPKI_DER)`（32B）。
+- **抗量子附加簽名**（元件 I）：私有擴充套件 OID `...62397.2` = `ML-DSA-65_Sign(mldsa_sk, leaf_SPKI_DER)`。
+
+### E.2 用戶端憑證校驗（元件 A 的 `CertVerify`）
+用戶端已知 `shared`（保留了 `C_priv`）與自己的 `session_id`：
+1. 派生 `cert_key`，校驗 `cert_mac`（常量時間）**且** ML-DSA-65 驗籤（`mldsa_pk`）：
+   兩者皆過且 CertificateVerify 證明私鑰持有 → **UmbraTrusted**（唯一允許代理業務的分類）；不要求偽憑證具有公有 CA 簽名。
+2. 無有效我方繫結時，必須獨立驗證憑證鏈、配置的信任根、預期域名、有效期和 CertificateVerify，全部透過才為
+   **RealSite**。TCP 僅以支援的協商 HTTP 協議訪問爬蟲路徑，不傳送代理目標或業務資料；不支援的 ALPN 不傳送錯誤格式請求。
+   QUIC 的 RealSite 在本地拒絕代理建立，不釋出業務金鑰、連線就緒、SOCKS 成功或目標字首，也不自動降級 TCP 或宣稱 HTTP/3 爬蟲。
+3. 任一所需校驗失敗 → **Invalid** → 正常 TLS 錯誤路徑斷開。
+4. 憑證籤名私鑰、繫結金鑰、流量金鑰與探測 key-log 必須採用零化所有權和脫敏 Debug；配置解析的錯誤及巢狀原因不得保留秘密值或 TOML 源摘錄。
+
+> 抗 MITM：逐連線 MITM 不知 `S_priv` → 算不出 `shared` → 無法偽造 `cert_mac` → 被判為 RealSite/Invalid。
+
+---
+
+## 元件 F：內層傳輸 —— 自適應填充多路複用 + Vision 真拼接
+
+握手已認證；內層負責“目標定址 + 多路複用 + 抗 TLS-in-TLS”。**兩種模式共存**，按連線選擇：
+
+- **預設：mux + 自適應填充**（借鑑 anytls）：一條 TLS 連線承載多邏輯流，降握手與“連線數關聯”。
+- **solo：Vision 真拼接**：單流獨佔一條 TLS，握手階段填充、隨後**原始直傳不二次封裝**，適合大吞吐/已知內層為 TLS。
+
+### F.1 mux 幀格式（預設模式）
+```
+MuxFrame = ver(1) || cmd(1) || stream_id(4,BE) || len(2,BE) || payload(len)
+cmd: 0x01 SYN(payload=目標地址) | 0x02 SYN_ACK | 0x03 DATA | 0x04 WINDOW_UPDATE(payload=u32增量)
+     | 0x05 FIN | 0x06 RST | 0x07 PADDING(payload=隨機，整幀丟棄) | 0x08 PING
+目標地址(SYN.payload) = atyp(1) || addr(4|1+n|16) || port(2)   // 0x01 v4 / 0x03 域名 / 0x04 v6
+```
+- 每流獨立**流控視窗**（初始如 256KiB，WINDOW_UPDATE 遞增）；`DATA` 分塊 ≤16384。
+- 用戶端 SOCKS5 每連線 → 一個 SYN 開流；相容配置複用健康外層連線，伺服器端併發 connect 各目標，成功後才回 SYN_ACK。
+- 會話持有跨取消的半幀讀取狀態與序列寫入狀態；開流/等待傳送視窗不得吞掉其他事件。部分寫入必須完成原幀或關閉連線，不能交錯幀。
+- 接收信用由有界快取預留，只在應用實際消費後返還；排入佇列不等於消費。檢查視窗溢位、零增量及未知流控制幀，限制流數和總快取。
+- FIN 只關閉一個方向並排在既有 DATA 之後；RST 喚醒該流全部等待者，關閉流釋放狀態，不能結束其他流。
+- 外層失敗不能自動重放業務；後續新請求可建立替代連線。stream-zero UDP 關聯保持獨佔外層，不與共享 CONNECT 會話混用。
+
+### F.1a 自適應流控（0.0.9）
+
+新用戶端的 TCP CONNECT mux 預設先傳送 `SETTINGS(0x0a, stream=0)`，載荷為 `UAF1` 和四個大端 u32：初始流視窗、初始連線視窗、最大流視窗、最大連線視窗。初始值分別為256 KiB和1 MiB；單流最大32 MiB，連線最大由配置控制且不超過64 MiB。首個設定幀與配置的隨機填充合併為一次寫入，普通業務寫入的填充計數不變。舊用戶端以SYN/UDP開場時保留舊流控。
+
+`CREDIT(0x0b)` 攜帶兩個大端u64：累計允許傳送的上限、累計應用已消費的位置；stream=0表示連線合計。DATA必須同時滿足流級和連線級信用，擴大授信不能冒充消費確認。`PROBE(0x0c)` / `PROBE_ACK(0x0d)` 在stream=0攜帶8位元組nonce，用於本外層連線的RTT取樣。
+
+接收端依據實際消費與RTT增長視窗，在授信前獲得程序/憑據組預算；已承諾信用不可撤回。FIN/RST按累計位置結算並保留取消安全。未認證回落和ClientHello構造不變。配置、記憶體口徑和測量限制見[吞吐說明](https://github.com/lotosli/umbra/blob/main/docs/performance.md)。
+
+### F.2 自適應填充 scheme（抗 TLS-in-TLS，預設開啟）
+- **填充策略串**（可配置，形如 anytls 的 padding scheme）：定義“第 k 個寫事件應把本次記錄整形到的目標長度分佈/
+  附加 PADDING 幀長度”。預設對**每方向前 ~16 個記錄**注入隨機 `PADDING` 幀（長度取自 `[100,1400]`），並讓首個
+  業務幀前後夾帶隨機 PADDING，從而**打亂內層 TLS 握手的確定性長度/方向序列**。
+- 之後按低頻機率插入 PADDING（防長期統計特徵）。
+
+### F.3 Vision 真拼接（solo 模式，0.0.7）
+
+TCP 的 `mux=false` 使用獨佔連線的新 Vision 實現；`mux=true` 保留加密多路複用。用戶端與伺服器端需同時支援0.0.7。
+舊的普通 solo 中繼和未接入執行時的 helper 已刪除，不再增加一個獨立 Vision 配置開關。
+
+1. 認證格式中的模式標識把新 solo 與 mux 區分；未認證/舊端回落不接收目標或業務控制資料。
+2. 用戶端先傳送目標地址，再交換已認證的能力；伺服器端目標連線成功後才允許 SOCKS success 和業務 DATA。
+3. 透過有界雙向重組觀察有效 TLS 1.3 ClientHello/ServerHello 及完整受保護記錄；不符合條件的流量保留外層加密。
+4. 用戶端協調請求、確認、提交、最終確認，分別核對兩方向位元組邊界；排空外層寫入，保留讀入字首，再移交原始 TCP。
+5. 原始階段轉發原內層受保護 TLS 記錄，不再增加外層 TLS 加密、envelope 或 padding；保留記錄結構檢查和半關閉。
+
+`0x17` 也可能承載加密握手或 alert；被動觀察不能驗證內層 Finished 或證明惡意模擬應用的位元組確實已加密。
+應用自己的端到端 TLS 仍負責目標認證和機密性。原始轉發使用使用者態 I/O，不聲稱核心零複製或固定效能提升。
+
+精確線格式、上限、拒絕/提交狀態、EOF/取消及向量見[已批准的 wire 規範](https://github.com/lotosli/umbra/blob/main/docs/vision-runtime-wire-v2.md)。
+真實執行時測試使用獨立 rustls 端點，確認雙向256 KiB業務完整、線上字尾與內層密文逐位元組一致，且切換後外層seal/open計數停止。
+實際Mac與伺服器0.0.7線上請求也已驗證拼接；詳見[驗收記錄](https://github.com/lotosli/umbra/blob/main/openspec/changes/integrate-vision-runtime/verification.md)。
+
+> mux 與 raw splice 互斥；QUIC 不進入此 TCP 移交路徑。沒有按業務自動另建 solo 的啟發式。
+
+### F.4 模組與簽名
+```rust
+// inner/mux.rs
+pub struct MuxSession<IO>{/* streams, windows */}
+impl<IO:AsyncRead+AsyncWrite> MuxSession<IO>{
+  pub fn client(io:IO, pad:&PadScheme)->Self; pub fn server(io:IO, pad:&PadScheme)->Self;
+  pub async fn open(&self, dst:&Addr)->Stream;   // 用戶端開流(SYN)
+  pub async fn accept(&self)->(Stream, Addr);      // 伺服器端收流
+}
+// inner/vision.rs
+pub async fn vision_relay(tls:TlsIo, target:TcpStream) -> io::Result<()>; // 嗅探→整形→splice
+// inner/padding.rs
+pub struct PadScheme{/* 由配置字串解析 */} pub fn parse_pad_scheme(s:&str)->PadScheme;
+// inner/spider.rs
+pub async fn spider(tls:TlsIo, spider_path:&str) -> io::Result<()>; // RealSite 時像瀏覽器訪問後關閉
+```
+
+---
+
+## 元件 G：QUIC / HTTP-3 外層傳輸
+
+**設計目標**：UDP 傳輸不受 TCP RST 注入影響，獨立 QUIC 流減少跨流隊頭阻塞；0-RTT 是目標設計，當前版本未提供。對外呈現 Chrome 風格 QUIC/HTTP-3，認證成功後用 QUIC stream 承載目標流。
+
+- **握手複用元件 A 的 TLS 1.3 邏輯**：QUIC 用 TLS 1.3 作為握手（ClientHello 在 Initial 包的 CRYPTO 幀中，
+  Initial 金鑰由 DCID + 固定 salt 派生 → ClientHello 對 GFW 可見，與 TCP 路徑同）。
+  QUIC 的 `supported_versions` 僅包含 TLS 1.3 與有效 GREASE，不得照搬 TCP 檔案裡的 TLS 1.2；
+  該派生必須在計算 HELLO0/AAD 和認證令牌之前完成，直接 QUIC TLS API 不靜默改寫已繫結的握手引數。
+- **指紋**：復刻 **Chrome 的 QUIC 指紋**——QUIC 版本、transport parameters 集合與順序、ALPN=`h3`、
+  ClientHello 擴充套件（含 `quic_transport_parameters`）、SCID 長度、GREASE transport parameter（元件 J 維護）。
+- **REALITY 認證載體（QUIC 與 TCP 不同）**：QUIC 的 TLS ClientHello **不使用** `legacy_session_id`（須為空）。
+  故認證令牌改由 **一個 Chrome 風格的 GREASE `quic_transport_parameter`** 承載（Chrome 本就傳送帶隨機值的
+  GREASE transport parameter）：把元件 B 的 `ct||tag`(32B) 放入該 GREASE 引數值，AAD 仍為整條 ClientHello。
+  ECDH 仍復用 ClientHello 的經典 X25519 keyshare。**該引數的編號/長度須與真實 Chrome 的 GREASE 引數一致，
+  以抓包為準**；早期備選設計是將載荷拆分為 SCID(8B) + GREASE 引數餘量；該備選項不是當前實現說明，不能自行改變線格式。
+- **伺服器端分派**：讀 Initial 包→解出 ClientHello→元件 B 校驗；失敗 → 以 UDP 層把該連線**轉發到真 dest 的
+  QUIC** 服務（原樣轉發 Initial 及後續 UDP 資料包）；成功 → 本地以元件 E 完成 QUIC-TLS 冒充握手。
+- 早期內層設計利用 QUIC 原生多路複用，以獨立 stream 承載各目標流，並把“stream 直傳”作為最佳化方向。它不等同於元件 F.3 的 TCP Vision 原始位元組移交；當前 QUIC 不進入該 TCP 拼接路徑。
+
+```rust
+// transport/quic.rs
+pub struct QuicFingerprint{/* versions, tparams 順序/值, alpn=h3, grease param */}
+pub async fn quic_connect(server:&str, sni:&str, auth:&[u8;32], fp:&QuicFingerprint)->anyhow::Result<QuicConn>;
+pub async fn quic_dispatch(dgram_sock:UdpSocket, cfg:&ServerCfg, prof:&DestProfile)->anyhow::Result<()>;
+```
+> 說明：自研 QUIC 工作量大；可基於 `quiche`（BoringSSL 系，便於指紋定製）或 `quinn`（需替換 crypto provider
+> 以接入元件 A 的握手與指紋）。QUIC 指紋與 REALITY-over-QUIC 載體均需以真實 Chrome 抓包核對。
+
+---
+
+## 元件 H：Geneva 式 TCP 分段（抗 RST 注入）
+
+**當前支援範圍**：`off` 普通傳送與 `segment` 有序分次寫入；不宣稱已實現或實測高階 Geneva 發包策略。
+
+- `segment` 保證拼接後的 ClientHello 位元組與原文一致，不保證每次 write 對應獨立 TCP 包，也不據此保證抗干擾效果。
+- 沒有傳送實現的 Geneva DSL 必須在配置校驗時明確拒絕，不能靜默等同於 `off`；本次修訂不引入特權原始套接字。
+- 只有尚未傳送任何位元組的可恢復分段準備錯誤可以回退普通傳送。部分寫入後出錯返回傳輸錯誤，不能從頭重發導致字首重複。
+- QUIC 使用獨立 UDP 路徑，不把兩種傳輸或其指紋的驗證結果混為一談。
+
+```rust
+// transport/geneva.rs
+pub struct TcpEvasion{/* strategy */}
+pub fn parse_strategy(s:&str)->TcpEvasion;
+pub async fn write_client_hello_evasive(sock:&TcpStream, chello:&[u8], ev:&TcpEvasion)->io::Result<()>;
+```
+
+---
+
+## 元件 I：抗量子（X25519MLKEM768 + ML-DSA-65）
+
+- **金鑰交換 PQ**：ClientHello 的 key_share 含 `X25519MLKEM768` 混合（Chrome 已預設），最終混合秘密嚴格為
+  `ML-KEM-768 共享秘密(32) || X25519 共享秘密(32)`，按 RFC 10024 §4.3 輸入 TLS 1.3 金鑰排程。
+  RustCrypto `ml-kem` 提供 ML-KEM-768。**REALITY 認證仍復用經典 X25519 keyshare 分量**（元件 B）。
+- **憑證籤名 PQ**：元件 E 的臨時憑證附加 `ML-DSA-65` 私有擴充套件簽名（RustCrypto `ml-dsa`）。伺服器端持
+  `mldsa_sk`（由 `mldsa_seed` 派生），`mldsa_pk` 配置給用戶端；用戶端在 UmbraTrusted 判定中**同時**校驗
+  `cert_mac`（HMAC over shared）與 ML-DSA-65 驗籤，實現經典+PQ 雙保險。
+
+```rust
+pub struct MlkemShare{/* encaps key(client) / ciphertext(server) */}
+pub fn mlkem_keygen()->(/*ek*/Vec<u8>,/*dk*/Vec<u8>);
+pub fn mldsa_keygen_from_seed(seed:&[u8;32])->(/*pk*/Vec<u8>,/*sk*/Vec<u8>);
+pub fn mldsa_sign(sk:&[u8], msg:&[u8])->Vec<u8>; pub fn mldsa_verify(pk:&[u8],msg:&[u8],sig:&[u8])->bool;
+```
+
+---
+
+## 元件 J：指紋管理（跟隨 Chrome）
+
+**目的**：自研棧不像 BoringSSL 天然=Chrome，指紋必須**資料化、可更新**。
+
+- **指紋檔案**（資料表）：編碼某個目標 Chrome 版本的 ClientHello 全部可見特徵——套件表、擴充套件集合與**順序**、
+  GREASE 位點、supported_groups、sig_algs、ALPN、ALPS、compress_certificate、key_share 組合、padding 習慣；
+  QUIC 側另編碼 transport parameters 與順序、h3、GREASE param。
+- **採集/更新機制**：用真實 Chrome 抓一份 ClientHello（或用 `tls.peet.ws/api/all`、JA4 工具），解析成檔案表；
+  專案內建 1–2 個穩定檔案並註明對應 Chrome 版本；檔案與程式碼解耦，便於隨 Chrome 升級替換。
+- **一致性自檢**：CI/啟動時用 JA3/JA4 對比“我方 ClientHello”與“目標檔案”，不一致則告警；雜湊一致只能覆蓋其編碼的特徵，完整指紋仍需逐位元組抓包複核。
+
+```rust
+pub struct FingerprintProfile{/* ciphers, ext_order, grease_slots, groups, sigalgs, alpn, alps, ... */}
+pub fn load_profile(name:&str)->FingerprintProfile;    // 如 "chrome-latest"
+pub fn ja3_ja4(chello:&[u8])->(String,String);          // 自檢用
+```
+
+---
+
+## 元件 K：探測抵抗加固（時序一致 / 無用記錄 / 無限速）
+
+- **時序對齊**：用元件 D 的連線至首個 TLS 響應間隔，在分類決策後的本地準備時間中扣減，
+  首個 ServerHello 前僅等待剩餘的非負間隔；本地已經更慢時不再延遲，不保證未經測量的不可區分性。
+- **無用記錄檢測（maxUselessRecords）**：超過分類限額即轉發 dest；可配置的未認證早斷動作須在啟動前拒絕。
+- **回落不限速、不早斷**：轉發 dest 的連線不施加 Umbra 特有限速或垃圾觸發早斷；請求半關閉仍保留返回響應。
+- **爬蟲模式**：TCP 用戶端僅在完整憑證驗證後，以支援的 ALPN 協議訪問 `spider_path`；QUIC RealSite 本地拒絕代理。
+- **埠/IP 輪換**：多監聽埠、備用 IP，降低殘餘審查影響；QUIC 與 TCP 雙路可切換。
+
+---
+
+## 15. 密碼學總表
+- **ECDH**：X25519（`x25519-dalek`）；混合 KEM：ML-KEM-768（`ml-kem`）。
+- **KDF**：HKDF-SHA256（`hkdf`+`sha2`）；標籤見元件 B/E（`umbra-reality-v1` / `umbra-cert-v1`）。
+- **認證令牌**：AES-128-GCM（`aes-gcm`），藏於 `session_id`，AAD=整條 ClientHello（session_id 置零）。
+- **憑證繫結**：HMAC-SHA256（`hmac`）+ ML-DSA-65（`ml-dsa`）雙籤；比對一律**常量時間**（`subtle`）。
+- **TLS 1.3 記錄**：AES-128/256-GCM、ChaCha20-Poly1305（`aes-gcm`/`chacha20poly1305`）。
+- **隨機**：OS CSPRNG（`rand::rngs::OsRng`）。
+- **不疊加第二層業務 AEAD**：機密性/完整性由 TLS/QUIC 自身提供，避免額外指紋與開銷。
+
+---
+
+## 16. 配置檔案規範
+
+**server.toml**
+```toml
+listen        = "0.0.0.0:443"          # TCP；QUIC 時另配 udp_listen
+udp_listen    = "0.0.0.0:443"          # 元件G：QUIC/HTTP-3
+private_key   = "BASE64(X25519 32B 私鑰)"   # umbra keygen
+short_ids     = ["", "0123456789abcdef"]
+dest          = "www.microsoft.com:443"     # 借用站點（見 §20 選擇標準）
+server_names  = ["www.microsoft.com"]
+max_time_diff = "120s"
+mldsa_seed    = "BASE64(32B)"           # 元件I：抗量子憑證籤名種子
+prebuild      = true                    # 元件D：啟用週期重新整理；false 仍需啟動探測
+padding_scheme= "default"               # 元件F 自適應填充策略
+tcp_evasion   = "segment"               # 元件H：off | segment；Geneva DSL 暫不支援
+```
+**client.toml**
+```toml
+server        = "SERVER_IP:443"
+transport     = "tcp"                   # tcp | quic
+public_key    = "BASE64(X25519 32B 公鑰)"   # = 伺服器端公鑰；口令，務必保密
+short_id      = "0123456789abcdef"
+server_name   = "www.microsoft.com"     # SNI，須 ∈ server_names
+fingerprint   = "chrome-latest"         # 元件J 檔案
+mldsa_verify  = "BASE64(ML-DSA-65 公鑰)" # 元件I 驗籤
+spider_path   = "/"                     # RealSite 時使用，建議每用戶端不同
+socks_listen  = "127.0.0.1:1080"
+mux           = true                    # 元件F：預設 mux；false=solo/Vision
+padding_scheme= "default"
+tcp_evasion   = "segment"
+```
+
+---
+
+## 17. Rust 工程結構與模組對映（+ 函式簽名）
+
+以下為早期單 crate 佈局草案；當前多 crate workspace 見[架構說明](/zh-hant/docs/concepts/architecture/)。草案採用單二進位制 + 子命令（`umbra server|client|keygen`）。元件→模組：
+
+```
+umbra/
+├── Cargo.toml
+├── DESIGN.md
+├── fingerprints/            # 元件J：Chrome 指紋檔案（資料檔案）
+│   ├── chrome-latest.toml
+│   └── chrome-latest-quic.toml
+├── examples/{server.toml,client.toml}
+└── src/
+    ├── main.rs              # clap 子命令分發
+    ├── config.rs            # 配置
+    ├── tls13/               # 元件A：自研 TLS1.3
+    │   ├── clienthello.rs   #   ClientHello 逐位元組構造（含 GREASE/順序）
+    │   ├── handshake.rs     #   用戶端狀態機 + 金鑰排程
+    │   ├── server.rs        #   伺服器端冒充棧
+    │   ├── records.rs       #   記錄層 AEAD
+    │   ├── keyschedule.rs   #   HKDF-Expand-Label/Derive-Secret
+    │   └── parse.rs         #   ClientHello 解析（伺服器端用）
+    ├── fingerprint/         # 元件J：檔案載入 + JA3/JA4 自檢
+    ├── reality/             # 元件B/E
+    │   ├── auth.rs          #   session_id 認證載荷（seal/open）+ ReplayCache
+    │   ├── cert.rs          #   偽造葉子 + cert_mac + ML-DSA 擴充套件
+    │   └── prebuild.rs      #   元件D：probe_dest / DestProfile
+    ├── dispatch.rs          # 元件C：分派 + PrefixedStream + 轉發 dest
+    ├── inner/               # 元件F
+    │   ├── mux.rs           #   多路複用（預設）
+    │   ├── padding.rs       #   自適應填充 scheme
+    │   ├── vision.rs        #   Vision 真拼接（solo）
+    │   ├── address.rs       #   目標地址編解碼
+    │   └── spider.rs        #   RealSite 爬蟲模式
+    ├── transport/           # 元件G/H
+    │   ├── tcp.rs           #   TCP 外層
+    │   ├── quic.rs          #   QUIC/HTTP-3 外層
+    │   └── geneva.rs        #   TCP 分段抗 RST
+    ├── pq/                  # 元件I：mlkem / mldsa 封裝
+    ├── socks.rs             # SOCKS5 入站
+    ├── relay.rs             # 中繼/半關閉
+    ├── server.rs / client.rs# 編排
+    └── replay.rs            # 反重放快取
+```
+
+關鍵簽名（其餘見各元件小節）：
+```rust
+// reality/auth.rs
+pub fn seal_session_id(shared:&[u8;32], short_id:&[u8], hello0:&[u8], now:u64) -> [u8;32];
+pub fn open_session_id(shared:&[u8;32], session_id:&[u8;32], hello0:&[u8],
+    allowed:&[Vec<u8>], now:u64, max_diff:u64, replay:&ReplayCache) -> anyhow::Result<AuthOk>;
+pub fn cert_mac(shared:&[u8;32], session_id:&[u8;32], spki_der:&[u8]) -> [u8;32];
+
+// 編排
+pub async fn run_server(cfg:ServerCfg)->anyhow::Result<()>;
+pub async fn run_client(cfg:ClientCfg)->anyhow::Result<()>;
+pub fn run_keygen();   // 列印 X25519 priv/pub + ML-DSA-65 seed/pub（base64）
+```
+
+---
+
+## 18. 依賴清單與構建
+
+以下是設計階段的示意清單，並非當前依賴鎖定版本。實際構建使用倉庫根目錄的 `Cargo.toml`、`Cargo.lock` 與固定工具鏈。
+```toml
+[dependencies]
+tokio        = { version = "1", features = ["full"] }
+x25519-dalek = "2"                      # 元件B ECDH
+ml-kem       = "0.2"                     # 元件I ML-KEM-768
+ml-dsa       = "0.0"                     # 元件I ML-DSA-65（RustCrypto，注意版本/可用性）
+aes-gcm      = "0.10"                     # session_id + TLS 記錄
+chacha20poly1305 = "0.10"                 # TLS 記錄
+hkdf         = "0.12"
+sha2         = "0.10"
+hmac         = "0.12"
+subtle       = "2"                        # 常量時間
+rand         = "0.8"
+tls-parser   = "0.11"                     # 伺服器端解析 ClientHello（或用自研 parse.rs）
+rcgen        = "0.13"                     # 元件E 生成葉子憑證 + 自定義擴充套件
+socket2      = "0.5"                      # 元件H 基礎分段（IP_TTL/NODELAY/手動切分）
+# 元件G（擇一）：quiche = "..."（BoringSSL 系，便於指紋定製） 或 quinn = "..."（需替換 crypto provider）
+base64="0.22"
+serde={version="1",features=["derive"]}
+toml="0.8"
+humantime-serde="1"
+clap={version="4",features=["derive"]}
+anyhow="1"
+thiserror="1"
+tracing="0.1"
+tracing-subscriber={version="0.3",features=["env-filter"]}
+lru="0.12"
+```
+**構建/實現要點**：
+- **不引入 BoringSSL/rustls 做主握手**（自研 TLS1.3 是本方案的立身之本）；`rcgen` 僅用於生成葉子憑證 DER。
+- 元件 A/G 的指紋必須以**真實 Chrome 抓包**核對（`tls.peet.ws/api/all`、JA4 工具），並隨 Chrome 更新檔案。
+- 元件 H 的高階策略可能需要 `CAP_NET_RAW`/原始套接字，屬於未來設計。當前 `segment` 只有在尚未寫入任何位元組的準備階段失敗時，才可回退普通傳送。
+- ML-KEM/ML-DSA 的 crate 版本與草案 codepoint 需與目標 Chrome 一致，以抓包為準。
+
+---
+
+## 19. 測試與驗證
+- **單測**：`seal/open_session_id`（篡改/過期/重放/AAD 改動）；`cert_mac`+ML-DSA 正誤；HKDF/記錄層向量對照 RFC 8448。
+- **指紋自檢（元件 J）**：我方 ClientHello 的 JA3/JA4 == 目標 Chrome 檔案；QUIC 指紋同。
+- **握手互通**：自研 client ↔ 自研 server 全流程；client ↔ 真實 TLS1.3 站點（驗證棧正確性，會走轉發/爬蟲）。
+- **抗主動探測**：`openssl s_client`/隨機位元組 → 應得 **dest 真憑證**、行為如真站、無早斷、無限速差異。
+- **重放**：原樣重發真實 ClientHello → 被轉發 dest（重放命中）。
+- **抗 TLS-in-TLS**：抓每方向前 8–16 記錄長度/方向：mux+padding 下不確定；Vision solo 下進入 splice 後與直連 TLS 同形。
+- **時序（元件 K）**：認證路徑與轉發路徑到首位元組 RTT 分佈一致。
+- **抗 RST（元件 H）/QUIC（元件 G）**：弱網/干擾環境連通與穩定性。
+- **真實環境**：境外 VPS + 境內 client，長連線/大流量/弱網/殘餘審查觀察（謹慎）。
+
+---
+
+## 20. 部署與運維（含 dest 選擇）
+**dest（借用站點）標準**：
+- 必要：國外站點；支援 **TLS 1.3 + H2/H3**；域名**非跳轉用**。
+- 加分：其 IP 與 VPS **相近**（更像、延遲低）；**ServerHello 後握手訊息一起加密**（如 `dl.google.com`）；有 **OCSP stapling**。
+- 配置加分：**禁回國流量**；同時轉發 **TCP/80、UDP/443**（REALITY 對外即埠轉發）；目標 **IP 冷門**或更穩。
+- `server_names` 通常填 dest 域名；用戶端 `server_name` 與之一致。
+
+**運維**：埠優先 443（TCP+UDP）；避開汙染 IP 段；`private_key`/`mldsa_seed` 嚴格保密，`public_key`/`mldsa_verify`/
+`short_id` 帶外安全分發；BBR + 提高 `ulimit -n`；`systemd` 守護、journald 日誌（預設不記錄使用者目標/流量）；
+準備多埠/備用 IP 與 QUIC 備路以抗殘餘審查。
+
+---
+
+## 21. 安全與合規
+- **用途**：保護隱私、對抗審查、訪問開放網際網路，屬正當的抗審查/隱私工程；請在所在司法轄區法律允許範圍內使用。
+- **秘密管理**：`S_priv`/`mldsa_seed` 絕不外洩；`S_pub`（口令）/`short_id`/`mldsa_verify` 帶外安全分發。
+- **常量時間**：所有 MAC/標籤/簽名比對常量時間，防計時側通道。
+- **反重放記憶體**：`ReplayCache` 容量上限 + TTL 清理，防記憶體耗盡 DoS。
+- **回落 SSRF**：`dest` 固定配置，勿受使用者輸入控制。
+- **依賴安全**：鎖 `Cargo.lock`；`cargo audit`；PQ/指紋隨上游更新。
+
+---
+
+## 附錄 A：位元組佈局速查
+
+**REALITY 認證令牌（藏於 `legacy_session_id`，32B）**
+| 步驟 | 計算 |
+|---|---|
+| shared | `X25519(C_priv,S_pub)`（伺服器端 `X25519(S_priv,C_pub)`）|
+| auth_key | `HKDF-SHA256(shared,"umbra-reality-v1","key")[..16]`（AES-128）|
+| nonce | `HKDF-SHA256(shared,"umbra-reality-v1","nonce")[..12]` |
+| P (16B) | `ver(1) \|\| flags(1) \|\| ts(u32 BE,4) \|\| short_id(8) \|\| reserved(2)=0` |
+| AAD | 整條 ClientHello，`legacy_session_id` 32B 置零（記作 HELLO0）|
+| session_id (32B) | `ct(16) \|\| tag(16) = AES-128-GCM-Seal(auth_key,nonce,P,HELLO0)` |
+
+**臨時可信憑證繫結**
+| 項 | 計算 |
+|---|---|
+| cert_key | `HKDF-SHA256(shared,"umbra-cert-v1", session_id)` (32B) |
+| cert_mac | `HMAC-SHA256(cert_key, leaf_SPKI_DER)` (32B) → 擴充套件 OID `…62397.1` |
+| pq_sig | `ML-DSA-65_Sign(mldsa_sk, leaf_SPKI_DER)` → 擴充套件 OID `…62397.2` |
+
+**MuxFrame**
+| 偏移 | 欄位 | 長度 | 說明 |
+|---|---|---|---|
+| 0 | ver | 1 | 0x01 |
+| 1 | cmd | 1 | SYN/SYN_ACK/DATA/WINDOW_UPDATE/FIN/RST/PADDING/PING |
+| 2 | stream_id | 4 | 大端 |
+| 6 | len | 2 | 大端 |
+| 8 | payload | len | SYN=目標地址；DATA=資料；PADDING=隨機 |
+
+**目標地址** `atyp(1) \|\| addr(4 / 1+n / 16) \|\| port(2, BE)`
+
+---
+
+## 附錄 B：狀態機與資料流
+
+**伺服器分派/握手**
+<ProtocolDiagram locale="zh-hant" name="server" />
+
+**用戶端**
+<ProtocolDiagram locale="zh-hant" name="client" />
+
+---
+
+## 附錄 C：參考文獻
+1. Wu et al. *How the Great Firewall of China Detects and Blocks Fully Encrypted Traffic.* USENIX Security 2023.
+2. Frolov, Wustrow. *The use of TLS in Censorship Circumvention.* NDSS 2019.
+3. Frolov et al. [*Detecting Probe-Resistant Proxies.*](https://www.ndss-symposium.org/ndss-paper/detecting-probe-resistant-proxies/) NDSS 2020.
+4. [*Fingerprinting Obfuscated Proxy Traffic with Encapsulated TLS Handshakes.*](https://www.usenix.org/conference/usenixsecurity24/presentation/xue-fingerprinting) USENIX Security 2024.
+5. Bock et al. *Geneva: Evolving Censorship Evasion Strategies.* ACM CCS 2019.
+6. GFW Report / net4people. *How China Detects and Blocks Shadowsocks.* 2020.
+7. XTLS/REALITY 與 Xray-core `transport/internet/reality`；XTLS-Vision（`xtls-rprx-vision`）；VLESS。
+8. anytls / anytls-go（填充 scheme + 多路複用）。
+9. uTLS（refraction-networking/utls）；QUIC 指紋與 Chrome QUIC 行為。
+10. RFC 8446（TLS 1.3）、RFC 8448（測試向量）、RFC 8701（GREASE）、RFC 9000/9001（QUIC/QUIC-TLS）。
+11. RFC 10024（X25519MLKEM768）；FIPS 203（ML-KEM）、FIPS 204（ML-DSA）。
+12. Rust 生態：`x25519-dalek`、`ml-kem`、`ml-dsa`、`aes-gcm`、`chacha20poly1305`、`hkdf`、`rcgen`、`quiche`/`quinn`、`socket2`、`tls-parser`。
+
+> 說明：文中數值/閾值/擴充套件順序/PQ codepoint 等為便於實現給出的近似或當前值；GFW 規則、Chrome 指紋與 PQ 草案
+> 都會隨時間變化，落地前請以**真實抓包與最新規範/實測**為準並保持更新（元件 J 即為此而設）。

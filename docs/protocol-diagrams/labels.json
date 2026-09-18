@@ -1,0 +1,191 @@
+{
+  "zh-hans/architecture": {
+    "caption": "总体架构",
+    "fullSize": "查看完整尺寸",
+    "viewSource": "查看 Mermaid 源码",
+    "source": "flowchart TB\n  APP[\"浏览器 / 应用\"] -->|SOCKS5| Cs\n  subgraph Client[\"umbra client\"]\n    Cs[\"SOCKS5 入站\"] --> Cmux[\"内层：mux + padding / Vision solo\"]\n    Cmux --> Ctls[\"组件 A：自研 TLS 1.3 客户端<br/>组件 B：REALITY 认证<br/>组件 J：Chrome 指纹\"]\n    Ctls --> Cout{\"组件 G/H：外层<br/>TCP 分段或 QUIC\"}\n  end\n  Cout ==>|\"TLS 1.3 / QUIC，SNI = dest\"| Sdisp\n  subgraph Server[\"umbra server\"]\n    Sdisp[\"组件 C：分派<br/>读取 ClientHello 并认证\"] -->|\"认证失败 / 探测\"| FWD[\"TCP / UDP 转发\"]\n    Sdisp -->|认证成功| Sh[\"组件 E：握手与临时可信证书<br/>组件 D：预构建 dest 档案\"]\n    Sh --> Smux[\"内层：mux + padding / Vision\"]\n    Smux --> TGT[\"目标站\"]\n  end\n  FWD ==> DEST[\"dest 真实站<br/>真实 CA 证书\"]\n",
+    "path": "/diagrams/protocol-design/zh-hans/architecture.svg",
+    "width": 756.20703125,
+    "height": 1306.625
+  },
+  "zh-hans/server": {
+    "caption": "服务端状态机",
+    "fullSize": "查看完整尺寸",
+    "viewSource": "查看 Mermaid 源码",
+    "source": "stateDiagram-v2\n    state \"读取 ClientHello\" as Read\n    state \"解析 SNI、keyshare 和认证载体\" as Parse\n    state \"校验认证令牌\" as Verify\n    state \"转发 dest\" as Forward\n    state \"本地完成握手\" as Handshake\n    state \"时序对齐\" as Timing\n    state \"发送临时可信证书\" as Certificate\n    state \"内层 mux / Vision\" as Inner\n    [*] --> Read\n    Read --> Parse\n    Parse --> Forward: SNI 不符 / 无 keyshare\n    Parse --> Verify: 参数有效\n    Verify --> Forward: GCM / 时间 / short_id / 重放校验失败\n    Verify --> Handshake: 通过，获得 shared\n    Handshake --> Timing: 扣除本地耗时后的 dest.rtt\n    Timing --> Certificate: cert_mac + ML-DSA-65\n    Certificate --> Inner\n    Inner --> [*]: 流结束\n    Forward --> [*]: 与真实站双向转发\n",
+    "path": "/diagrams/protocol-design/zh-hans/server.svg",
+    "width": 502.3203125,
+    "height": 815.3796997070312
+  },
+  "zh-hans/client": {
+    "caption": "客户端状态机",
+    "fullSize": "查看完整尺寸",
+    "viewSource": "查看 Mermaid 源码",
+    "source": "stateDiagram-v2\n    state \"选择 TCP / QUIC\" as Transport\n    state \"构造 ClientHello\" as Hello\n    state \"驱动握手\" as Handshake\n    state \"验证并分类证书\" as Certificate\n    state \"内层代理\" as Inner\n    state \"RealSite：检查传输方式\" as RealSite\n    state \"TCP：按协商协议访问网站\" as Spider\n    state \"QUIC：拒绝建立代理\" as Reject\n    [*] --> SOCKS5\n    SOCKS5 --> Transport\n    Transport --> Hello: 组件 A 指纹与 B/G 认证载体\n    Hello --> Handshake\n    Handshake --> Certificate\n    Certificate --> Inner: UmbraTrusted，绑定与 ML-DSA 校验通过\n    Certificate --> RealSite: RealSite，常规证书验证通过\n    Certificate --> [*]: Invalid，TLS 错误\n    RealSite --> Spider: TCP 与受支持的 ALPN\n    RealSite --> Reject: QUIC\n    Inner --> [*]: 流结束\n    Spider --> [*]: 访问后关闭\n    Reject --> [*]: 不发送代理数据\n",
+    "path": "/diagrams/protocol-design/zh-hans/client.svg",
+    "width": 712.88671875,
+    "height": 782.2000122070312
+  },
+  "zh-hant/architecture": {
+    "caption": "整體架構",
+    "fullSize": "查看完整尺寸",
+    "viewSource": "查看 Mermaid 原始碼",
+    "source": "flowchart TB\n  APP[\"瀏覽器 / 應用\"] -->|SOCKS5| Cs\n  subgraph Client[\"umbra client\"]\n    Cs[\"SOCKS5 入站\"] --> Cmux[\"內層：mux + padding / Vision solo\"]\n    Cmux --> Ctls[\"元件 A：自研 TLS 1.3 客戶端<br/>元件 B：REALITY 認證<br/>元件 J：Chrome 指紋\"]\n    Ctls --> Cout{\"元件 G/H：外層<br/>TCP 分段或 QUIC\"}\n  end\n  Cout ==>|\"TLS 1.3 / QUIC，SNI = dest\"| Sdisp\n  subgraph Server[\"umbra server\"]\n    Sdisp[\"元件 C：分派<br/>讀取 ClientHello 並認證\"] -->|\"認證失敗 / 探測\"| FWD[\"TCP / UDP 轉發\"]\n    Sdisp -->|認證成功| Sh[\"元件 E：握手與臨時可信證書<br/>元件 D：預構建 dest 檔案\"]\n    Sh --> Smux[\"內層：mux + padding / Vision\"]\n    Smux --> TGT[\"目標站\"]\n  end\n  FWD ==> DEST[\"dest 真實站<br/>真實 CA 證書\"]\n",
+    "path": "/diagrams/protocol-design/zh-hant/architecture.svg",
+    "width": 756.20703125,
+    "height": 1306.625
+  },
+  "zh-hant/server": {
+    "caption": "伺服器狀態機",
+    "fullSize": "查看完整尺寸",
+    "viewSource": "查看 Mermaid 原始碼",
+    "source": "stateDiagram-v2\n    state \"讀取 ClientHello\" as Read\n    state \"解析 SNI、keyshare 和認證載體\" as Parse\n    state \"校驗認證令牌\" as Verify\n    state \"轉發 dest\" as Forward\n    state \"本地完成握手\" as Handshake\n    state \"時序對齊\" as Timing\n    state \"傳送臨時可信證書\" as Certificate\n    state \"內層 mux / Vision\" as Inner\n    [*] --> Read\n    Read --> Parse\n    Parse --> Forward: SNI 不符 / 無 keyshare\n    Parse --> Verify: 引數有效\n    Verify --> Forward: GCM / 時間 / short_id / 重放校驗失敗\n    Verify --> Handshake: 透過，獲得 shared\n    Handshake --> Timing: 扣除本地耗時後的 dest.rtt\n    Timing --> Certificate: cert_mac + ML-DSA-65\n    Certificate --> Inner\n    Inner --> [*]: 流結束\n    Forward --> [*]: 與真實站雙向轉發\n",
+    "path": "/diagrams/protocol-design/zh-hant/server.svg",
+    "width": 502.3203125,
+    "height": 815.3796997070312
+  },
+  "zh-hant/client": {
+    "caption": "用戶端狀態機",
+    "fullSize": "查看完整尺寸",
+    "viewSource": "查看 Mermaid 原始碼",
+    "source": "stateDiagram-v2\n    state \"選擇 TCP / QUIC\" as Transport\n    state \"構造 ClientHello\" as Hello\n    state \"驅動握手\" as Handshake\n    state \"驗證並分類證書\" as Certificate\n    state \"內層代理\" as Inner\n    state \"RealSite：檢查傳輸方式\" as RealSite\n    state \"TCP：按協商協議訪問網站\" as Spider\n    state \"QUIC：拒絕建立代理\" as Reject\n    [*] --> SOCKS5\n    SOCKS5 --> Transport\n    Transport --> Hello: 元件 A 指紋與 B/G 認證載體\n    Hello --> Handshake\n    Handshake --> Certificate\n    Certificate --> Inner: UmbraTrusted，繫結與 ML-DSA 校驗透過\n    Certificate --> RealSite: RealSite，常規證書驗證透過\n    Certificate --> [*]: Invalid，TLS 錯誤\n    RealSite --> Spider: TCP 與受支援的 ALPN\n    RealSite --> Reject: QUIC\n    Inner --> [*]: 流結束\n    Spider --> [*]: 訪問後關閉\n    Reject --> [*]: 不傳送代理資料\n",
+    "path": "/diagrams/protocol-design/zh-hant/client.svg",
+    "width": 712.88671875,
+    "height": 782.2000122070312
+  },
+  "en/architecture": {
+    "caption": "Overall architecture",
+    "fullSize": "Open full-size diagram",
+    "viewSource": "View Mermaid source",
+    "source": "flowchart TB\n  APP[\"Browser / application\"] -->|SOCKS5| Cs\n  subgraph Client[\"umbra client\"]\n    Cs[\"SOCKS5 inbound\"] --> Cmux[\"Inner: mux + padding / Vision solo\"]\n    Cmux --> Ctls[\"A: custom TLS 1.3 client<br/>B: REALITY authentication<br/>J: Chrome fingerprint\"]\n    Ctls --> Cout{\"G/H: outer transport<br/>TCP segmentation or QUIC\"}\n  end\n  Cout ==>|\"TLS 1.3 / QUIC, SNI = dest\"| Sdisp\n  subgraph Server[\"umbra server\"]\n    Sdisp[\"C: dispatch<br/>Read ClientHello and authenticate\"] -->|\"Authentication failure / probe\"| FWD[\"TCP / UDP forwarding\"]\n    Sdisp -->|Authenticated| Sh[\"E: handshake and temporary trusted certificate<br/>D: prebuilt dest profile\"]\n    Sh --> Smux[\"Inner: mux + padding / Vision\"]\n    Smux --> TGT[\"Target site\"]\n  end\n  FWD ==> DEST[\"Real cover site: dest<br/>Real CA certificate\"]\n",
+    "path": "/diagrams/protocol-design/en/architecture.svg",
+    "width": 851.984375,
+    "height": 1375
+  },
+  "en/server": {
+    "caption": "Server state machine",
+    "fullSize": "Open full-size diagram",
+    "viewSource": "View Mermaid source",
+    "source": "stateDiagram-v2\n    state \"Read ClientHello\" as Read\n    state \"Parse SNI, keyshare and authentication carrier\" as Parse\n    state \"Verify authentication token\" as Verify\n    state \"Forward to dest\" as Forward\n    state \"Complete handshake locally\" as Handshake\n    state \"Align timing\" as Timing\n    state \"Send temporary trusted certificate\" as Certificate\n    state \"Inner mux / Vision\" as Inner\n    [*] --> Read\n    Read --> Parse\n    Parse --> Forward: SNI mismatch / missing keyshare\n    Parse --> Verify: Valid parameters\n    Verify --> Forward: GCM / time / short_id / replay check failed\n    Verify --> Handshake: Accepted; shared available\n    Handshake --> Timing: dest.rtt minus local processing time\n    Timing --> Certificate: cert_mac + ML-DSA-65\n    Certificate --> Inner\n    Inner --> [*]: Stream finished\n    Forward --> [*]: Bidirectional relay to the real site\n",
+    "path": "/diagrams/protocol-design/en/server.svg",
+    "width": 581.11328125,
+    "height": 894.7952880859375
+  },
+  "en/client": {
+    "caption": "Client state machine",
+    "fullSize": "Open full-size diagram",
+    "viewSource": "View Mermaid source",
+    "source": "stateDiagram-v2\n    state \"Choose TCP / QUIC\" as Transport\n    state \"Build ClientHello\" as Hello\n    state \"Drive handshake\" as Handshake\n    state \"Verify and classify certificate\" as Certificate\n    state \"Inner proxy\" as Inner\n    state \"RealSite: check transport\" as RealSite\n    state \"TCP: visit site using negotiated protocol\" as Spider\n    state \"QUIC: reject proxy establishment\" as Reject\n    [*] --> SOCKS5\n    SOCKS5 --> Transport\n    Transport --> Hello: A fingerprint and B/G authentication carrier\n    Hello --> Handshake\n    Handshake --> Certificate\n    Certificate --> Inner: UmbraTrusted: binding and ML-DSA verified\n    Certificate --> RealSite: RealSite: ordinary certificate validation passed\n    Certificate --> [*]: Invalid: TLS error\n    RealSite --> Spider: TCP and supported ALPN\n    RealSite --> Reject: QUIC\n    Inner --> [*]: Stream finished\n    Spider --> [*]: Close after visit\n    Reject --> [*]: Send no proxy data\n",
+    "path": "/diagrams/protocol-design/en/client.svg",
+    "width": 677.484375,
+    "height": 836.09375
+  },
+  "fr/architecture": {
+    "caption": "Architecture générale",
+    "fullSize": "Ouvrir le schéma en taille réelle",
+    "viewSource": "Voir le code Mermaid",
+    "source": "flowchart TB\n  APP[\"Navigateur / application\"] -->|SOCKS5| Cs\n  subgraph Client[\"umbra client\"]\n    Cs[\"Entrée SOCKS5\"] --> Cmux[\"Couche interne : mux + padding / Vision solo\"]\n    Cmux --> Ctls[\"A : client TLS 1.3 dédié<br/>B : authentification REALITY<br/>J : empreinte Chrome\"]\n    Ctls --> Cout{\"G/H : transport externe<br/>Segmentation TCP ou QUIC\"}\n  end\n  Cout ==>|\"TLS 1.3 / QUIC, SNI = dest\"| Sdisp\n  subgraph Server[\"umbra server\"]\n    Sdisp[\"C : répartition<br/>Lire ClientHello et authentifier\"] -->|\"Échec d’authentification / sonde\"| FWD[\"Relais TCP / UDP\"]\n    Sdisp -->|Authentification réussie| Sh[\"E : négociation et certificat temporaire approuvé<br/>D : profil dest préparé\"]\n    Sh --> Smux[\"Couche interne : mux + padding / Vision\"]\n    Smux --> TGT[\"Site cible\"]\n  end\n  FWD ==> DEST[\"Site réel de couverture : dest<br/>Certificat CA réel\"]\n",
+    "path": "/diagrams/protocol-design/fr/architecture.svg",
+    "width": 836.03125,
+    "height": 1394.987548828125
+  },
+  "fr/server": {
+    "caption": "Automate du serveur",
+    "fullSize": "Ouvrir le schéma en taille réelle",
+    "viewSource": "Voir le code Mermaid",
+    "source": "stateDiagram-v2\n    state \"Lire ClientHello\" as Read\n    state \"Analyser SNI, keyshare et le support d’authentification\" as Parse\n    state \"Vérifier le jeton d’authentification\" as Verify\n    state \"Relayer vers dest\" as Forward\n    state \"Terminer la négociation localement\" as Handshake\n    state \"Aligner les délais\" as Timing\n    state \"Envoyer le certificat temporaire approuvé\" as Certificate\n    state \"Couche interne mux / Vision\" as Inner\n    [*] --> Read\n    Read --> Parse\n    Parse --> Forward: SNI incorrect / keyshare absent\n    Parse --> Verify: Paramètres valides\n    Verify --> Forward: Échec GCM / délai / short_id / anti-rejeu\n    Verify --> Handshake: Accepté ; shared disponible\n    Handshake --> Timing: dest.rtt moins le traitement local\n    Timing --> Certificate: cert_mac + ML-DSA-65\n    Certificate --> Inner\n    Inner --> [*]: Flux terminé\n    Forward --> [*]: Relais bidirectionnel avec le site réel\n",
+    "path": "/diagrams/protocol-design/fr/server.svg",
+    "width": 589.37890625,
+    "height": 906.3968505859375
+  },
+  "fr/client": {
+    "caption": "Automate du client",
+    "fullSize": "Ouvrir le schéma en taille réelle",
+    "viewSource": "Voir le code Mermaid",
+    "source": "stateDiagram-v2\n    state \"Choisir TCP / QUIC\" as Transport\n    state \"Construire ClientHello\" as Hello\n    state \"Faire avancer la négociation\" as Handshake\n    state \"Vérifier et classer le certificat\" as Certificate\n    state \"Proxy interne\" as Inner\n    state \"RealSite : vérifier le transport\" as RealSite\n    state \"TCP : visiter le site selon le protocole négocié\" as Spider\n    state \"QUIC : refuser le proxy\" as Reject\n    [*] --> SOCKS5\n    SOCKS5 --> Transport\n    Transport --> Hello: Empreinte A et support d’authentification B/G\n    Hello --> Handshake\n    Handshake --> Certificate\n    Certificate --> Inner: UmbraTrusted : liaison et ML-DSA validées\n    Certificate --> RealSite: RealSite : validation classique du certificat réussie\n    Certificate --> [*]: Invalid : erreur TLS\n    RealSite --> Spider: TCP et ALPN pris en charge\n    RealSite --> Reject: QUIC\n    Inner --> [*]: Flux terminé\n    Spider --> [*]: Fermer après la visite\n    Reject --> [*]: Ne pas envoyer de données proxy\n",
+    "path": "/diagrams/protocol-design/fr/client.svg",
+    "width": 740.4296875,
+    "height": 919.0484008789062
+  },
+  "es/architecture": {
+    "caption": "Arquitectura general",
+    "fullSize": "Abrir el diagrama a tamaño completo",
+    "viewSource": "Ver el código Mermaid",
+    "source": "flowchart TB\n  APP[\"Navegador / aplicación\"] -->|SOCKS5| Cs\n  subgraph Client[\"umbra client\"]\n    Cs[\"Entrada SOCKS5\"] --> Cmux[\"Capa interna: mux + padding / Vision solo\"]\n    Cmux --> Ctls[\"A: cliente TLS 1.3 propio<br/>B: autenticación REALITY<br/>J: huella de Chrome\"]\n    Ctls --> Cout{\"G/H: transporte externo<br/>Segmentación TCP o QUIC\"}\n  end\n  Cout ==>|\"TLS 1.3 / QUIC, SNI = dest\"| Sdisp\n  subgraph Server[\"umbra server\"]\n    Sdisp[\"C: distribución<br/>Leer ClientHello y autenticar\"] -->|\"Fallo de autenticación / sondeo\"| FWD[\"Reenvío TCP / UDP\"]\n    Sdisp -->|Autenticación correcta| Sh[\"E: negociación y certificado temporal de confianza<br/>D: perfil dest preparado\"]\n    Sh --> Smux[\"Capa interna: mux + padding / Vision\"]\n    Smux --> TGT[\"Sitio de destino\"]\n  end\n  FWD ==> DEST[\"Sitio real de cobertura: dest<br/>Certificado CA real\"]\n",
+    "path": "/diagrams/protocol-design/es/architecture.svg",
+    "width": 884.0625,
+    "height": 1375.6171875
+  },
+  "es/server": {
+    "caption": "Máquina de estados del servidor",
+    "fullSize": "Abrir el diagrama a tamaño completo",
+    "viewSource": "Ver el código Mermaid",
+    "source": "stateDiagram-v2\n    state \"Leer ClientHello\" as Read\n    state \"Analizar SNI, keyshare y el campo de autenticación\" as Parse\n    state \"Verificar el token de autenticación\" as Verify\n    state \"Reenviar a dest\" as Forward\n    state \"Completar la negociación localmente\" as Handshake\n    state \"Ajustar los tiempos\" as Timing\n    state \"Enviar el certificado temporal de confianza\" as Certificate\n    state \"Capa interna mux / Vision\" as Inner\n    [*] --> Read\n    Read --> Parse\n    Parse --> Forward: SNI incorrecto / falta keyshare\n    Parse --> Verify: Parámetros válidos\n    Verify --> Forward: Fallo de GCM / tiempo / short_id / antirrepetición\n    Verify --> Handshake: Aceptado; shared disponible\n    Handshake --> Timing: dest.rtt menos el tiempo de procesamiento local\n    Timing --> Certificate: cert_mac + ML-DSA-65\n    Certificate --> Inner\n    Inner --> [*]: Fin del flujo\n    Forward --> [*]: Reenvío bidireccional al sitio real\n",
+    "path": "/diagrams/protocol-design/es/server.svg",
+    "width": 580.76171875,
+    "height": 906.5921630859375
+  },
+  "es/client": {
+    "caption": "Máquina de estados del cliente",
+    "fullSize": "Abrir el diagrama a tamaño completo",
+    "viewSource": "Ver el código Mermaid",
+    "source": "stateDiagram-v2\n    state \"Elegir TCP / QUIC\" as Transport\n    state \"Construir ClientHello\" as Hello\n    state \"Ejecutar la negociación\" as Handshake\n    state \"Verificar y clasificar el certificado\" as Certificate\n    state \"Proxy interno\" as Inner\n    state \"RealSite: comprobar transporte\" as RealSite\n    state \"TCP: visitar el sitio con el protocolo negociado\" as Spider\n    state \"QUIC: rechazar la conexión del proxy\" as Reject\n    [*] --> SOCKS5\n    SOCKS5 --> Transport\n    Transport --> Hello: Huella A y campo de autenticación B/G\n    Hello --> Handshake\n    Handshake --> Certificate\n    Certificate --> Inner: UmbraTrusted: vínculo y ML-DSA verificados\n    Certificate --> RealSite: RealSite: validación ordinaria del certificado correcta\n    Certificate --> [*]: Invalid: error TLS\n    RealSite --> Spider: TCP y ALPN compatible\n    RealSite --> Reject: QUIC\n    Inner --> [*]: Fin del flujo\n    Spider --> [*]: Cerrar tras la visita\n    Reject --> [*]: No enviar datos del proxy\n",
+    "path": "/diagrams/protocol-design/es/client.svg",
+    "width": 752.38671875,
+    "height": 866.6156005859375
+  },
+  "ja/architecture": {
+    "caption": "全体アーキテクチャ",
+    "fullSize": "図を原寸で開く",
+    "viewSource": "Mermaid ソースを表示",
+    "source": "flowchart TB\n  APP[\"ブラウザー / アプリ\"] -->|SOCKS5| Cs\n  subgraph Client[\"umbra client\"]\n    Cs[\"SOCKS5 入力\"] --> Cmux[\"内側：mux + padding / Vision solo\"]\n    Cmux --> Ctls[\"A：独自 TLS 1.3 クライアント<br/>B：REALITY 認証<br/>J：Chrome フィンガープリント\"]\n    Ctls --> Cout{\"G/H：外側トランスポート<br/>TCP 分割送信または QUIC\"}\n  end\n  Cout ==>|\"TLS 1.3 / QUIC、SNI = dest\"| Sdisp\n  subgraph Server[\"umbra server\"]\n    Sdisp[\"C：振り分け<br/>ClientHello を読み取り認証\"] -->|\"認証失敗 / プローブ\"| FWD[\"TCP / UDP 転送\"]\n    Sdisp -->|認証成功| Sh[\"E：ハンドシェイクと一時的な信頼済み証明書<br/>D：dest プロファイルの事前構築\"]\n    Sh --> Smux[\"内側：mux + padding / Vision\"]\n    Smux --> TGT[\"接続先サイト\"]\n  end\n  FWD ==> DEST[\"実在するカバーサイト：dest<br/>正規 CA 証明書\"]\n",
+    "path": "/diagrams/protocol-design/ja/architecture.svg",
+    "width": 867.96484375,
+    "height": 1423.425048828125
+  },
+  "ja/server": {
+    "caption": "サーバーの状態機械",
+    "fullSize": "図を原寸で開く",
+    "viewSource": "Mermaid ソースを表示",
+    "source": "stateDiagram-v2\n    state \"ClientHello を読み取る\" as Read\n    state \"SNI、keyshare、認証格納先を解析\" as Parse\n    state \"認証トークンを検証\" as Verify\n    state \"dest に転送\" as Forward\n    state \"ローカルでハンドシェイクを完了\" as Handshake\n    state \"応答時間を調整\" as Timing\n    state \"一時的な信頼済み証明書を送信\" as Certificate\n    state \"内側 mux / Vision\" as Inner\n    [*] --> Read\n    Read --> Parse\n    Parse --> Forward: SNI 不一致 / keyshare なし\n    Parse --> Verify: 有効なパラメーター\n    Verify --> Forward: GCM / 時刻 / short_id / リプレイ検証に失敗\n    Verify --> Handshake: 検証成功、shared を取得\n    Handshake --> Timing: ローカル処理時間を差し引いた dest.rtt\n    Timing --> Certificate: cert_mac + ML-DSA-65\n    Certificate --> Inner\n    Inner --> [*]: ストリーム終了\n    Forward --> [*]: 実サイトと双方向転送\n",
+    "path": "/diagrams/protocol-design/ja/server.svg",
+    "width": 585.640625,
+    "height": 868.1796875
+  },
+  "ja/client": {
+    "caption": "クライアントの状態機械",
+    "fullSize": "図を原寸で開く",
+    "viewSource": "Mermaid ソースを表示",
+    "source": "stateDiagram-v2\n    state \"TCP / QUIC を選択\" as Transport\n    state \"ClientHello を構築\" as Hello\n    state \"ハンドシェイクを進める\" as Handshake\n    state \"証明書を検証・分類\" as Certificate\n    state \"内側プロキシ\" as Inner\n    state \"RealSite：トランスポートを確認\" as RealSite\n    state \"TCP：合意したプロトコルでサイトへアクセス\" as Spider\n    state \"QUIC：プロキシ接続を拒否\" as Reject\n    [*] --> SOCKS5\n    SOCKS5 --> Transport\n    Transport --> Hello: A のフィンガープリントと B/G の認証格納先\n    Hello --> Handshake\n    Handshake --> Certificate\n    Certificate --> Inner: UmbraTrusted：バインディングと ML-DSA 検証成功\n    Certificate --> RealSite: RealSite：通常の証明書検証に成功\n    Certificate --> [*]: Invalid：TLS エラー\n    RealSite --> Spider: TCP と対応 ALPN\n    RealSite --> Reject: QUIC\n    Inner --> [*]: ストリーム終了\n    Spider --> [*]: アクセス後に切断\n    Reject --> [*]: プロキシデータを送信しない\n",
+    "path": "/diagrams/protocol-design/ja/client.svg",
+    "width": 804.88671875,
+    "height": 847
+  },
+  "ca/architecture": {
+    "caption": "Arquitectura general",
+    "fullSize": "Obrir el diagrama a mida completa",
+    "viewSource": "Veure el codi Mermaid",
+    "source": "flowchart TB\n  APP[\"Navegador / aplicació\"] -->|SOCKS5| Cs\n  subgraph Client[\"umbra client\"]\n    Cs[\"Entrada SOCKS5\"] --> Cmux[\"Capa interna: mux + padding / Vision solo\"]\n    Cmux --> Ctls[\"A: client TLS 1.3 propi<br/>B: autenticació REALITY<br/>J: empremta de Chrome\"]\n    Ctls --> Cout{\"G/H: transport extern<br/>Segmentació TCP o QUIC\"}\n  end\n  Cout ==>|\"TLS 1.3 / QUIC, SNI = dest\"| Sdisp\n  subgraph Server[\"umbra server\"]\n    Sdisp[\"C: distribució<br/>Llegir ClientHello i autenticar\"] -->|\"Error d’autenticació / sondeig\"| FWD[\"Reenviament TCP / UDP\"]\n    Sdisp -->|Autenticació correcta| Sh[\"E: negociació i certificat temporal de confiança<br/>D: perfil dest preparat\"]\n    Sh --> Smux[\"Capa interna: mux + padding / Vision\"]\n    Smux --> TGT[\"Lloc de destinació\"]\n  end\n  FWD ==> DEST[\"Lloc real de cobertura: dest<br/>Certificat CA real\"]\n",
+    "path": "/diagrams/protocol-design/ca/architecture.svg",
+    "width": 890.28125,
+    "height": 1367.2578125
+  },
+  "ca/server": {
+    "caption": "Màquina d’estats del servidor",
+    "fullSize": "Obrir el diagrama a mida completa",
+    "viewSource": "Veure el codi Mermaid",
+    "source": "stateDiagram-v2\n    state \"Llegir ClientHello\" as Read\n    state \"Analitzar SNI, keyshare i el camp d’autenticació\" as Parse\n    state \"Verificar el testimoni d’autenticació\" as Verify\n    state \"Reenviar a dest\" as Forward\n    state \"Completar la negociació localment\" as Handshake\n    state \"Ajustar els temps\" as Timing\n    state \"Enviar el certificat temporal de confiança\" as Certificate\n    state \"Capa interna mux / Vision\" as Inner\n    [*] --> Read\n    Read --> Parse\n    Parse --> Forward: SNI incorrecte / falta keyshare\n    Parse --> Verify: Paràmetres vàlids\n    Verify --> Forward: Error de GCM / temps / short_id / antirepetició\n    Verify --> Handshake: Acceptat; shared disponible\n    Handshake --> Timing: dest.rtt menys el temps de processament local\n    Timing --> Certificate: cert_mac + ML-DSA-65\n    Certificate --> Inner\n    Inner --> [*]: Fi del flux\n    Forward --> [*]: Reenviament bidireccional al lloc real\n",
+    "path": "/diagrams/protocol-design/ca/server.svg",
+    "width": 590.92578125,
+    "height": 906.5452880859375
+  },
+  "ca/client": {
+    "caption": "Màquina d’estats del client",
+    "fullSize": "Obrir el diagrama a mida completa",
+    "viewSource": "Veure el codi Mermaid",
+    "source": "stateDiagram-v2\n    state \"Triar TCP / QUIC\" as Transport\n    state \"Construir ClientHello\" as Hello\n    state \"Executar la negociació\" as Handshake\n    state \"Verificar i classificar el certificat\" as Certificate\n    state \"Servidor intermediari intern\" as Inner\n    state \"RealSite: comprovar el transport\" as RealSite\n    state \"TCP: visitar el lloc amb el protocol negociat\" as Spider\n    state \"QUIC: rebutjar la connexió del servidor intermediari\" as Reject\n    [*] --> SOCKS5\n    SOCKS5 --> Transport\n    Transport --> Hello: Empremta A i camp d’autenticació B/G\n    Hello --> Handshake\n    Handshake --> Certificate\n    Certificate --> Inner: UmbraTrusted: vinculació i ML-DSA verificats\n    Certificate --> RealSite: RealSite: validació ordinària del certificat correcta\n    Certificate --> [*]: Invalid: error TLS\n    RealSite --> Spider: TCP i ALPN compatible\n    RealSite --> Reject: QUIC\n    Inner --> [*]: Fi del flux\n    Spider --> [*]: Tancar després de la visita\n    Reject --> [*]: No enviar dades del servidor intermediari\n",
+    "path": "/diagrams/protocol-design/ca/client.svg",
+    "width": 823.390625,
+    "height": 865.6937255859375
+  }
+}

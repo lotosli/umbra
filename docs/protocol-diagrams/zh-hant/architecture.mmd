@@ -1,0 +1,15 @@
+flowchart TB
+  APP["瀏覽器 / 應用"] -->|SOCKS5| Cs
+  subgraph Client["umbra client"]
+    Cs["SOCKS5 入站"] --> Cmux["內層：mux + padding / Vision solo"]
+    Cmux --> Ctls["元件 A：自研 TLS 1.3 客戶端<br/>元件 B：REALITY 認證<br/>元件 J：Chrome 指紋"]
+    Ctls --> Cout{"元件 G/H：外層<br/>TCP 分段或 QUIC"}
+  end
+  Cout ==>|"TLS 1.3 / QUIC，SNI = dest"| Sdisp
+  subgraph Server["umbra server"]
+    Sdisp["元件 C：分派<br/>讀取 ClientHello 並認證"] -->|"認證失敗 / 探測"| FWD["TCP / UDP 轉發"]
+    Sdisp -->|認證成功| Sh["元件 E：握手與臨時可信證書<br/>元件 D：預構建 dest 檔案"]
+    Sh --> Smux["內層：mux + padding / Vision"]
+    Smux --> TGT["目標站"]
+  end
+  FWD ==> DEST["dest 真實站<br/>真實 CA 證書"]

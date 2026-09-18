@@ -87,3 +87,18 @@ pnpm --filter @umbra/web run licenses
 ## 更新依赖
 
 修改 catalog 后更新锁文件、执行冻结安装验证、许可证门禁、生产构建和全部测试。审阅 `pnpm why <package> --recursive`，核实新增包实际进入的是开发工具、服务器还是浏览器。新增精确例外或更新例外版本时，同步修改本文件、政策测试和 `licenses-lib.ts`；不能只扩大允许范围使 CI 通过。
+
+## 协议图表工具链（2026-09-18）
+
+`@mermaid-js/mermaid-cli@11.17.0`（MIT）仅用于维护者生成静态 SVG；生产浏览器与 Worker 不运行 Mermaid。通过 `tools/render-protocol-diagrams.mjs` 调用已安装的 Chromium，输出不使用 Font Awesome 图标或字体。包的原始 LICENSE/NOTICE 保留在开发依赖中。
+
+新增精确许可证例外：
+
+| 包 | 版本 | pnpm 声明 | 审查及使用范围 |
+| --- | --- | --- | --- |
+| @fortawesome/fontawesome-free | 7.3.1 | (CC-BY-4.0 AND OFL-1.1 AND MIT) | Mermaid CLI 的图标、字体与代码各自许可；本站不使用这些图标或字体，也不复制这些资源到生产 |
+| dompurify | 3.4.15 | (MPL-2.0 OR Apache-2.0) | 采用上游提供的 Apache-2.0 选项；只用于离线 SVG 生成 |
+| elkjs | 0.9.3 | EPL-2.0 | Mermaid 布局工具依赖；未修改源代码，不分发其运行库，仅发布生成的图 |
+| khroma | 2.1.0 | Unknown | 已核实安装包 `license` 文件为 MIT，作者 Fabio Spampinato / Andrew Maney；元数据遗漏，按包名与版本精确放行 |
+
+上述许可不向其他包或新版本泛化。更新渲染器时必须重新检查锁文件、许可与生产资源。

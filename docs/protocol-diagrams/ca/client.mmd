@@ -1,0 +1,22 @@
+stateDiagram-v2
+    state "Triar TCP / QUIC" as Transport
+    state "Construir ClientHello" as Hello
+    state "Executar la negociació" as Handshake
+    state "Verificar i classificar el certificat" as Certificate
+    state "Servidor intermediari intern" as Inner
+    state "RealSite: comprovar el transport" as RealSite
+    state "TCP: visitar el lloc amb el protocol negociat" as Spider
+    state "QUIC: rebutjar la connexió del servidor intermediari" as Reject
+    [*] --> SOCKS5
+    SOCKS5 --> Transport
+    Transport --> Hello: Empremta A i camp d’autenticació B/G
+    Hello --> Handshake
+    Handshake --> Certificate
+    Certificate --> Inner: UmbraTrusted: vinculació i ML-DSA verificats
+    Certificate --> RealSite: RealSite: validació ordinària del certificat correcta
+    Certificate --> [*]: Invalid: error TLS
+    RealSite --> Spider: TCP i ALPN compatible
+    RealSite --> Reject: QUIC
+    Inner --> [*]: Fi del flux
+    Spider --> [*]: Tancar després de la visita
+    Reject --> [*]: No enviar dades del servidor intermediari

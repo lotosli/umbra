@@ -13,6 +13,10 @@ const allowedLicenses = new Set([
 
 function reviewedException(name: string, version: string, license: string): boolean {
   // Explicit build-tool/data exceptions. See docs/website-dependencies.md before updating these.
+  if (name === '@fortawesome/fontawesome-free' && version === '7.3.1') return license === '(CC-BY-4.0 AND OFL-1.1 AND MIT)';
+  if (name === 'dompurify' && version === '3.4.15') return license === '(MPL-2.0 OR Apache-2.0)';
+  if (name === 'elkjs' && version === '0.9.3') return license === 'EPL-2.0';
+  if (name === 'khroma' && version === '2.1.0') return license === 'Unknown';
   if (license === 'Python-2.0') return name === 'argparse' && version === '2.0.1';
   if (license === 'CC-BY-4.0') return name === 'caniuse-lite' && version === '1.0.30001810';
   if (license === 'MPL-2.0') {

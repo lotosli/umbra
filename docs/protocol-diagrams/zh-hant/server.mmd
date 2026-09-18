@@ -1,0 +1,20 @@
+stateDiagram-v2
+    state "讀取 ClientHello" as Read
+    state "解析 SNI、keyshare 和認證載體" as Parse
+    state "校驗認證令牌" as Verify
+    state "轉發 dest" as Forward
+    state "本地完成握手" as Handshake
+    state "時序對齊" as Timing
+    state "傳送臨時可信證書" as Certificate
+    state "內層 mux / Vision" as Inner
+    [*] --> Read
+    Read --> Parse
+    Parse --> Forward: SNI 不符 / 無 keyshare
+    Parse --> Verify: 引數有效
+    Verify --> Forward: GCM / 時間 / short_id / 重放校驗失敗
+    Verify --> Handshake: 透過，獲得 shared
+    Handshake --> Timing: 扣除本地耗時後的 dest.rtt
+    Timing --> Certificate: cert_mac + ML-DSA-65
+    Certificate --> Inner
+    Inner --> [*]: 流結束
+    Forward --> [*]: 與真實站雙向轉發

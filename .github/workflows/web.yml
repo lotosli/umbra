@@ -6,6 +6,7 @@ on:
   push:
     paths:
       - 'apps/web/**'
+      - 'tools/render-protocol-diagrams.mjs'
       - 'docs/**'
       - 'README*.md'
       - 'CONTRIBUTING.md'
@@ -20,6 +21,7 @@ on:
   pull_request:
     paths:
       - 'apps/web/**'
+      - 'tools/render-protocol-diagrams.mjs'
       - 'docs/**'
       - 'README*.md'
       - 'CONTRIBUTING.md'
@@ -43,6 +45,7 @@ jobs:
     env:
       CI: 'true'
       WRANGLER_SEND_METRICS: 'false'
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

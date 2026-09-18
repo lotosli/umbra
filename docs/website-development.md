@@ -177,3 +177,21 @@ PLAYWRIGHT_BASE_URL=https://umbra.cat pnpm test:e2e
 主内容最大宽度 1440px，首屏桌面双栏、960px 以下堆叠；文档正文维持独立阅读宽度。导航在 760px 以下切换移动菜单。正文一般为 14–18px，辅助说明至少 12px；大标题使用较高字重。首页代码窗口展示真实源码构建命令，不展示模拟连接或性能数据。
 
 `tests/e2e/visual-system.spec.ts` 对七语、320/390/768/1280/1440px 和八种页面模板检查横向溢出，并验证双栏首屏、主题颜色、正文对比度、键盘焦点和减少动画偏好。更新布局时需运行浏览器测试并检查截图，不能用隐藏全页溢出掩盖布局问题。
+
+## 完整协议设计与静态图表
+
+七语全文位于 `docs/site/<locale>/reference/protocol-design.mdx`；中文技术来源为 `docs/protocol-design.md`。它保留完整设计、修订和历史草案，部署操作仍以使用指南为准。
+
+修改流程：先审阅中文技术来源，再同步七种语言的正文、代码注释与图表标签。`sourceRevision` 记录已审阅来源的 SHA-256。`docs/protocol-diagrams/<locale>/*.mmd` 是三张本地化图表的可编辑源码；中文图表必须与原稿一致。标签、可访问说明和按钮文字在 `labels.json`。在完成全文审阅后重新生成：
+
+```sh
+PUPPETEER_EXECUTABLE_PATH="/path/to/chrome" node tools/render-protocol-diagrams.mjs
+pnpm build
+pnpm check
+pnpm test
+pnpm test:e2e
+```
+
+维护命令使用开发依赖中的 Mermaid CLI 和本机 Chromium，生成 21 张 SVG 及审阅摘要 `manifest.json`。正常构建和生产请求不运行 Chromium 或 Mermaid。生成的 SVG 不包含脚本、外部资源或 HTML foreignObject；浏览器只加载静态图片。读者可滚动图表、打开原图、展开本语言 Mermaid 源码，无需 JavaScript。
+
+内容构建同时校验来源摘要、七语章节数、代码 token、三个图表引用、SVG 与 Mermaid 源码摘要和元数据。对翻译或图表的任何改动都需要重新审阅并更新摘要；不要通过仅修改摘要来跳过翻译复核。浏览器用例验证手机无横向溢出、说明文字不覆盖图表、无 JavaScript 阅读及搜索收录。

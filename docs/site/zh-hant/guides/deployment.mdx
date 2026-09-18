@@ -7,9 +7,16 @@ order: 6
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 先在前景完成一次用戶端到伺服器端的連線，再設定背景執行。以下範例使用 Linux systemd 管理伺服器端，通過 journald 查看紀錄。
+
+
+## 完成這一步後，如何確認成功
+
+部署完成後，在另一台用戶端執行快速開始中的 curl 指令，確認能收到網頁回應。接著重新啟動服務，再檢查一次，以確認遠端可達、設定檔可讀取，且服務能在重啟後恢復。
 
 ## 準備程式和設定
 

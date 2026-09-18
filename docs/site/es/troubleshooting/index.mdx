@@ -7,9 +7,16 @@ order: 17
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Anota versiones, plataforma y error. Reproduce una sola solicitud y cambia un ajuste cada vez.
+
+
+## Cómo comprobar el resultado
+
+Localiza primero el punto de fallo: si se rechaza la conexión a 127.0.0.1:1080, revisa el cliente local; si la conexión remota agota el tiempo, revisa el proceso del servidor, la dirección y el puerto; si falla la negociación, comprueba las claves, short_id, server_name y los relojes. Tras corregirlo, repite curl antes de volver a la aplicación.
 
 ## Prueba directa
 

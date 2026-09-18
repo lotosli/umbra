@@ -13,6 +13,10 @@ describe('Cloudflare request boundary', () => {
   it('negotiates the site language from Accept-Language at the root path', async () => {
     const zh = await server.fetch(new Request('https://umbra.cat/', { headers: { 'accept-language': 'zh-CN,zh;q=0.9' } }));
     expect(zh.status).toBe(307);
+    expect(zh.headers.get('vary')).toBe('Accept-Language');
+    expect(zh.headers.get('cache-control')).toBe('no-store');
+    const www = await server.fetch(new Request('https://www.umbra.cat/?from=nav', { headers: { 'accept-language': 'fr' } }));
+    expect(www.headers.get('location')).toBe('https://umbra.cat/fr/?from=nav');
     expect(zh.headers.get('location')).toBe('https://umbra.cat/zh-hans/');
     const hant = await server.fetch(new Request('https://umbra.cat/', { headers: { 'accept-language': 'zh-TW' } }));
     expect(hant.headers.get('location')).toBe('https://umbra.cat/zh-hant/');

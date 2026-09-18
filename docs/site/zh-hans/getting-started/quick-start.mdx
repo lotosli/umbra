@@ -7,9 +7,16 @@ order: 3
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 本指南先建立 TCP 连接。准备一台服务器、一台客户端设备，并在两端安装同一版本的 Umbra。客户端需要能访问服务器，服务器需要能访问用于掩护的真实网站。
+
+
+## 这一步完成后，你应该看到什么
+
+成功的标志是：两端进程保持运行，curl 通过本地 SOCKS5 返回目标网页。只看到客户端启动还不代表远端连接成功。若请求失败，先检查服务器 TCP 端口和两端身份字段，再排查应用设置。
 
 ## 1. 生成密钥
 

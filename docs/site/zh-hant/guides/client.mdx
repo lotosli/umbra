@@ -7,9 +7,16 @@ order: 5
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Umbra 用戶端在裝置上提供一個本機 SOCKS5 代理。應用程式把請求交給這個入口，再由 Umbra 連線遠端伺服器端。你可以直接設定應用程式，也可以通過現有代理用戶端統一管理規則。
+
+
+## 完成這一步後，如何確認成功
+
+先在用戶端電腦上執行本文的 curl 指令，再為一個應用程式設定 SOCKS5。兩步都成功後，再接入規則用戶端。網頁能透過 TCP 開啟不代表 UDP 可用；需要 UDP 的應用程式須另外驗證。
 
 ## 1. 啟動 Umbra 用戶端
 

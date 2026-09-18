@@ -23,6 +23,11 @@ export const requiredDocumentIds = [
   'troubleshooting', 'contributing',
 ] as const;
 
+const contentDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value && date.getTime() <= Date.now();
+}, 'Date must be a real, non-future calendar date');
+
 export const frontmatterSchema = z.object({
   id: z.string().regex(/^[a-z0-9-]+(?:\/[a-z0-9-]+)*$/),
   title: z.string().trim().min(2),
@@ -32,6 +37,8 @@ export const frontmatterSchema = z.object({
   version: z.string().regex(/^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/i),
   source: z.array(z.string().min(1)).nonempty(),
   translation: z.literal('complete'),
+  updatedAt: contentDate,
+  reviewedAt: contentDate,
 });
 
 export interface Article {
@@ -263,7 +270,7 @@ export async function generateContent(repositoryRoot: string): Promise<{ article
     'export interface GeneratedDocument {',
     '  id: string; locale: string; title: string; description: string;',
     '  section: string; order: number; version: string; source: string[];',
-    "  translation: 'complete'; url: string;",
+    "  translation: 'complete'; url: string; updatedAt: string; reviewedAt: string;",
     '}',
     `export const documents: GeneratedDocument[] = ${JSON.stringify(articles.map((article) => ({
       ...article.metadata, locale: article.locale, url: articleUrl(article),

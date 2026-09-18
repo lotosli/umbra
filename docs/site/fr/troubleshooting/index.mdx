@@ -7,9 +7,16 @@ order: 17
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Notez versions, plateforme et erreur. Reproduisez avec une seule requête et modifiez un réglage à la fois.
+
+
+## Comment vérifier le résultat
+
+Repérez d’abord l’étape en échec : si 127.0.0.1:1080 refuse la connexion, vérifiez le client local ; en cas de délai dépassé à distance, vérifiez le processus serveur, son adresse et son port ; si la négociation échoue, contrôlez les clés, short_id, server_name et les deux horloges. Relancez curl après correction, puis testez l’application.
 
 ## Tester directement
 

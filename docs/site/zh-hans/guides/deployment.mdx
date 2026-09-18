@@ -7,9 +7,16 @@ order: 6
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 先在前台完成一次客户端到服务端的连接，再设置后台运行。以下示例使用 Linux systemd 管理服务端，通过 journald 查看日志。
+
+
+## 这一步完成后，你应该看到什么
+
+部署完成后，在另一台客户端运行快速开始中的 curl 命令，确认能收到网页响应。随后重启服务，再重复检查。这样可以同时确认远端可达、配置可读取，以及服务重启后能够恢复。
 
 ## 准备程序和配置
 

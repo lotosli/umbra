@@ -11,7 +11,7 @@ export const Route = createFileRoute('/$locale/docs/$')({
     await docs.getPage(result.path)?.preload();
     return result;
   },
-  head: ({ loaderData, match }) => loaderData ? pageHead(match.context.locale, `docs/${loaderData.metadata.id}`, loaderData.metadata.title, loaderData.metadata.description) : {},
+  head: ({ loaderData, match }) => loaderData ? pageHead(match.context.locale, `docs/${loaderData.metadata.id}`, loaderData.metadata.title, loaderData.metadata.description, loaderData.metadata) : {},
   component: Article,
 });
 

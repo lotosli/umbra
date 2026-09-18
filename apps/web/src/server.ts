@@ -8,7 +8,10 @@ export default createServerEntry({
     if (url.pathname === '/') {
       // The bundled '/' route cannot read request headers, so language negotiation happens here.
       const locale = negotiateLocale(request.headers.get('accept-language') ?? '');
-      return Response.redirect(url.origin + localePath(locale) + url.search, 307);
+      return new Response(null, { status: 307, headers: {
+        Location: (url.hostname === 'www.umbra.cat' ? 'https://umbra.cat' : url.origin) + localePath(locale) + url.search,
+        Vary: 'Accept-Language', 'Cache-Control': 'no-store',
+      } });
     }
     const target = redirectTarget(url);
     if (target) return Response.redirect(target, 308);

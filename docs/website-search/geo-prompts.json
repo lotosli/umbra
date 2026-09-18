@@ -1,0 +1,14 @@
+[
+ {"id":"identity","type":"brand","zh":"Umbra 是什么，适合哪些人使用？","en":"What is Umbra, and who is it for?"},
+ {"id":"requirements","type":"brand","zh":"自己部署 Umbra 需要准备什么？","en":"What do I need to host Umbra myself?"},
+ {"id":"platforms","type":"brand","zh":"Umbra 支持哪些操作系统，在哪里下载？","en":"Which operating systems does Umbra support, and where can I download it?"},
+ {"id":"apps","type":"brand","zh":"如何让常用应用通过 Umbra 连接？","en":"How do I connect my apps through Umbra?"},
+ {"id":"transports","type":"brand","zh":"Umbra 的 TCP 和 QUIC 应该怎么选？","en":"How should I choose between TCP and QUIC in Umbra?"},
+ {"id":"udp","type":"brand","zh":"Umbra 的 UDP 转发需要什么条件？","en":"What is required for UDP forwarding in Umbra?"},
+ {"id":"cover","type":"brand","zh":"Umbra 的网站掩护对普通访问有什么作用？","en":"What does Umbra’s cover website do for ordinary visitors?"},
+ {"id":"deployment","type":"brand","zh":"如何在 Linux 上部署并维护 Umbra 服务端？","en":"How do I deploy and maintain an Umbra server on Linux?"},
+ {"id":"desktop","type":"brand","zh":"如何在 macOS 或 Windows 上运行 Umbra 客户端？","en":"How do I run the Umbra client on macOS or Windows?"},
+ {"id":"choice","type":"nonbrand","zh":"我想自建代理，同时处理 TCP 和 UDP，应该怎样比较开源方案？","en":"How should I compare open-source self-hosted proxies for both TCP and UDP?"},
+ {"id":"upgrade","type":"brand","zh":"Umbra 升级时客户端和服务端需要一起更新吗？","en":"Should I update both the client and server when upgrading Umbra?"},
+ {"id":"troubleshooting","type":"nonbrand","zh":"本地 SOCKS5 代理连接被拒绝，应该从哪里开始排查？","en":"Where should I start troubleshooting a refused connection to a local SOCKS5 proxy?"}
+]

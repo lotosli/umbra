@@ -7,9 +7,16 @@ order: 6
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Valida una conexión en primer plano antes de crear el servicio. En Linux, systemd gestiona el proceso y journald recoge los registros.
+
+
+## Cómo comprobar el resultado
+
+Después del despliegue, ejecuta el comando curl del inicio rápido desde otro cliente y comprueba que recibes una página. Reinicia el servicio y repite la prueba. Así verificas el acceso remoto, la lectura de la configuración y la recuperación tras reiniciar.
 
 ## Preparar archivos y usuario
 

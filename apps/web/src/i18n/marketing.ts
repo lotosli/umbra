@@ -92,6 +92,7 @@ export interface MarketingCopy {
     steps: readonly { title: string; description: string }[];
     implementation: string;
     implementationDescription: string;
+    setupLabel: string;
     strengthsLabel: string;
     limitsLabel: string;
     layers: readonly {
@@ -295,73 +296,74 @@ export const marketingCopy: Record<Locale, MarketingCopy> = {
         }
       ],
       "implementation": "Choose for the way you work",
-      "implementationDescription": "Compare what you'll maintain, how requests travel and how your apps connect. Xray here refers to VLESS + REALITY + Vision over TCP.",
-      "strengthsLabel": "Useful for",
-      "limitsLabel": "Before you start",
+      "implementationDescription": "Compare how your apps connect and what you need to run on the server. These options include both complete tools and protocol combinations; each links to its setup instructions.",
+      "strengthsLabel": "When it fits",
+      "limitsLabel": "What to set up",
       "layers": [
         {
-          "title": "Umbra",
-          "description": "A client/server pair combining website cover with TCP and QUIC.",
+          "title": "Umbra · Self-hosted proxy",
+          "description": "Run a proxy on your own server and connect your apps through one local SOCKS5 address.",
           "strengths": [
-            "Managing both ends and connecting apps through one entry point."
+            "Use one client for TCP and UDP, with Vision for TCP and QUIC for UDP if needed, without running two separate proxy tools."
           ],
           "limits": [
-            "Currently an Alpha CLI; use compatible versions at both ends."
+            "Install the same Umbra version on both ends and start it from the command line. QUIC requires an open UDP port and a QUIC-capable cover website."
           ]
         },
         {
-          "title": "Xray + VLESS + REALITY + Vision",
-          "description": "REALITY and Vision within the Xray platform.",
+          "title": "Xray + VLESS + REALITY + Vision · Protocol combination",
+          "description": "Set up REALITY connections in Xray, with Vision handling eligible HTTPS traffic.",
           "strengths": [
-            "Configuring protocols, transports and routing in Xray."
+            "Keep using an Xray client and routing configuration that support this combination."
           ],
           "limits": [
-            "Match core settings, flow and client support."
+            "Use the same user ID at both ends. Enter the server’s REALITY identity parameters in the client and set flow to xtls-rprx-vision."
           ]
         },
         {
-          "title": "VMess AEAD",
-          "description": "An encrypted proxy protocol with a choice of underlying transports.",
+          "title": "VMess AEAD · Proxy protocol",
+          "description": "Connect a VMess-capable client to your VMess server.",
           "strengths": [
-            "Working with applications that already support VMess."
+            "Keep an existing VMess setup or choose a supported transport such as TCP or WebSocket."
           ],
           "limits": [
-            "Check client versions and the chosen transport combination."
+            "Match the user ID and transport at both ends. For WebSocket, match the path; when enabling TLS, configure the domain and certificate."
           ]
         },
         {
-          "title": "Trojan",
-          "description": "TLS-based proxying with website fallback.",
+          "title": "Trojan · TLS-based proxy protocol",
+          "description": "Serve a proxy under your own domain and TLS certificate, with other requests sent to a website.",
           "strengths": [
-            "A conventional TLS service deployment."
+            "Use a Trojan client when you are comfortable maintaining a domain and certificate."
           ],
           "limits": [
-            "Typical setups maintain a domain and certificate; UDP travels over TCP."
+            "Configure the server domain, valid certificate and password, then enter that password in the client. Standard Trojan also carries UDP requests over a TCP connection."
           ]
         },
         {
-          "title": "Shadowsocks",
-          "description": "Key-based encrypted proxying.",
+          "title": "Shadowsocks · Encrypted proxy protocol",
+          "description": "Protect the client-to-server connection with a key and forward TCP and UDP traffic.",
           "strengths": [
-            "Configuring TCP and UDP proxying with a key."
+            "Set up an encrypted proxy with a client that supports your chosen Shadowsocks version."
           ],
           "limits": [
-            "Website cover or extra transport plugins require separate setup."
+            "Match the encryption method and key on both ends; open the UDP port if needed. Configure any extra plugin at both ends according to its instructions."
           ]
         },
         {
-          "title": "Hysteria 2",
-          "description": "QUIC-based transport with unreliable datagrams for UDP.",
+          "title": "Hysteria 2 · QUIC-based proxy",
+          "description": "Reach your server over UDP to forward your apps’ TCP and UDP requests.",
           "strengths": [
-            "Using QUIC and evaluating real-time UDP applications."
+            "Use QUIC where UDP is available, with UDP datagrams that do not wait for lost packets to be retransmitted."
           ],
           "limits": [
-            "Requires a usable UDP path and TLS configuration."
+            "Open the server’s UDP port and configure TLS certificates and authentication. If the network blocks UDP, choose another working connection method."
           ]
         }
       ],
       "caveat": "Transports follow your configuration. Read the guides for setup steps and the requirements of each mode.",
-      "read": "Read the full comparison"
+      "read": "Read the full comparison",
+      "setupLabel": "See setup instructions"
     },
     "security": {
       "eyebrow": "Use Umbra securely",
@@ -580,73 +582,74 @@ export const marketingCopy: Record<Locale, MarketingCopy> = {
         }
       ],
       "implementation": "按使用需求比较方案",
-      "implementationDescription": "从需要维护的内容、传输路径和现有客户端支持来选择。下表中的 Xray 指 VLESS + REALITY + Vision 的 TCP 组合。",
-      "strengthsLabel": "适合的需求",
-      "limitsLabel": "使用前确认",
+      "implementationDescription": "先看应用如何接入、服务器需要准备什么，再选择连接方式。下面区分完整工具与协议组合，点击配置入口可查看具体步骤。",
+      "strengthsLabel": "适合怎样使用",
+      "limitsLabel": "需要准备",
       "layers": [
         {
-          "title": "Umbra",
-          "description": "一套客户端与服务端，整合网站掩护和 TCP/QUIC。",
+          "title": "Umbra · 自建代理工具",
+          "description": "在自己的服务器上搭建代理，让常用应用通过一个本地 SOCKS5 入口连接。",
           "strengths": [
-            "希望自己管理两端，并用一个入口接入应用。"
+            "一个客户端同时处理 TCP 与 UDP；可让 TCP 使用 Vision、UDP 使用 QUIC，无需分别运行两套代理。"
           ],
           "limits": [
-            "当前为 Alpha 命令行程序；两端使用匹配版本。"
+            "服务器和客户端安装同一版本 Umbra，通过命令行启动。使用 QUIC 时，开放 UDP 端口并选择支持 QUIC 的掩护网站。"
           ]
         },
         {
-          "title": "Xray + VLESS + REALITY + Vision",
-          "description": "在 Xray 中组合 REALITY 与 Vision。",
+          "title": "Xray + VLESS + REALITY + Vision · 协议组合",
+          "description": "用 Xray 部署 REALITY 连接，并用 Vision 处理适用的 HTTPS 流量。",
           "strengths": [
-            "希望在 Xray 中配置相应协议、传输和路由。"
+            "希望继续使用支持这套组合的 Xray 客户端与路由配置。"
           ],
           "limits": [
-            "核心配置、flow 和客户端支持需匹配。"
+            "在两端配置相同的用户 ID；客户端填写服务端对应的 REALITY 身份参数，并将 flow 设为 xtls-rprx-vision。"
           ]
         },
         {
-          "title": "VMess AEAD",
-          "description": "加密代理协议，可搭配不同传输。",
+          "title": "VMess AEAD · 代理协议",
+          "description": "让支持 VMess 的客户端连接到你的 VMess 服务端。",
           "strengths": [
-            "现有应用已经支持 VMess。"
+            "继续使用已有 VMess 节点，或在其支持的 TCP、WebSocket 等传输中选择。"
           ],
           "limits": [
-            "确认客户端版本及具体传输组合。"
+            "两端填写相同用户 ID 和传输方式；选择 WebSocket 时对齐路径，启用 TLS 时配置域名与证书。"
           ]
         },
         {
-          "title": "Trojan",
-          "description": "基于 TLS，支持未认证请求回落到网站。",
+          "title": "Trojan · 基于 TLS 的代理协议",
+          "description": "使用自己的域名和 TLS 证书提供代理，并将其他访问交给网站。",
           "strengths": [
-            "希望采用常规 TLS 服务的部署方式。"
+            "愿意维护域名与证书，并使用支持 Trojan 的客户端。"
           ],
           "limits": [
-            "常见部署需要维护域名和证书；UDP 经 TCP 承载。"
+            "配置服务端域名、有效证书和密码，在客户端填写同一密码。标准 Trojan 的 UDP 请求也通过 TCP 连接传送。"
           ]
         },
         {
-          "title": "Shadowsocks",
-          "description": "基于密钥的加密代理。",
+          "title": "Shadowsocks · 加密代理协议",
+          "description": "用密钥保护客户端与服务器之间的代理连接，提供 TCP 和 UDP 转发。",
           "strengths": [
-            "希望用密钥配置 TCP/UDP 代理。"
+            "需要直接配置加密代理，已有支持所选 Shadowsocks 版本的客户端。"
           ],
           "limits": [
-            "额外的网站掩护或传输插件需要单独配置。"
+            "两端使用相同的加密方式和密钥；需要 UDP 时开放对应 UDP 端口。额外插件需在两端按插件说明配置。"
           ]
         },
         {
-          "title": "Hysteria 2",
-          "description": "基于 QUIC，UDP 使用不可靠数据报。",
+          "title": "Hysteria 2 · 基于 QUIC 的代理工具",
+          "description": "通过 UDP 网络连接服务器，转发应用的 TCP 和 UDP 请求。",
           "strengths": [
-            "希望使用 QUIC，并评估实时 UDP 应用。"
+            "网络允许 UDP，希望使用 QUIC 传输，并让 UDP 数据无需等待丢包重传。"
           ],
           "limits": [
-            "网络需支持 UDP，并配置 TLS。"
+            "开放服务器 UDP 端口，配置 TLS 证书与认证信息。若所在网络阻断 UDP，需要选择其他可用的连接方案。"
           ]
         }
       ],
       "caveat": "传输方式由配置决定。查看详细指南，了解各模式的设置方法和使用条件。",
-      "read": "查看详细对比"
+      "read": "查看详细对比",
+      "setupLabel": "查看配置方法"
     },
     "security": {
       "eyebrow": "安全使用",
@@ -865,73 +868,74 @@ export const marketingCopy: Record<Locale, MarketingCopy> = {
         }
       ],
       "implementation": "按使用需求比較方案",
-      "implementationDescription": "從需要維護的內容、傳輸路徑和現有用戶端支援來選擇。下表中的 Xray 指 VLESS + REALITY + Vision 的 TCP 組合。",
-      "strengthsLabel": "適合的需求",
-      "limitsLabel": "使用前確認",
+      "implementationDescription": "先看應用程式如何連接、伺服器需要準備什麼，再選擇連線方式。以下區分完整工具與協定組合，各項都有設定說明可供參考。",
+      "strengthsLabel": "適合怎麼使用",
+      "limitsLabel": "需要準備",
       "layers": [
         {
-          "title": "Umbra",
-          "description": "一套用戶端與伺服器端，整合網站掩護和 TCP/QUIC。",
+          "title": "Umbra · 自架代理工具",
+          "description": "在自己的伺服器上架設代理，讓常用應用程式透過本機 SOCKS5 入口連線。",
           "strengths": [
-            "希望自己管理兩端，並用一個入口連接應用程式。"
+            "一個用戶端同時處理 TCP 與 UDP；可讓 TCP 使用 Vision、UDP 使用 QUIC，無須分別執行兩套代理。"
           ],
           "limits": [
-            "目前為 Alpha 命令列程式；兩端使用匹配版本。"
+            "伺服器與用戶端安裝相同版本的 Umbra，以命令列啟動。使用 QUIC 時須開放 UDP 連接埠，並選擇支援 QUIC 的掩護網站。"
           ]
         },
         {
-          "title": "Xray + VLESS + REALITY + Vision",
-          "description": "在 Xray 中組合 REALITY 與 Vision。",
+          "title": "Xray + VLESS + REALITY + Vision · 協定組合",
+          "description": "以 Xray 建立 REALITY 連線，並由 Vision 處理適用的 HTTPS 流量。",
           "strengths": [
-            "希望在 Xray 中設定相應協議、傳輸和路由。"
+            "希望沿用支援此組合的 Xray 用戶端與路由設定。"
           ],
           "limits": [
-            "核心設定、flow 和用戶端支援需匹配。"
+            "兩端設定相同的使用者 ID；用戶端填入伺服器對應的 REALITY 身分參數，並將 flow 設為 xtls-rprx-vision。"
           ]
         },
         {
-          "title": "VMess AEAD",
-          "description": "加密代理協議，可搭配不同傳輸。",
+          "title": "VMess AEAD · 代理協定",
+          "description": "讓支援 VMess 的用戶端連接你的 VMess 伺服器。",
           "strengths": [
-            "現有應用程式已經支援 VMess。"
+            "沿用現有 VMess 節點，或選用其支援的 TCP、WebSocket 等傳輸方式。"
           ],
           "limits": [
-            "確認用戶端版本及具體傳輸組合。"
+            "兩端使用相同的使用者 ID 和傳輸方式；選用 WebSocket 時對齊路徑，啟用 TLS 時設定網域名稱與憑證。"
           ]
         },
         {
-          "title": "Trojan",
-          "description": "基於 TLS，支援未認證請求轉送到網站。",
+          "title": "Trojan · 基於 TLS 的代理協定",
+          "description": "以自己的網域名稱和 TLS 憑證提供代理，並將其他存取導向網站。",
           "strengths": [
-            "希望採用常規 TLS 服務的部署方式。"
+            "願意維護網域名稱與憑證，並使用支援 Trojan 的用戶端。"
           ],
           "limits": [
-            "常見部署需要維護網域名稱和憑證；UDP 經 TCP 承載。"
+            "設定伺服器網域名稱、有效憑證和密碼，用戶端填入相同密碼。標準 Trojan 的 UDP 請求也透過 TCP 連線傳送。"
           ]
         },
         {
-          "title": "Shadowsocks",
-          "description": "基於金鑰的加密代理。",
+          "title": "Shadowsocks · 加密代理協定",
+          "description": "以金鑰保護用戶端與伺服器間的代理連線，提供 TCP 與 UDP 轉送。",
           "strengths": [
-            "希望用金鑰設定 TCP/UDP 代理。"
+            "需要直接設定加密代理，且已有支援所選 Shadowsocks 版本的用戶端。"
           ],
           "limits": [
-            "額外的網站掩護或傳輸插件需要單獨設定。"
+            "兩端使用相同的加密方式與金鑰；需要 UDP 時開放對應連接埠。額外外掛須依其說明在兩端設定。"
           ]
         },
         {
-          "title": "Hysteria 2",
-          "description": "基於 QUIC，UDP 使用不可靠資料報。",
+          "title": "Hysteria 2 · 基於 QUIC 的代理工具",
+          "description": "透過 UDP 網路連接伺服器，轉送應用程式的 TCP 與 UDP 請求。",
           "strengths": [
-            "希望使用 QUIC，並評估即時 UDP 應用程式。"
+            "網路允許 UDP，希望使用 QUIC 傳輸，讓 UDP 資料無須等待遺失封包重傳。"
           ],
           "limits": [
-            "網路需支援 UDP，並設定 TLS。"
+            "開放伺服器 UDP 連接埠，設定 TLS 憑證與驗證資訊。若網路封鎖 UDP，須改用其他可行的連線方案。"
           ]
         }
       ],
       "caveat": "傳輸方式由設定決定。查看詳細指南，瞭解各模式的設定方法和使用條件。",
-      "read": "查看詳細對比"
+      "read": "查看詳細對比",
+      "setupLabel": "查看設定方式"
     },
     "security": {
       "eyebrow": "安全使用",
@@ -1150,73 +1154,74 @@ export const marketingCopy: Record<Locale, MarketingCopy> = {
         }
       ],
       "implementation": "Choisir selon vos besoins",
-      "implementationDescription": "Comparez l'entretien, le trajet des requêtes et les clients compatibles. Xray désigne ici VLESS + REALITY + Vision sur TCP.",
-      "strengthsLabel": "Pour quel usage ?",
-      "limitsLabel": "À prévoir",
+      "implementationDescription": "Comparez la façon de connecter vos applications et les éléments à préparer sur le serveur. Cette liste distingue les outils complets des combinaisons de protocoles et renvoie aux instructions de configuration.",
+      "strengthsLabel": "Dans quel cas le choisir",
+      "limitsLabel": "À préparer",
       "layers": [
         {
-          "title": "Umbra",
-          "description": "Une paire client/serveur avec couverture web, TCP et QUIC.",
+          "title": "Umbra · Proxy auto-hébergé",
+          "description": "Installez un proxy sur votre serveur et connectez vos applications à une seule adresse SOCKS5 locale.",
           "strengths": [
-            "Gérer les deux extrémités et raccorder les applications à une entrée unique."
+            "Un même client prend en charge TCP et UDP, avec Vision pour TCP et QUIC pour UDP si nécessaire, sans lancer deux outils distincts."
           ],
           "limits": [
-            "CLI Alpha ; versions compatibles requises des deux côtés."
+            "Installez la même version d’Umbra aux deux extrémités et lancez-la en ligne de commande. QUIC nécessite un port UDP ouvert et un site de couverture compatible QUIC."
           ]
         },
         {
-          "title": "Xray + VLESS + REALITY + Vision",
-          "description": "REALITY et Vision au sein de Xray.",
+          "title": "Xray + VLESS + REALITY + Vision · Combinaison de protocoles",
+          "description": "Établissez des connexions REALITY avec Xray ; Vision traite le trafic HTTPS compatible.",
           "strengths": [
-            "Configurer protocoles, transports et routage dans Xray."
+            "Conservez un client Xray et des règles de routage prenant en charge cette combinaison."
           ],
           "limits": [
-            "Faire correspondre configuration, flow et client."
+            "Utilisez le même identifiant utilisateur aux deux extrémités. Dans le client, renseignez les paramètres d’identité REALITY du serveur et réglez flow sur xtls-rprx-vision."
           ]
         },
         {
-          "title": "VMess AEAD",
-          "description": "Un protocole chiffré avec plusieurs transports possibles.",
+          "title": "VMess AEAD · Protocole proxy",
+          "description": "Connectez un client compatible VMess à votre serveur VMess.",
           "strengths": [
-            "Utiliser des applications déjà compatibles VMess."
+            "Conservez une installation VMess ou choisissez un transport pris en charge, comme TCP ou WebSocket."
           ],
           "limits": [
-            "Vérifier version du client et combinaison de transport."
+            "Utilisez le même identifiant et le même transport des deux côtés. Avec WebSocket, alignez le chemin ; avec TLS, configurez le domaine et le certificat."
           ]
         },
         {
-          "title": "Trojan",
-          "description": "Un proxy TLS avec repli vers un site web.",
+          "title": "Trojan · Protocole proxy sur TLS",
+          "description": "Proposez un proxy avec votre domaine et votre certificat TLS, et dirigez les autres requêtes vers un site web.",
           "strengths": [
-            "Déployer un service TLS classique."
+            "Utilisez un client Trojan si vous souhaitez gérer votre propre domaine et son certificat."
           ],
           "limits": [
-            "Domaine et certificat généralement nécessaires ; UDP passe par TCP."
+            "Configurez le domaine du serveur, un certificat valide et un mot de passe, puis saisissez ce mot de passe dans le client. Le protocole Trojan standard transporte aussi les requêtes UDP dans une connexion TCP."
           ]
         },
         {
-          "title": "Shadowsocks",
-          "description": "Un proxy chiffré configuré par clés.",
+          "title": "Shadowsocks · Protocole proxy chiffré",
+          "description": "Protégez la connexion entre client et serveur avec une clé et relayez le trafic TCP et UDP.",
           "strengths": [
-            "Configurer un proxy TCP/UDP à l'aide d'une clé."
+            "Déployez un proxy chiffré avec un client compatible avec la version de Shadowsocks choisie."
           ],
           "limits": [
-            "Couverture web et plugins supplémentaires à configurer séparément."
+            "Utilisez la même méthode de chiffrement et la même clé des deux côtés ; ouvrez le port UDP si nécessaire. Configurez les éventuels modules complémentaires selon leurs instructions."
           ]
         },
         {
-          "title": "Hysteria 2",
-          "description": "QUIC avec datagrammes non fiables pour UDP.",
+          "title": "Hysteria 2 · Proxy sur QUIC",
+          "description": "Joignez votre serveur par UDP pour relayer les requêtes TCP et UDP de vos applications.",
           "strengths": [
-            "Utiliser QUIC et évaluer des applications UDP temps réel."
+            "Utilisez QUIC sur un réseau autorisant UDP, avec des datagrammes UDP qui n’attendent pas la retransmission des paquets perdus."
           ],
           "limits": [
-            "Accès UDP et configuration TLS nécessaires."
+            "Ouvrez le port UDP du serveur et configurez le certificat TLS et l’authentification. Si le réseau bloque UDP, choisissez une autre méthode de connexion."
           ]
         }
       ],
       "caveat": "Les transports suivent votre configuration. Les guides détaillent les étapes et les conditions de chaque mode.",
-      "read": "Lire la comparaison complète"
+      "read": "Lire la comparaison complète",
+      "setupLabel": "Consulter la configuration"
     },
     "security": {
       "eyebrow": "Utiliser Umbra en sécurité",
@@ -1435,73 +1440,74 @@ export const marketingCopy: Record<Locale, MarketingCopy> = {
         }
       ],
       "implementation": "Elige según tus necesidades",
-      "implementationDescription": "Compara mantenimiento, rutas y clientes compatibles. Xray se refiere aquí a VLESS + REALITY + Vision por TCP.",
-      "strengthsLabel": "Para qué sirve",
-      "limitsLabel": "Qué necesitas",
+      "implementationDescription": "Compara cómo se conectan tus aplicaciones y qué necesitas en el servidor. La lista distingue herramientas completas de combinaciones de protocolos y enlaza a sus instrucciones.",
+      "strengthsLabel": "Cuándo elegirlo",
+      "limitsLabel": "Qué necesitas preparar",
       "layers": [
         {
-          "title": "Umbra",
-          "description": "Cliente y servidor con cobertura web, TCP y QUIC.",
+          "title": "Umbra · Proxy en tu propio servidor",
+          "description": "Instala un proxy en tu servidor y conecta tus aplicaciones a una sola dirección SOCKS5 local.",
           "strengths": [
-            "Gestionar ambos extremos y conectar aplicaciones a una entrada."
+            "Un cliente gestiona TCP y UDP; puedes usar Vision para TCP y QUIC para UDP sin ejecutar dos herramientas distintas."
           ],
           "limits": [
-            "CLI Alpha; usa versiones compatibles en ambos extremos."
+            "Instala la misma versión de Umbra en ambos extremos e iníciala desde la terminal. QUIC necesita un puerto UDP abierto y un sitio de cobertura compatible con QUIC."
           ]
         },
         {
-          "title": "Xray + VLESS + REALITY + Vision",
-          "description": "REALITY y Vision dentro de Xray.",
+          "title": "Xray + VLESS + REALITY + Vision · Combinación de protocolos",
+          "description": "Establece conexiones REALITY con Xray y utiliza Vision para el tráfico HTTPS compatible.",
           "strengths": [
-            "Configurar protocolos, transportes y rutas en Xray."
+            "Conserva un cliente Xray y una configuración de rutas que admitan esta combinación."
           ],
           "limits": [
-            "La configuración, el flow y el cliente deben coincidir."
+            "Usa el mismo identificador de usuario en ambos extremos. Introduce en el cliente los parámetros de identidad REALITY del servidor y configura flow como xtls-rprx-vision."
           ]
         },
         {
-          "title": "VMess AEAD",
-          "description": "Protocolo cifrado con varias opciones de transporte.",
+          "title": "VMess AEAD · Protocolo proxy",
+          "description": "Conecta un cliente compatible con VMess a tu servidor VMess.",
           "strengths": [
-            "Usar aplicaciones que ya admiten VMess."
+            "Mantén una instalación VMess existente o elige un transporte compatible, como TCP o WebSocket."
           ],
           "limits": [
-            "Comprueba versión del cliente y combinación de transporte."
+            "Haz coincidir el identificador de usuario y el transporte. En WebSocket, usa la misma ruta; si activas TLS, configura el dominio y el certificado."
           ]
         },
         {
-          "title": "Trojan",
-          "description": "Proxy TLS con retorno a un sitio web.",
+          "title": "Trojan · Protocolo proxy sobre TLS",
+          "description": "Ofrece un proxy con tu dominio y certificado TLS y envía las demás solicitudes a un sitio web.",
           "strengths": [
-            "Desplegar un servicio TLS convencional."
+            "Usa un cliente Trojan si quieres gestionar tu propio dominio y certificado."
           ],
           "limits": [
-            "Suele requerir dominio y certificado; UDP viaja por TCP."
+            "Configura el dominio del servidor, un certificado válido y una contraseña; introduce esa contraseña en el cliente. Trojan estándar también transporta las solicitudes UDP por una conexión TCP."
           ]
         },
         {
-          "title": "Shadowsocks",
-          "description": "Proxy cifrado mediante claves.",
+          "title": "Shadowsocks · Protocolo proxy cifrado",
+          "description": "Protege con una clave la conexión entre cliente y servidor y reenvía tráfico TCP y UDP.",
           "strengths": [
-            "Configurar proxy TCP/UDP con una clave."
+            "Configura un proxy cifrado con un cliente que admita la versión de Shadowsocks elegida."
           ],
           "limits": [
-            "La cobertura web y los complementos se configuran aparte."
+            "Usa el mismo método de cifrado y la misma clave en ambos extremos; abre el puerto UDP si lo necesitas. Configura los complementos adicionales según sus instrucciones."
           ]
         },
         {
-          "title": "Hysteria 2",
-          "description": "QUIC con datagramas no fiables para UDP.",
+          "title": "Hysteria 2 · Proxy sobre QUIC",
+          "description": "Conecta con tu servidor mediante UDP para reenviar las solicitudes TCP y UDP de tus aplicaciones.",
           "strengths": [
-            "Usar QUIC y evaluar aplicaciones UDP en tiempo real."
+            "Usa QUIC en una red que permita UDP, con datagramas UDP que no esperan a que se retransmitan los paquetes perdidos."
           ],
           "limits": [
-            "Requiere acceso UDP y configuración TLS."
+            "Abre el puerto UDP del servidor y configura el certificado TLS y la autenticación. Si la red bloquea UDP, elige otro método de conexión."
           ]
         }
       ],
       "caveat": "Los transportes siguen tu configuración. Las guías explican los pasos y requisitos de cada modo.",
-      "read": "Leer la comparación completa"
+      "read": "Leer la comparación completa",
+      "setupLabel": "Ver instrucciones de configuración"
     },
     "security": {
       "eyebrow": "Usar Umbra con seguridad",
@@ -1720,73 +1726,74 @@ export const marketingCopy: Record<Locale, MarketingCopy> = {
         }
       ],
       "implementation": "使い方に合わせて比較",
-      "implementationDescription": "管理する項目、通信経路、対応クライアントで選びます。ここでの Xray は TCP 上の VLESS + REALITY + Vision です。",
-      "strengthsLabel": "向いている用途",
-      "limitsLabel": "利用前の確認",
+      "implementationDescription": "アプリの接続方法と、サーバー側で準備するものを比べて選びましょう。ソフトウェア一式とプロトコルの組み合わせを区別し、それぞれの設定手順へ案内します。",
+      "strengthsLabel": "こんな使い方に",
+      "limitsLabel": "準備するもの",
       "layers": [
         {
-          "title": "Umbra",
-          "description": "サイトによるカバー、TCP、QUIC をまとめたクライアントとサーバー。",
+          "title": "Umbra · 自分で運用するプロキシ",
+          "description": "自分のサーバーにプロキシを構築し、ローカルの SOCKS5 アドレスからアプリを接続します。",
           "strengths": [
-            "両端を自分で管理し、一つの入口にアプリを接続する。"
+            "1 つのクライアントで TCP と UDP を処理できます。TCP に Vision、UDP に QUIC を使う場合も、別々のプロキシを起動する必要はありません。"
           ],
           "limits": [
-            "現在は Alpha の CLI。両端のバージョンを合わせます。"
+            "両端に同じバージョンの Umbra をインストールし、コマンドラインで起動します。QUIC を使う場合は UDP ポートを開放し、QUIC 対応のカバーサイトを選びます。"
           ]
         },
         {
-          "title": "Xray + VLESS + REALITY + Vision",
-          "description": "Xray 上で REALITY と Vision を組み合わせる構成。",
+          "title": "Xray + VLESS + REALITY + Vision · プロトコルの組み合わせ",
+          "description": "Xray で REALITY 接続を構成し、対応する HTTPS 通信を Vision で処理します。",
           "strengths": [
-            "Xray でプロトコル、通信方式、ルーティングを設定する。"
+            "この組み合わせに対応した Xray クライアントやルーティング設定を引き続き使いたい場合に。"
           ],
           "limits": [
-            "コア設定、flow、クライアントの対応を確認します。"
+            "両端に同じユーザー ID を設定します。クライアントにはサーバーに対応する REALITY の認証情報を入力し、flow を xtls-rprx-vision に設定します。"
           ]
         },
         {
-          "title": "VMess AEAD",
-          "description": "複数の通信方式と組み合わせられる暗号化プロトコル。",
+          "title": "VMess AEAD · プロキシプロトコル",
+          "description": "VMess 対応クライアントから自分の VMess サーバーに接続します。",
           "strengths": [
-            "すでに VMess に対応するアプリを利用する。"
+            "既存の VMess 環境を使い続ける場合や、TCP・WebSocket などから伝送方式を選びたい場合に。"
           ],
           "limits": [
-            "クライアントの版と通信構成を確認します。"
+            "両端のユーザー ID と伝送方式を合わせます。WebSocket ではパスを合わせ、TLS を有効にする場合はドメインと証明書を設定します。"
           ]
         },
         {
-          "title": "Trojan",
-          "description": "TLS を利用し、未認証接続をサイトに転送するプロキシ。",
+          "title": "Trojan · TLS ベースのプロキシプロトコル",
+          "description": "自分のドメインと TLS 証明書でプロキシを提供し、それ以外のアクセスを Web サイトへ送ります。",
           "strengths": [
-            "通常の TLS サービスとして構築する。"
+            "ドメインと証明書を管理し、Trojan 対応クライアントを使いたい場合に。"
           ],
           "limits": [
-            "一般的にドメインと証明書を管理し、UDP は TCP 上で運びます。"
+            "サーバーのドメイン、有効な証明書、パスワードを設定し、クライアントにも同じパスワードを入力します。標準の Trojan は UDP 通信も TCP 接続内で転送します。"
           ]
         },
         {
-          "title": "Shadowsocks",
-          "description": "鍵で設定する暗号化プロキシ。",
+          "title": "Shadowsocks · 暗号化プロキシプロトコル",
+          "description": "鍵でクライアントとサーバー間の接続を保護し、TCP と UDP を転送します。",
           "strengths": [
-            "鍵を使って TCP/UDP プロキシを構築する。"
+            "選んだ Shadowsocks のバージョンに対応するクライアントで、暗号化プロキシを構築したい場合に。"
           ],
           "limits": [
-            "サイトによるカバーや追加プラグインは別途設定します。"
+            "両端の暗号方式と鍵を合わせます。UDP が必要なら該当ポートを開放します。追加プラグインは各プラグインの手順に従って設定します。"
           ]
         },
         {
-          "title": "Hysteria 2",
-          "description": "QUIC を使い、UDP を非信頼性データグラムで運ぶ方式。",
+          "title": "Hysteria 2 · QUIC ベースのプロキシ",
+          "description": "UDP を使ってサーバーに接続し、アプリの TCP と UDP 通信を転送します。",
           "strengths": [
-            "QUIC を利用し、リアルタイム UDP アプリを評価する。"
+            "UDP が使えるネットワークで QUIC を利用し、UDP データでは失われたパケットの再送を待たずに通信したい場合に。"
           ],
           "limits": [
-            "UDP が通るネットワークと TLS 設定が必要です。"
+            "サーバーの UDP ポートを開放し、TLS 証明書と認証情報を設定します。ネットワークが UDP を遮断している場合は、別の接続方法を選びます。"
           ]
         }
       ],
       "caveat": "通信方式は設定に従います。各モードの手順と利用条件はガイドで確認できます。",
-      "read": "詳しい比較を読む"
+      "read": "詳しい比較を読む",
+      "setupLabel": "設定手順を見る"
     },
     "security": {
       "eyebrow": "安全に使う",
@@ -2005,73 +2012,74 @@ export const marketingCopy: Record<Locale, MarketingCopy> = {
         }
       ],
       "implementation": "Tria segons les necessitats",
-      "implementationDescription": "Compara manteniment, rutes i clients compatibles. Xray es refereix aquí a VLESS + REALITY + Vision per TCP.",
-      "strengthsLabel": "Per a què serveix",
-      "limitsLabel": "Què necessites",
+      "implementationDescription": "Compara com es connecten les aplicacions i què necessites al servidor. La llista distingeix les eines completes de les combinacions de protocols i enllaça a les instruccions de configuració.",
+      "strengthsLabel": "Quan et pot convenir",
+      "limitsLabel": "Què has de preparar",
       "layers": [
         {
-          "title": "Umbra",
-          "description": "Client i servidor amb cobertura web, TCP i QUIC.",
+          "title": "Umbra · Servidor intermediari propi",
+          "description": "Instal·la un servidor intermediari i connecta les aplicacions a una única adreça SOCKS5 local.",
           "strengths": [
-            "Gestionar els dos extrems i connectar aplicacions a una entrada."
+            "Un sol client gestiona TCP i UDP; pots fer servir Vision per a TCP i QUIC per a UDP sense executar dues eines diferents."
           ],
           "limits": [
-            "CLI Alpha; utilitza versions compatibles als dos extrems."
+            "Instal·la la mateixa versió d’Umbra als dos extrems i inicia-la des del terminal. QUIC requereix un port UDP obert i un web de cobertura compatible amb QUIC."
           ]
         },
         {
-          "title": "Xray + VLESS + REALITY + Vision",
-          "description": "REALITY i Vision dins de Xray.",
+          "title": "Xray + VLESS + REALITY + Vision · Combinació de protocols",
+          "description": "Estableix connexions REALITY amb Xray i utilitza Vision per al trànsit HTTPS compatible.",
           "strengths": [
-            "Configurar protocols, transports i rutes a Xray."
+            "Conserva un client Xray i una configuració d’encaminament que admetin aquesta combinació."
           ],
           "limits": [
-            "Configuració, flow i client han de coincidir."
+            "Fes servir el mateix identificador d’usuari als dos extrems. Introdueix al client els paràmetres d’identitat REALITY del servidor i estableix flow a xtls-rprx-vision."
           ]
         },
         {
-          "title": "VMess AEAD",
-          "description": "Protocol xifrat amb diverses opcions de transport.",
+          "title": "VMess AEAD · Protocol de servidor intermediari",
+          "description": "Connecta un client compatible amb VMess al teu servidor VMess.",
           "strengths": [
-            "Utilitzar aplicacions que ja admeten VMess."
+            "Mantén una instal·lació VMess existent o tria un transport compatible, com TCP o WebSocket."
           ],
           "limits": [
-            "Comprova la versió del client i la combinació de transport."
+            "Fes coincidir l’identificador d’usuari i el transport. Amb WebSocket, utilitza el mateix camí; si actives TLS, configura el domini i el certificat."
           ]
         },
         {
-          "title": "Trojan",
-          "description": "Servei intermediari TLS amb retorn a un lloc web.",
+          "title": "Trojan · Protocol sobre TLS",
+          "description": "Ofereix un servidor intermediari amb el teu domini i certificat TLS, i envia la resta de peticions a un web.",
           "strengths": [
-            "Desplegar un servei TLS convencional."
+            "Utilitza un client Trojan si vols gestionar el teu propi domini i certificat."
           ],
           "limits": [
-            "Sol requerir domini i certificat; UDP viatja per TCP."
+            "Configura el domini del servidor, un certificat vàlid i una contrasenya; introdueix la mateixa contrasenya al client. Trojan estàndard també transporta les peticions UDP dins d’una connexió TCP."
           ]
         },
         {
-          "title": "Shadowsocks",
-          "description": "Servei intermediari xifrat amb claus.",
+          "title": "Shadowsocks · Protocol de servidor intermediari xifrat",
+          "description": "Protegeix amb una clau la connexió entre client i servidor i reenvia trànsit TCP i UDP.",
           "strengths": [
-            "Configurar TCP/UDP amb una clau."
+            "Configura un servidor intermediari xifrat amb un client que admeti la versió de Shadowsocks triada."
           ],
           "limits": [
-            "La cobertura web i els connectors es configuren a part."
+            "Utilitza el mateix mètode de xifratge i la mateixa clau als dos extrems; obre el port UDP si cal. Configura els complements addicionals seguint-ne les instruccions."
           ]
         },
         {
-          "title": "Hysteria 2",
-          "description": "QUIC amb datagrames no fiables per a UDP.",
+          "title": "Hysteria 2 · Servidor intermediari sobre QUIC",
+          "description": "Connecta amb el servidor per UDP per reenviar les peticions TCP i UDP de les aplicacions.",
           "strengths": [
-            "Utilitzar QUIC i avaluar aplicacions UDP en temps real."
+            "Utilitza QUIC en una xarxa que permeti UDP, amb datagrames UDP que no esperen la retransmissió dels paquets perduts."
           ],
           "limits": [
-            "Requereix accés UDP i configuració TLS."
+            "Obre el port UDP del servidor i configura el certificat TLS i l’autenticació. Si la xarxa bloqueja UDP, tria un altre mètode de connexió."
           ]
         }
       ],
       "caveat": "Els transports segueixen la configuració. Les guies expliquen els passos i els requisits de cada mode.",
-      "read": "Llegeix la comparació completa"
+      "read": "Llegeix la comparació completa",
+      "setupLabel": "Consulta les instruccions"
     },
     "security": {
       "eyebrow": "Utilitzar Umbra amb seguretat",

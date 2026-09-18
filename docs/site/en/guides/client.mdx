@@ -7,9 +7,16 @@ order: 5
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Umbra provides a SOCKS5 proxy on your device. Connect an app directly, or let your existing proxy client manage rules and pass selected requests to Umbra.
+
+
+## How to check the result
+
+Run this guide’s curl command on the client computer, then configure SOCKS5 in one app. Add a rules client only after both work. Loading a page over TCP does not verify UDP; test an app that actually uses UDP separately.
 
 ## 1. Start Umbra
 

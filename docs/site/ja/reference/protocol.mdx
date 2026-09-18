@@ -7,20 +7,25 @@ order: 16
 version: "1.0.0-alpha"
 source: ["README.md", "docs/usage.md", "docs/performance.md", "crates/umbra-core/src/runtime.rs", "crates/umbra-reality/src/prebuild.rs", "crates/umbra-reality/src/cert.rs", "crates/umbra-tls/src/server.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 利用できるネットワーク、管理方法、既存アプリから選びます。Umbra はサイトによるカバー、TCP/Vision、QUIC、SOCKS5 を組み合わせます。対象は Umbra 1.0.0-alpha で、Xray は TCP 上の VLESS + REALITY + Vision を指します。
+
+
+内容確認日：2026-09-18.
 
 ## 構築と通信方式
 
 | 構成 | 主な特徴 | 構築 | TCP と UDP |
 | --- | --- | --- | --- |
-| Umbra | 実在サイトのカバーと一つのローカル入口 | 両端、鍵、サイトを管理。ノード用 CA 証明書は不要 | TCP mux または Vision。UDP は別途 QUIC を選択可能 |
-| Xray + VLESS + REALITY + Vision | TCP 上の REALITY と Vision | Xray、認証情報、サイト、対応クライアントを設定 | ここでは外側 TCP。UDP は flow とクライアントに依存 |
-| VMess AEAD | 通信方式を選べる暗号化プロトコル | 対応クライアントと伝送を用意。TLS 追加時は認証も設定 | TCP/UDP 要求。外側は設定に従う |
-| Trojan | TLS とサイトへのフォールバック | 通常はドメイン、証明書、秘密鍵を管理 | TCP と UDP を TLS/TCP 上で伝送 |
-| Shadowsocks AEAD / 2022 | 鍵による暗号化プロキシ | 対応する鍵とクライアント。プラグインは別設定 | 基本は TCP/UDP。プラグインの対応を個別確認 |
-| Hysteria 2 | QUIC。未認証時は HTTP/3 サイトとして応答 | 到達可能な UDP と TLS 設定 | TCP は信頼性ストリーム、UDP は非信頼性データグラム |
+| Umbra | 実在サイトのカバーと一つのローカル入口 | 両端に同じバージョンの Umbra をインストールし、コマンドラインで起動します。QUIC を使う場合は UDP ポートを開放し、QUIC 対応のカバーサイトを選びます。 | TCP mux または Vision。UDP は別途 QUIC を選択可能 |
+| Xray + VLESS + REALITY + Vision | TCP 上の REALITY と Vision | 両端に同じユーザー ID を設定します。クライアントにはサーバーに対応する REALITY の認証情報を入力し、flow を xtls-rprx-vision に設定します。 | ここでは外側 TCP。UDP は flow とクライアントに依存 |
+| VMess AEAD | 通信方式を選べる暗号化プロトコル | 両端のユーザー ID と伝送方式を合わせます。WebSocket ではパスを合わせ、TLS を有効にする場合はドメインと証明書を設定します。 | TCP/UDP 要求。外側は設定に従う |
+| Trojan | TLS とサイトへのフォールバック | サーバーのドメイン、有効な証明書、パスワードを設定し、クライアントにも同じパスワードを入力します。標準の Trojan は UDP 通信も TCP 接続内で転送します。 | TCP と UDP を TLS/TCP 上で伝送 |
+| Shadowsocks AEAD / 2022 | 鍵による暗号化プロキシ | 両端の暗号方式と鍵を合わせます。UDP が必要なら該当ポートを開放します。追加プラグインは各プラグインの手順に従って設定します。 | 基本は TCP/UDP。プラグインの対応を個別確認 |
+| Hysteria 2 | QUIC。未認証時は HTTP/3 サイトとして応答 | サーバーの UDP ポートを開放し、TLS 証明書と認証情報を設定します。ネットワークが UDP を遮断している場合は、別の接続方法を選びます。 | TCP は信頼性ストリーム、UDP は非信頼性データグラム |
 
 ## Umbra でまとめられること
 

@@ -7,9 +7,16 @@ order: 3
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Start with TCP. Install the same Umbra version on your server and client device. The client must reach the server, and the server must reach the real cover website.
+
+
+## How to check the result
+
+Both processes should stay running, and curl should return the target page through the local SOCKS5 proxy. A running client alone does not prove that the remote connection works. If the request fails, check the server’s TCP port and the identity fields on both ends before investigating app settings.
 
 ## 1. Generate keys
 

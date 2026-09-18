@@ -7,9 +7,16 @@ order: 3
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Comença amb TCP. Instal·la la mateixa versió al servidor i al dispositiu client. El client ha de poder arribar al servidor, i aquest al lloc web de cobertura.
+
+
+## Com pots comprovar el resultat
+
+Els dos processos han de continuar actius i curl ha de rebre la pàgina de destinació a través del servidor SOCKS5 local. Que el client s’iniciï no demostra que la connexió remota funcioni. Si la petició falla, revisa el port TCP del servidor i els camps d’identitat abans de revisar l’aplicació.
 
 ## 1. Generar les claus
 

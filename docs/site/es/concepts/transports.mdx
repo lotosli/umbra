@@ -7,9 +7,16 @@ order: 12
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 `transport` elige el transporte TCP. `udp_transport` puede dar una ruta distinta a UDP; si se omite, hereda `transport`.
+
+
+## Cómo comprobar el resultado
+
+Elige TCP para la primera conexión. Cuando funcione en ambos extremos, prueba QUIC o rutas separadas para TCP y UDP. Cambia una sola opción cada vez y vuelve a probar con la misma aplicación; Umbra no cambia de transporte automáticamente.
 
 ## Por dónde empezar
 

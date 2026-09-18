@@ -7,22 +7,27 @@ order: 16
 version: "1.0.0-alpha"
 source: ["README.md", "docs/usage.md", "docs/performance.md", "crates/umbra-core/src/runtime.rs", "crates/umbra-reality/src/prebuild.rs", "crates/umbra-reality/src/cert.rs", "crates/umbra-tls/src/server.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 选型时先看三件事：网络允许哪些连接、准备如何维护服务器，以及现有应用如何接入。Umbra 将网站掩护、TCP/Vision、QUIC 和 SOCKS5 入口放在一套客户端与服务端中，适合希望自行管理这套连接的用户。
 
 以下按 Umbra 1.0.0-alpha 和列出的官方资料说明功能差异。Xray 一栏限定为 VLESS + REALITY + Vision 的 TCP 组合，便于与具体部署方式对照。
 
+
+内容复核：2026-09-18.
+
 ## 部署与传输对照
 
 | 方案 | 主要特点 | 部署要点 | TCP 与 UDP |
 | --- | --- | --- | --- |
-| Umbra | 真实网站掩护；一个本地入口可配置两条传输路径 | 自建两端，管理密钥和掩护网站；无需申请节点 CA 证书 | TCP 可选连接复用或 Vision；UDP 可单独使用 QUIC |
-| Xray + VLESS + REALITY + Vision | 在 Xray 中组合 REALITY 与 Vision | 配置核心、密钥和目标网站，配合支持相应配置的客户端 | 此处为 TCP 外层；UDP 请求按 flow 和客户端配置处理 |
-| VMess AEAD | 协议提供加密，可搭配不同传输 | 使用支持对应协议与传输的客户端；叠加 TLS 时配置相应认证 | 支持 TCP、UDP 请求，外层由配置决定 |
-| Trojan | 使用 TLS，并支持未认证请求回落到网站服务 | 常见部署维护域名、证书和私钥 | TCP 与 UDP 请求通过 TLS/TCP 承载 |
-| Shadowsocks AEAD / 2022 | 基于密钥的加密代理 | 配置密钥与匹配客户端；额外插件按需配置 | 基础协议支持 TCP、UDP；插件支持范围单独确认 |
-| Hysteria 2 | 基于 QUIC；未认证时提供 HTTP/3 网站行为 | 需要可用的 UDP 路径与 TLS 配置 | TCP 使用可靠 QUIC 流，UDP 使用不可靠数据报 |
+| Umbra | 真实网站掩护；一个本地入口可配置两条传输路径 | 服务器和客户端安装同一版本 Umbra，通过命令行启动。使用 QUIC 时，开放 UDP 端口并选择支持 QUIC 的掩护网站。 | TCP 可选连接复用或 Vision；UDP 可单独使用 QUIC |
+| Xray + VLESS + REALITY + Vision | 在 Xray 中组合 REALITY 与 Vision | 在两端配置相同的用户 ID；客户端填写服务端对应的 REALITY 身份参数，并将 flow 设为 xtls-rprx-vision。 | 此处为 TCP 外层；UDP 请求按 flow 和客户端配置处理 |
+| VMess AEAD | 协议提供加密，可搭配不同传输 | 两端填写相同用户 ID 和传输方式；选择 WebSocket 时对齐路径，启用 TLS 时配置域名与证书。 | 支持 TCP、UDP 请求，外层由配置决定 |
+| Trojan | 使用 TLS，并支持未认证请求回落到网站服务 | 配置服务端域名、有效证书和密码，在客户端填写同一密码。标准 Trojan 的 UDP 请求也通过 TCP 连接传送。 | TCP 与 UDP 请求通过 TLS/TCP 承载 |
+| Shadowsocks AEAD / 2022 | 基于密钥的加密代理 | 两端使用相同的加密方式和密钥；需要 UDP 时开放对应 UDP 端口。额外插件需在两端按插件说明配置。 | 基础协议支持 TCP、UDP；插件支持范围单独确认 |
+| Hysteria 2 | 基于 QUIC；未认证时提供 HTTP/3 网站行为 | 开放服务器 UDP 端口，配置 TLS 证书与认证信息。若所在网络阻断 UDP，需要选择其他可用的连接方案。 | TCP 使用可靠 QUIC 流，UDP 使用不可靠数据报 |
 
 对应的官方资料：[Xray VLESS/Vision](https://xtls.github.io/config/outbounds/vless.html)、[VMess](https://www.v2fly.org/developer/protocols/vmess.html)、[Trojan](https://trojan-gfw.github.io/trojan/protocol)、[Shadowsocks 2022](https://shadowsocks.org/doc/sip022.html)、[Hysteria 2](https://v2.hysteria.network/docs/developers/Protocol/)。
 

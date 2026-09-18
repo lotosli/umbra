@@ -3,7 +3,7 @@ import type { Locale } from '../lib/locales';
 export interface DocsCopy {
   title: string; description: string; search: string; searchPlaceholder: string;
   noResults: string; loading: string; searchError: string; retry: string; close: string;
-  toc: string; tocPopover: string; lastUpdate: string; chooseLanguage: string;
+  toc: string; tocPopover: string; lastUpdate: string; reviewed: string; chooseLanguage: string;
   next: string; previous: string; edit: string; source: string; version: string;
   translated: string; notFound: string; notFoundDescription: string; returnHome: string;
 }
@@ -21,6 +21,7 @@ export const docsCopy: Record<Locale, DocsCopy> = {
     "close": "关闭",
     "toc": "本页内容",
     "tocPopover": "页面目录",
+    "reviewed": "内容复核",
     "lastUpdate": "最近更新",
     "chooseLanguage": "选择语言",
     "next": "下一篇",
@@ -45,6 +46,7 @@ export const docsCopy: Record<Locale, DocsCopy> = {
     "close": "關閉",
     "toc": "本頁內容",
     "tocPopover": "頁面目錄",
+    "reviewed": "內容複核",
     "lastUpdate": "最近更新",
     "chooseLanguage": "選擇語言",
     "next": "下一篇",
@@ -69,6 +71,7 @@ export const docsCopy: Record<Locale, DocsCopy> = {
     "close": "Close",
     "toc": "On this page",
     "tocPopover": "Table of contents",
+    "reviewed": "Content reviewed",
     "lastUpdate": "Last updated",
     "chooseLanguage": "Choose language",
     "next": "Next",
@@ -93,6 +96,7 @@ export const docsCopy: Record<Locale, DocsCopy> = {
     "close": "Fermer",
     "toc": "Sur cette page",
     "tocPopover": "Table des matières",
+    "reviewed": "Contenu vérifié",
     "lastUpdate": "Dernière mise à jour",
     "chooseLanguage": "Choisir la langue",
     "next": "Suivant",
@@ -117,6 +121,7 @@ export const docsCopy: Record<Locale, DocsCopy> = {
     "close": "Cerrar",
     "toc": "En esta página",
     "tocPopover": "Índice",
+    "reviewed": "Contenido revisado",
     "lastUpdate": "Última actualización",
     "chooseLanguage": "Elegir idioma",
     "next": "Siguiente",
@@ -141,6 +146,7 @@ export const docsCopy: Record<Locale, DocsCopy> = {
     "close": "閉じる",
     "toc": "このページの内容",
     "tocPopover": "目次",
+    "reviewed": "内容確認日",
     "lastUpdate": "最終更新",
     "chooseLanguage": "言語を選択",
     "next": "次へ",
@@ -165,6 +171,7 @@ export const docsCopy: Record<Locale, DocsCopy> = {
     "close": "Tanca",
     "toc": "En aquesta pàgina",
     "tocPopover": "Taula de continguts",
+    "reviewed": "Contingut revisat",
     "lastUpdate": "Darrera actualització",
     "chooseLanguage": "Tria la llengua",
     "next": "Següent",

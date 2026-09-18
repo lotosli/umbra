@@ -7,9 +7,16 @@ order: 3
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Commencez par TCP. Installez la même version sur le serveur et l'appareil client. Le client doit pouvoir joindre le serveur, et le serveur le site de couverture.
+
+
+## Comment vérifier le résultat
+
+Les deux processus doivent rester actifs, et curl doit recevoir la page demandée via le proxy SOCKS5 local. Le démarrage du client ne prouve pas à lui seul que la connexion distante fonctionne. En cas d’échec, vérifiez le port TCP du serveur et les paramètres d’identité des deux côtés avant ceux de l’application.
 
 ## 1. Générer les clés
 

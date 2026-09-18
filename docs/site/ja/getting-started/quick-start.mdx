@@ -7,9 +7,16 @@ order: 3
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 最初は TCP を使います。サーバーとクライアントに同じバージョンをインストールしてください。クライアントからサーバーへ、サーバーからカバーサイトへ接続できる必要があります。
+
+
+## 結果を確認するには
+
+両端のプロセスが動作し続け、ローカル SOCKS5 経由の curl で目的のページが返れば成功です。クライアントが起動しただけでは、サーバーへの接続確認にはなりません。失敗した場合は、アプリの設定より先にサーバーの TCP ポートと両端の認証情報を確認してください。
 
 ## 1. 鍵を生成
 

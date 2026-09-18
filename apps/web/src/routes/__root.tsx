@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+import { observeNavigation } from '../lib/measurement';
 import { createRootRoute, HeadContent, Outlet, Scripts, useRouterState, redirect } from '@tanstack/react-router';
 import { SiteProviders } from '../components/providers';
 import { NotFoundPage } from '../components/not-found';
@@ -26,6 +28,7 @@ function useCurrentLocale() {
 function RootNotFound() { return <NotFoundPage locale={useCurrentLocale()} />; }
 
 function RootDocument() {
+  useEffect(() => observeNavigation(document, window), []);
   const locale = useCurrentLocale();
   return <html lang={languageTag(locale)} suppressHydrationWarning>
     <head><HeadContent /></head>

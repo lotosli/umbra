@@ -81,7 +81,7 @@ describe('search-visible localized metadata', () => {
 
   it('uses the project title and native-script locale metadata on the homepage', () => {
     const head = pageHead('zh-hant', '', 'Umbra', '保護連線隱私');
-    expect(head.meta).toContainEqual({ title: 'Umbra — 你的連線， 由你掌控。' });
+    expect(head.meta).toContainEqual({ title: 'Umbra：開源自架代理，支援 TCP、QUIC 與 SOCKS5' });
     expect(head.meta).toContainEqual({ property: 'og:locale', content: 'zh_Hant' });
     expect(head.meta).toContainEqual({ name: 'description', content: '保護連線隱私' });
   });
@@ -95,7 +95,7 @@ describe('search-visible localized metadata', () => {
     expect(locations).toContain('https://umbra.cat/ja/docs/reference/cli/');
     expect(locations).toContain('https://umbra.cat/ca/changelog/1.0.0-alpha/');
     expect(locations.every((url) => url?.startsWith(canonicalOrigin) && url.endsWith('/'))).toBe(true);
-    expect(parsed.getElementsByTagNameNS('http://www.w3.org/1999/xhtml', 'link')).toHaveLength(441);
+    expect(parsed.getElementsByTagNameNS('http://www.w3.org/1999/xhtml', 'link')).toHaveLength(504);
     expect(sitemapXml(['a&b<c"d'])).toContain('a&amp;b&lt;c&quot;d');
   });
 });

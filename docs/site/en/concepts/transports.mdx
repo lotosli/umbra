@@ -7,9 +7,16 @@ order: 12
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "docs/performance.md"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Your app makes TCP or UDP requests. Umbra chooses how to carry them to the server: `transport` controls TCP requests; `udp_transport` may select a separate UDP path. Without an override, both use `transport`.
+
+
+## How to check the result
+
+Use TCP for your first connection. Once both ends work over TCP, try QUIC or separate TCP/UDP paths. Change one option at a time and retest with the same app; Umbra does not automatically switch transports.
 
 ## Where to start
 

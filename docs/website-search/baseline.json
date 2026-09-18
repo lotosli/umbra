@@ -1,0 +1,13 @@
+{
+  "recordedAt": "2026-09-18",
+  "canonicalOrigin": "https://umbra.cat",
+  "publishedUrls": 175,
+  "articles": 126,
+  "languages": 7,
+  "google": {"ownership": "verified", "evidence": "User confirmation and Umbra domain property observed in Search Console", "dataState": "processing", "organicClicks": null, "indexedPages": null, "aiImpressions": null, "sitemap": "submission initiated; receipt pending verification"},
+  "bing": {"ownership": "pending verification", "citations": null, "groundingQueries": null},
+  "cloudflare": {"realBotAccess": "not yet verified from security events", "ordinaryHttpAccess": "confirmed in research audit; some user agents receive 403"},
+  "measurement": {"collector": "none", "conversionCounts": null, "reason": "Local event interface only; no outbound collection configured"},
+  "coreWebVitals": {"fieldLCP": null, "fieldINP": null, "fieldCLS": null, "reason": "No authenticated field-data baseline available"},
+  "geo": {"consumerProductSamples": null, "reason": "Prompt set prepared; no consumer AI search results fabricated"}
+}

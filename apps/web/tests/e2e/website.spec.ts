@@ -15,6 +15,8 @@ for (const locale of localeDefinitions) {
     await expect(page.getByRole('heading', { level: 1 })).toContainText(marketingCopy[locale.id].hero.title);
     await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', `https://umbra.cat/${locale.id}/`);
     expect(await page.locator('link[rel="alternate"][hreflang]').count()).toBe(8);
+    const identity = JSON.parse(await page.locator('script[type="application/ld+json"]').textContent() ?? '{}');
+    expect(identity['@graph']).toContainEqual(expect.objectContaining({ '@type': 'SoftwareSourceCode', name: 'Umbra' }));
     await expect(page.locator('link[rel="alternate"][hreflang="x-default"]')).toHaveAttribute('href', 'https://umbra.cat/en/');
 
     const article = documents.find((item) => item.locale === locale.id && item.id === 'reference/cli')!;
@@ -22,6 +24,9 @@ for (const locale of localeDefinitions) {
     expect(documentResponse?.status()).toBe(200);
     await expect(page.getByRole('heading', { level: 1 })).toHaveText(article.title);
     await expect(page.locator('pre').first()).toBeVisible();
+    await expect(page.locator('time').first()).toHaveAttribute('datetime', article.updatedAt);
+    const articleData = JSON.parse(await page.locator('script[type="application/ld+json"]').textContent() ?? '{}');
+    expect(articleData['@graph'][0].dateModified).toBe(article.updatedAt);
     await expect(page.getByRole('link', { name: new RegExp(docsCopy[locale.id].edit) })).toBeVisible();
     expect(errors).toEqual([]);
 
@@ -40,6 +45,8 @@ for (const locale of localeDefinitions) {
     await page.locator('main').getByRole('link', { name: marketingCopy[locale.id].hero.explore, exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/${locale.id}/protocol/$`));
     await expect(page.locator('.layer-row')).toHaveCount(6);
+    await expect(page.locator('.layer-row > a')).toHaveCount(6);
+    await expect(page.locator('.layer-row > a').first()).toHaveAttribute('href', `/${locale.id}/docs/getting-started/quick-start/`);
     await expect(page.locator('.layer-list')).toContainText('VMess');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.locator('main').getByRole('link', { name: marketingCopy[locale.id].protocol.read, exact: true }).click();
@@ -80,6 +87,8 @@ for (const locale of localeDefinitions) {
 test('canonical redirects, real 404 and public metadata endpoints', async ({ request }) => {
   const root = await request.get('/', { maxRedirects: 0 });
   expect(root.status()).toBe(307);
+  expect(root.headers().vary).toContain('Accept-Language');
+  expect(root.headers()['cache-control']).toBe('no-store');
   expect(root.headers().location).toMatch(/\/en\/$/);
   const zhRoot = await request.get('/', {
     maxRedirects: 0,
@@ -107,9 +116,13 @@ test('canonical redirects, real 404 and public metadata endpoints', async ({ req
 test('documentation is readable without client JavaScript', async ({ browser, baseURL }) => {
   const context = await browser.newContext({ javaScriptEnabled: false, baseURL });
   const page = await context.newPage();
-  await page.goto('/zh-hans/docs/getting-started/quick-start/');
+  const article = documents.find((item) => item.locale === 'zh-hans' && item.id === 'getting-started/quick-start')!;
+  await page.goto(article.url);
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   await expect(page.locator('pre').first()).toBeVisible();
+    await expect(page.locator('time').first()).toHaveAttribute('datetime', article.updatedAt);
+    const articleData = JSON.parse(await page.locator('script[type="application/ld+json"]').textContent() ?? '{}');
+    expect(articleData['@graph'][0].dateModified).toBe(article.updatedAt);
   expect((await page.locator('article').textContent())?.length).toBeGreaterThan(300);
   await context.close();
 });

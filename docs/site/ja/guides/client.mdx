@@ -7,9 +7,16 @@ order: 5
 version: "1.0.0-alpha"
 source: ["docs/usage.md", "README.md", "crates/umbra-core/src/config.rs", "crates/umbra/src/main.rs"]
 translation: "complete"
+updatedAt: "2026-09-18"
+reviewedAt: "2026-09-18"
 ---
 
 Umbra は端末上に SOCKS5 プロキシを提供します。アプリを直接接続するほか、既存クライアントのルールで選んだ通信を Umbra に渡せます。
+
+
+## 結果を確認するには
+
+まずクライアントのパソコンで本文の curl コマンドを実行し、次に 1 つのアプリで SOCKS5 を設定します。両方が動作してからルール管理用クライアントを追加してください。TCP でページを開けても UDP の確認にはならないため、UDP を使うアプリは別途確認します。
 
 ## 1. Umbra を起動
 

@@ -11,4 +11,4 @@
 ## 3. 测试与覆盖率 >= 90%
 - [x] 3.1 Pass build, content/types/lint, licenses and unit line coverage >=90%.
 - [x] 3.2 Verify full articles, diagrams, no-JavaScript reading, search and responsive views.
-- [ ] 3.3 Pass remote CI, merge, deploy and verify production; archive with evidence.
+- [x] 3.3 Pass remote CI, merge, deploy and verify production; archive with evidence.
